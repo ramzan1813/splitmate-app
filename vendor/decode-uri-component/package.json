@@ -1,0 +1,7 @@
+{
+  "name": "decode-uri-component",
+  "version": "0.2.2-safe.1",
+  "description": "Local, linear-time replacement for decode-uri-component (fixes GHSA DoS in <=0.4.2). Same CommonJS API.",
+  "main": "index.js",
+  "license": "MIT"
+}

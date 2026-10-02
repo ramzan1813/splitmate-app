@@ -1,0 +1,263 @@
+// Export / import of groups as JSON files (for sharing a group and for full backups).
+// Imported files are untrusted input: everything is validated before touching the database.
+import { getDb } from './db';
+import { getGroup, getMembers, getTransactions, CURRENCIES, LIMITS, newUid } from './repo';
+import { AppError, SplitType } from './types';
+
+export const FORMAT = 'splitmate';
+export const FORMAT_VERSION = 1;
+export const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_GROUPS = 500;
+const MAX_MEMBERS = 500;
+const MAX_TX = 100_000;
+
+export interface ExportedGroup {
+  uid: string;
+  name: string;
+  description: string;
+  currency: string;
+  createdAt: string;
+  members: { ref: number; name: string; isMe: boolean }[];
+  transactions: {
+    type: 'expense' | 'payment';
+    title: string;
+    amount: number;
+    paidBy: number;
+    splitType: SplitType;
+    category: string;
+    note: string;
+    date: string;
+    createdAt: string;
+    splits: { member: number; value: number; share: number }[];
+  }[];
+}
+
+export interface ExportFile {
+  format: typeof FORMAT;
+  version: number;
+  kind: 'group' | 'backup';
+  exportedAt: string;
+  groups: ExportedGroup[];
+}
+
+async function exportOne(groupId: number): Promise<ExportedGroup> {
+  const g = await getGroup(groupId);
+  const members = await getMembers(groupId);
+  const txs = await getTransactions(groupId);
+  return {
+    uid: g.uid,
+    name: g.name,
+    description: g.description,
+    currency: g.currency,
+    createdAt: g.createdAt,
+    members: members.map((m) => ({ ref: m.id, name: m.name, isMe: m.isMe })),
+    transactions: [...txs].reverse().map((t) => ({
+      type: t.type,
+      title: t.title,
+      amount: t.amount,
+      paidBy: t.paidBy,
+      splitType: t.splitType,
+      category: t.category,
+      note: t.note,
+      date: t.date,
+      createdAt: t.createdAt,
+      splits: t.splits.map((s) => ({ member: s.memberId, value: s.value, share: s.share })),
+    })),
+  };
+}
+
+export async function exportGroup(groupId: number): Promise<ExportFile> {
+  return { format: FORMAT, version: FORMAT_VERSION, kind: 'group', exportedAt: new Date().toISOString(), groups: [await exportOne(groupId)] };
+}
+
+export async function exportAll(): Promise<ExportFile> {
+  const db = await getDb();
+  const ids = await db.getAllAsync<{ id: number }>('SELECT id FROM groups ORDER BY id', []);
+  const groups: ExportedGroup[] = [];
+  for (const { id } of ids) groups.push(await exportOne(id));
+  return { format: FORMAT, version: FORMAT_VERSION, kind: 'backup', exportedAt: new Date().toISOString(), groups };
+}
+
+// ---------- validation ----------
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const str = (v: unknown, max: number, field: string, required = false) => {
+  if (v === undefined || v === null) {
+    if (required) throw new AppError(`Invalid file: missing ${field}`);
+    return '';
+  }
+  if (typeof v !== 'string') throw new AppError(`Invalid file: ${field} must be text`);
+  const s = v.trim().slice(0, max);
+  if (required && !s) throw new AppError(`Invalid file: ${field} is empty`);
+  return s;
+};
+const int = (v: unknown, field: string, min = 0) => {
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < min) throw new AppError(`Invalid file: ${field} must be a whole number`);
+  return v;
+};
+
+/** Parses and validates a file's text. Throws AppError with a readable message on any problem. */
+export function parseExport(text: string): ExportFile {
+  if (typeof text !== 'string' || text.length === 0) throw new AppError('The file is empty');
+  if (text.length > MAX_FILE_BYTES) throw new AppError('The file is too large (max 10 MB)');
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new AppError('This is not a SplitMate file (invalid JSON)');
+  }
+  if (!isObj(raw) || raw.format !== FORMAT) throw new AppError('This is not a SplitMate file');
+  if (typeof raw.version !== 'number' || raw.version > FORMAT_VERSION) {
+    throw new AppError('This file was made by a newer version of SplitMate. Please update the app.');
+  }
+  if (!Array.isArray(raw.groups) || raw.groups.length === 0) throw new AppError('The file contains no groups');
+  if (raw.groups.length > MAX_GROUPS) throw new AppError('The file contains too many groups');
+
+  const groups: ExportedGroup[] = raw.groups.map((g: unknown, gi: number) => {
+    if (!isObj(g)) throw new AppError(`Invalid file: group ${gi + 1}`);
+    const name = str(g.name, LIMITS.name, 'group name', true);
+    if (!Array.isArray(g.members) || g.members.length === 0) throw new AppError(`Group "${name}" has no members`);
+    if (g.members.length > MAX_MEMBERS) throw new AppError(`Group "${name}" has too many members`);
+    const refs = new Set<number>();
+    const members = g.members.map((m: unknown) => {
+      if (!isObj(m)) throw new AppError(`Invalid member in "${name}"`);
+      const ref = int(m.ref, 'member ref', 1);
+      if (refs.has(ref)) throw new AppError(`Duplicate member in "${name}"`);
+      refs.add(ref);
+      return { ref, name: str(m.name, LIMITS.name, 'member name', true), isMe: m.isMe === true };
+    });
+    if (members.filter((m) => m.isMe).length > 1) members.forEach((m) => (m.isMe = false));
+    const txIn = Array.isArray(g.transactions) ? g.transactions : [];
+    if (txIn.length > MAX_TX) throw new AppError(`Group "${name}" has too many transactions`);
+    const transactions = txIn.map((t: unknown, ti: number) => {
+      const where = `transaction ${ti + 1} in "${name}"`;
+      if (!isObj(t)) throw new AppError(`Invalid ${where}`);
+      const type: 'expense' | 'payment' | null = t.type === 'payment' ? 'payment' : t.type === 'expense' ? 'expense' : null;
+      if (!type) throw new AppError(`Invalid type in ${where}`);
+      const amount = int(t.amount, `amount in ${where}`, 1);
+      if (amount > LIMITS.maxAmount * 100) throw new AppError(`Amount too large in ${where}`);
+      const paidBy = int(t.paidBy, `payer in ${where}`, 1);
+      if (!refs.has(paidBy)) throw new AppError(`Unknown payer in ${where}`);
+      const splitType = (['equal', 'unequal', 'percent', 'shares'] as const).find((s) => s === t.splitType);
+      if (!splitType) throw new AppError(`Invalid split type in ${where}`);
+      const date = str(t.date, 10, `date in ${where}`, true);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date))) throw new AppError(`Invalid date in ${where}`);
+      if (!Array.isArray(t.splits) || t.splits.length === 0) throw new AppError(`Missing split in ${where}`);
+      const seen = new Set<number>();
+      const splits = t.splits.map((s: unknown) => {
+        if (!isObj(s)) throw new AppError(`Invalid split in ${where}`);
+        const member = int(s.member, `split member in ${where}`, 1);
+        if (!refs.has(member) || seen.has(member)) throw new AppError(`Invalid split member in ${where}`);
+        seen.add(member);
+        const value = typeof s.value === 'number' && Number.isFinite(s.value) && s.value >= 0 ? s.value : NaN;
+        if (Number.isNaN(value)) throw new AppError(`Invalid split value in ${where}`);
+        return { member, value, share: int(s.share, `split share in ${where}`, 0) };
+      });
+      const sum = splits.reduce((a, s) => a + s.share, 0);
+      if (sum !== amount) throw new AppError(`Split shares don't add up to the amount in ${where}`);
+      if (type === 'payment' && (splits.length !== 1 || splits[0]!.member === paidBy)) throw new AppError(`Invalid payment in ${where}`);
+      return {
+        type,
+        title: str(t.title, LIMITS.title, `title in ${where}`) || (type === 'payment' ? 'Payment' : 'Expense'),
+        amount,
+        paidBy,
+        splitType,
+        category: str(t.category, LIMITS.category, 'category') || (type === 'payment' ? 'Payment' : 'General'),
+        note: str(t.note, LIMITS.note, 'note'),
+        date,
+        createdAt: str(t.createdAt, 40, 'createdAt') || new Date().toISOString(),
+        splits,
+      };
+    });
+    return {
+      uid: str(g.uid, 80, 'group id') || newUid(),
+      name,
+      description: str(g.description, LIMITS.description, 'description'),
+      currency: CURRENCIES.includes(String(g.currency)) ? String(g.currency) : 'USD',
+      createdAt: str(g.createdAt, 40, 'createdAt') || new Date().toISOString(),
+      members,
+      transactions,
+    } satisfies ExportedGroup;
+  });
+  return { format: FORMAT, version: raw.version, kind: raw.kind === 'backup' ? 'backup' : 'group', exportedAt: String(raw.exportedAt ?? ''), groups };
+}
+
+/** Which of the file's groups already exist on this phone (matched by uid). */
+export async function findExisting(file: ExportFile): Promise<Record<string, number>> {
+  const db = await getDb();
+  const out: Record<string, number> = {};
+  for (const g of file.groups) {
+    const row = await db.getFirstAsync<{ id: number }>('SELECT id FROM groups WHERE uid = ?', [g.uid]);
+    if (row) out[g.uid] = row.id;
+  }
+  return out;
+}
+
+export interface ImportOptions {
+  /** 'replace' overwrites a group with the same id; 'copy' imports it as a new separate group. */
+  onDuplicate: 'replace' | 'copy';
+  /** Optional: for each group uid, the member ref that is "me" on this phone (null = nobody). */
+  meRef?: Record<string, number | null>;
+  /** Erase all existing groups first (full restore). */
+  eraseFirst?: boolean;
+}
+
+export async function importFile(file: ExportFile, opts: ImportOptions): Promise<number[]> {
+  const db = await getDb();
+  const created: number[] = [];
+  await db.withTransactionAsync(async () => {
+    if (opts.eraseFirst) {
+      await db.runAsync('DELETE FROM transaction_splits', []);
+      await db.runAsync('DELETE FROM transactions', []);
+      await db.runAsync('DELETE FROM members', []);
+      await db.runAsync('DELETE FROM groups', []);
+    }
+    for (const g of file.groups) {
+      let uid = g.uid;
+      const existing = await db.getFirstAsync<{ id: number }>('SELECT id FROM groups WHERE uid = ?', [uid]);
+      if (existing) {
+        if (opts.onDuplicate === 'replace') {
+          await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id IN (SELECT id FROM transactions WHERE group_id = ?)', [existing.id]);
+          await db.runAsync('DELETE FROM transactions WHERE group_id = ?', [existing.id]);
+          await db.runAsync('DELETE FROM members WHERE group_id = ?', [existing.id]);
+          await db.runAsync('DELETE FROM groups WHERE id = ?', [existing.id]);
+        } else {
+          uid = newUid();
+        }
+      }
+      const ts = new Date().toISOString();
+      const name = existing && opts.onDuplicate === 'copy' ? `${g.name} (copy)`.slice(0, LIMITS.name) : g.name;
+      const r = await db.runAsync('INSERT INTO groups (uid, name, description, currency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [
+        uid,
+        name,
+        g.description,
+        g.currency,
+        g.createdAt,
+        ts,
+      ]);
+      const gid = r.lastInsertRowId;
+      created.push(gid);
+      const meRef = opts.meRef && g.uid in opts.meRef ? opts.meRef[g.uid] : (g.members.find((m) => m.isMe)?.ref ?? null);
+      const idMap = new Map<number, number>();
+      for (const m of g.members) {
+        const mr = await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, ?, ?)', [gid, m.name, m.ref === meRef ? 1 : 0, ts]);
+        idMap.set(m.ref, mr.lastInsertRowId);
+      }
+      for (const t of g.transactions) {
+        const tr = await db.runAsync(
+          `INSERT INTO transactions (group_id, type, title, amount, paid_by, split_type, category, note, date, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [gid, t.type, t.title, t.amount, idMap.get(t.paidBy)!, t.splitType, t.category, t.note, t.date, t.createdAt, ts]
+        );
+        for (const s of t.splits) {
+          await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [
+            tr.lastInsertRowId,
+            idMap.get(s.member)!,
+            s.value,
+            s.share,
+          ]);
+        }
+      }
+    }
+  });
+  return created;
+}
