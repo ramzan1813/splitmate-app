@@ -1,10 +1,11 @@
 import { useLayoutEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { Avatar, Button, Card, Empty, Loading, Row, Segmented, SectionTitle } from '@/components/ui';
+import { Avatar, Button, Card, Empty, HeaderButton, Loading, Row, Segmented, SectionTitle } from '@/components/ui';
 import { PieChart } from '@/components/PieChart';
 import { TransactionCard } from '@/components/TransactionCard';
 import { QRCode } from '@/components/QRCode';
+import { QRScannerModal } from '@/components/QRScannerModal';
 import { useGroup } from '@/lib/useGroup';
 import { money } from '@/lib/format';
 import { colors, colorFor } from '@/lib/theme';
@@ -21,21 +22,32 @@ export default function GroupScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [chartMode, setChartMode] = useState<'paid' | 'share' | 'category'>('share');
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
 
   useLayoutEffect(() => {
     nav.setOptions({
       title: data?.group.name ?? '',
       headerRight: () => (
-        <Row>
-          <Pressable onPress={() => setShowInviteModal(true)} style={{ paddingHorizontal: 6 }} testID="open-invite">
-            <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700', backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 }}>Invite</Text>
-          </Pressable>
-          <Pressable onPress={() => router.push(`/group/${id}/members`)} style={{ paddingHorizontal: 6 }} testID="open-members">
-            <Text style={{ color: '#fff', fontSize: 15, fontWeight: '600' }}>Members</Text>
-          </Pressable>
-          <Pressable onPress={() => router.push(`/group/${id}/settings`)} style={{ paddingHorizontal: 6 }} testID="open-settings">
-            <Text style={{ color: '#fff', fontSize: 20 }}>⚙</Text>
-          </Pressable>
+        <Row style={{ alignItems: 'center' }}>
+          <HeaderButton
+            title="Invite"
+            icon="🔗"
+            highlight
+            onPress={() => setShowInviteModal(true)}
+            testID="open-invite"
+          />
+          <HeaderButton
+            title="Members"
+            icon="👥"
+            onPress={() => router.push(`/group/${id}/members`)}
+            testID="open-members"
+          />
+          <HeaderButton
+            icon="⚙"
+            onPress={() => router.push(`/group/${id}/settings`)}
+            testID="open-settings"
+            accessibilityLabel="Group settings"
+          />
         </Row>
       ),
     });
@@ -243,20 +255,36 @@ export default function GroupScreen() {
 
             {inviteLink ? <QRCode value={inviteLink} size={210} /> : null}
 
-            <View style={{ marginTop: 16, width: '100%' }}>
+            <View style={{ marginTop: 16, width: '100%', gap: 8 }}>
               <Button
                 title="Copy Invite Link"
                 variant="outline"
                 onPress={() => {
                   notify('Invite Link Copied', inviteLink);
                 }}
-                style={{ marginBottom: 8 }}
+              />
+              <Button
+                title="📷 Scan Another QR Code"
+                variant="outline"
+                onPress={() => {
+                  setShowInviteModal(false);
+                  setShowScanner(true);
+                }}
               />
               <Button title="Done" onPress={() => setShowInviteModal(false)} />
             </View>
           </View>
         </View>
       </Modal>
+
+      <QRScannerModal
+        visible={showScanner}
+        onClose={() => setShowScanner(false)}
+        onScan={(scanned) => {
+          setShowScanner(false);
+          router.push(`/import?invite=${encodeURIComponent(scanned)}`);
+        }}
+      />
     </View>
   );
 }

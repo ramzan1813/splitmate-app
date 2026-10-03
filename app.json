@@ -20,7 +20,9 @@
       "predictiveBackGestureEnabled": false,
       "package": "com.splitmate.app",
       "versionCode": 3,
-      "permissions": [],
+      "permissions": [
+        "CAMERA"
+      ],
       "blockedPermissions": [
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
@@ -40,6 +42,12 @@
       "expo-router",
       "expo-sharing",
       "expo-sqlite",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow SplitMate to scan QR codes for group invites."
+        }
+      ],
       [
         "expo-build-properties",
         {

@@ -65,6 +65,49 @@ const btnVariants = {
   ghost: { bg: 'transparent', fg: colors.primary, border: 'transparent' },
 };
 
+export function HeaderButton({
+  title,
+  icon,
+  onPress,
+  testID,
+  accessibilityLabel,
+  highlight,
+}: {
+  title?: string;
+  icon?: string;
+  onPress?: () => void;
+  testID?: string;
+  accessibilityLabel?: string;
+  highlight?: boolean;
+}) {
+  return (
+    <Pressable
+      testID={testID}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || title}
+      onPress={onPress}
+      style={({ pressed }) => [
+        {
+          backgroundColor: highlight ? 'rgba(255, 255, 255, 0.28)' : 'rgba(255, 255, 255, 0.18)',
+          borderWidth: 1,
+          borderColor: highlight ? 'rgba(255, 255, 255, 0.45)' : 'rgba(255, 255, 255, 0.25)',
+          paddingHorizontal: 10,
+          paddingVertical: 5,
+          borderRadius: 14,
+          marginHorizontal: 3,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        pressed && { backgroundColor: 'rgba(255, 255, 255, 0.4)', transform: [{ scale: 0.96 }] },
+      ]}
+    >
+      {icon ? <Text style={{ color: '#fff', fontSize: 14, marginRight: title ? 4 : 0 }}>{icon}</Text> : null}
+      {title ? <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>{title}</Text> : null}
+    </Pressable>
+  );
+}
+
 export function Field({ label, error, ...props }: TextInputProps & { label?: string; error?: string }) {
   return (
     <View style={{ marginBottom: 14 }}>

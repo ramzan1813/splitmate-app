@@ -6,6 +6,7 @@
     "decode-uri-component": "file:./vendor/decode-uri-component",
     "expo": "~57.0.26",
     "expo-build-properties": "~57.0.22",
+    "expo-camera": "~57.0.6",
     "expo-crypto": "~57.0.3",
     "expo-document-picker": "~57.0.3",
     "expo-file-system": "~57.0.7",
@@ -15,6 +16,7 @@
     "expo-sqlite": "~57.0.3",
     "expo-status-bar": "~57.0.1",
     "fflate": "^0.8.3",
+    "qrcode": "^1.5.4",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
@@ -27,6 +29,7 @@
     "react-native-worklets": "0.10.1"
   },
   "devDependencies": {
+    "@types/qrcode": "^1.5.6",
     "@types/react": "~19.2.2",
     "tsx": "^4.23.15",
     "typescript": "~6.0.3"

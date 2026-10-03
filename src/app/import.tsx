@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Avatar, Button, Card, Chip, Field, Row, Screen, SectionTitle } from '@/components/ui';
 import { ExportFile, findExisting, importFile, parseExport } from '@/data/backup';
+import { QRScannerModal } from '@/components/QRScannerModal';
 import { pickTextFile } from '@/lib/files';
 import { money } from '@/lib/format';
 import { colors } from '@/lib/theme';
@@ -12,6 +13,7 @@ import { createGroup, listGroups } from '@/data/repo';
 
 export default function ImportScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ invite?: string }>();
   const { suspendLock, profileName } = useApp();
   const [file, setFile] = useState<ExportFile | null>(null);
   const [fileName, setFileName] = useState('');
@@ -20,8 +22,15 @@ export default function ImportScreen() {
   const [onDuplicate, setOnDuplicate] = useState<'replace' | 'copy'>('replace');
   const [eraseFirst, setEraseFirst] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [inviteUrl, setInviteUrl] = useState('');
+  const [inviteUrl, setInviteUrl] = useState(params.invite ? decodeURIComponent(params.invite) : '');
   const [joining, setJoining] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
+
+  useEffect(() => {
+    if (params.invite) {
+      setInviteUrl(decodeURIComponent(params.invite));
+    }
+  }, [params.invite]);
 
   const handleJoinInvite = async () => {
     const raw = inviteUrl.trim();
@@ -104,19 +113,35 @@ export default function ImportScreen() {
   return (
     <Screen style={{ maxWidth: 640, width: '100%', alignSelf: 'center' }}>
       <Card style={{ marginBottom: 18 }}>
-        <Text style={{ fontWeight: '800', fontSize: 16, marginBottom: 4 }}>Join via Invite Link / QR</Text>
+        <Text style={{ fontWeight: '800', fontSize: 16, marginBottom: 4 }}>Join via Invite Link or QR Code</Text>
         <Text style={{ color: colors.muted, fontSize: 13, marginBottom: 12 }}>
-          Paste an invite link (e.g. splitmate://join?...) shared by a friend to join and sync in real time.
+          Scan a QR code or paste an invite link shared by a friend to join and sync in real time.
         </Text>
         <TextInput
-          placeholder="Paste invite link here..."
+          placeholder="Paste invite link (e.g. splitmate://join?...)"
           value={inviteUrl}
           onChangeText={setInviteUrl}
           style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: 10, marginBottom: 10, backgroundColor: '#fff' }}
           autoCapitalize="none"
           autoCorrect={false}
         />
-        <Button title="Join Group" onPress={handleJoinInvite} loading={joining} disabled={!inviteUrl.trim()} />
+        <Row style={{ gap: 10 }}>
+          <Button
+            title="📷 Scan QR Code"
+            variant="outline"
+            onPress={() => setShowScanner(true)}
+            style={{ flex: 1, backgroundColor: '#fff' }}
+            testID="scan-qr-btn"
+          />
+          <Button
+            title="Join Group"
+            onPress={handleJoinInvite}
+            loading={joining}
+            disabled={!inviteUrl.trim()}
+            style={{ flex: 1 }}
+            testID="join-invite-btn"
+          />
+        </Row>
       </Card>
 
       <SectionTitle>Import Backup or JSON File</SectionTitle>
@@ -185,6 +210,21 @@ export default function ImportScreen() {
           <Button title={`Import ${file.groups.length === 1 ? 'group' : `${file.groups.length} groups`}`} onPress={doImport} loading={busy} style={{ marginTop: 8 }} testID="do-import" />
         </View>
       )}
+
+      <QRScannerModal
+        visible={showScanner}
+        onClose={() => setShowScanner(false)}
+        onScan={(data) => {
+          setShowScanner(false);
+          setInviteUrl(data);
+          // If it's a splitmate link, trigger join
+          if (data.startsWith('splitmate://')) {
+            setTimeout(() => {
+              setInviteUrl(data);
+            }, 100);
+          }
+        }}
+      />
     </Screen>
   );
 }
