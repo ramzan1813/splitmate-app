@@ -194,7 +194,7 @@ test('import rejects bad or malicious files', () => {
   assert.equal(parseExport(withTx(good)).groups[0]!.transactions.length, 1);
   assert.throws(() => parseExport(withTx({ ...good, splits: [{ member: 1, value: 1, share: 10 }] })), /add up/);
   assert.throws(() => parseExport(withTx({ ...good, paidBy: 7 })), /Unknown payer/);
-  assert.throws(() => parseExport(withTx({ ...good, amount: -5 })), /whole number/);
+  assert.throws(() => parseExport(withTx({ ...good, amount: -5 })), /positive amount/);
   assert.throws(() => parseExport(withTx({ ...good, date: "'; DROP TABLE x" })), /date/);
   assert.throws(() => parseExport(withTx({ ...good, type: 'payment' })), /payment/);
   // prototype-pollution style keys are just ignored data

@@ -2,6 +2,7 @@
 // Imported files are untrusted input: everything is validated before touching the database.
 import { getDb } from './db';
 import { getGroup, getMembers, getTransactions, CURRENCIES, LIMITS, newUid } from './repo';
+import { computeShares } from './logic';
 import { AppError, SplitType } from './types';
 
 export const FORMAT = 'splitmate';
@@ -175,16 +176,7 @@ export function parseExport(text: string): ExportFile {
         return { member, value, share };
       });
       const sum = splits.reduce((a, s) => a + s.share, 0);
-      if (sum !== amount) {
-        const computed = computeShares(
-          amount,
-          splitType,
-          splits.map((s) => ({ memberId: s.member, value: s.value }))
-        );
-        for (let i = 0; i < splits.length; i++) {
-          splits[i]!.share = computed[i]!.share;
-        }
-      }
+      if (sum !== amount) throw new AppError(`Split shares don't add up to the amount in ${where}`);
       if (type === 'payment' && (splits.length !== 1 || splits[0]!.member === paidBy)) throw new AppError(`Invalid payment in ${where}`);
       return {
         type,
@@ -209,7 +201,13 @@ export function parseExport(text: string): ExportFile {
       transactions,
     } satisfies ExportedGroup;
   });
-  return { format: FORMAT, version: raw.version, kind: raw.kind === 'backup' ? 'backup' : 'group', exportedAt: String(raw.exportedAt ?? ''), groups };
+  return {
+    format: FORMAT,
+    version: typeof raw.version === 'number' ? raw.version : FORMAT_VERSION,
+    kind: raw.kind === 'backup' ? 'backup' : 'group',
+    exportedAt: String(raw.exportedAt ?? ''),
+    groups,
+  };
 }
 
 /** Which of the file's groups already exist on this phone (matched by uid). */
