@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Button, Chip, Field, Row, Screen, SectionTitle } from '@/components/ui';
-import { createGroup, CURRENCIES } from '@/data/repo';
+import { Button, Field, Row, Screen, SectionTitle } from '@/components/ui';
+import { CurrencyPicker } from '@/components/CurrencyPicker';
+import { createGroup } from '@/data/repo';
 import { errorMessage, notify } from '@/lib/dialog';
 import { useApp } from '@/lib/app';
 import { colors } from '@/lib/theme';
@@ -37,11 +38,7 @@ export default function NewGroup() {
       <Field label="Group name" value={name} onChangeText={setName} placeholder="e.g. Murree Trip, Flat 4B" testID="group-name" />
       <Field label="Description (optional)" value={description} onChangeText={setDescription} placeholder="What is this group for?" />
       <SectionTitle>Currency</SectionTitle>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
-        {CURRENCIES.map((c) => (
-          <Chip key={c} label={c} active={currency === c} onPress={() => setCurrency(c)} testID={`cur-${c}`} />
-        ))}
-      </ScrollView>
+      <CurrencyPicker value={currency} onChange={setCurrency} />
       <SectionTitle>Members</SectionTitle>
       <Field label="You appear in this group as" value={myName} onChangeText={setMyName} />
       {members.map((m, i) => (

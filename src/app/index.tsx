@@ -3,10 +3,11 @@ import { FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
 import { useFocusEffect, useNavigation, useRouter } from 'expo-router';
 import { Avatar, Button, Card, Empty, Loading, Row } from '@/components/ui';
 import { listGroups } from '@/data/repo';
+import { getSampleGroupIds, removeSampleGroups } from '@/data/samples';
 import { GroupListItem } from '@/data/types';
 import { money } from '@/lib/format';
 import { colors } from '@/lib/theme';
-import { errorMessage } from '@/lib/dialog';
+import { confirm, errorMessage, notify } from '@/lib/dialog';
 
 export default function Home() {
   const router = useRouter();
@@ -14,6 +15,7 @@ export default function Home() {
   const [groups, setGroups] = useState<GroupListItem[] | null>(null);
   const [error, setError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [sampleCount, setSampleCount] = useState(0);
 
   useLayoutEffect(() => {
     nav.setOptions({
@@ -33,6 +35,7 @@ export default function Home() {
   const load = useCallback(async () => {
     try {
       setGroups(await listGroups());
+      setSampleCount((await getSampleGroupIds()).length);
       setError('');
     } catch (e) {
       setError(errorMessage(e));
@@ -45,6 +48,16 @@ export default function Home() {
       load();
     }, [load])
   );
+
+  const removeSamples = async () => {
+    if (!(await confirm('Remove sample groups', 'Delete the sample groups and all their expenses? Your own groups are not affected.', 'Remove', true))) return;
+    try {
+      await removeSampleGroups();
+      await load();
+    } catch (e) {
+      notify('Could not remove', errorMessage(e));
+    }
+  };
 
   if (!groups) return <Loading />;
 
@@ -65,7 +78,22 @@ export default function Home() {
             }}
           />
         }
-        ListHeaderComponent={groups.length ? <Text style={{ fontSize: 22, fontWeight: '800', color: colors.text, marginBottom: 12 }}>Your groups</Text> : null}
+        ListHeaderComponent={
+          groups.length ? (
+            <>
+              {sampleCount > 0 && (
+                <Card style={{ backgroundColor: colors.primaryLight }} testID="samples-banner">
+                  <Text style={{ fontWeight: '800', fontSize: 15, color: colors.primaryDark }}>👋 Welcome to SplitMate</Text>
+                  <Text style={{ color: colors.text, marginTop: 4 }}>
+                    We added {sampleCount === 1 ? 'a sample group' : `${sampleCount} sample groups`} so you can see how it works: a trip with friends, a shared flat with monthly bills, and a family holiday abroad. Open them, try Balances, Settle up and Insights — then remove them and create your own.
+                  </Text>
+                  <Button title="Remove sample groups" variant="outline" small onPress={removeSamples} style={{ alignSelf: 'flex-start', marginTop: 10, backgroundColor: colors.white }} testID="remove-samples" />
+                </Card>
+              )}
+              <Text style={{ fontSize: 22, fontWeight: '800', color: colors.text, marginBottom: 12 }}>Your groups</Text>
+            </>
+          ) : null
+        }
         ListEmptyComponent={
           <Empty title="No groups yet" subtitle="Create a group for a trip, flat, party or anything you share — or import a group file a friend sent you." />
         }

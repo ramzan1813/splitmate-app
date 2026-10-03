@@ -3,8 +3,9 @@ import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Avatar, Button, Card, Empty, Loading, Row, Segmented, SectionTitle } from '@/components/ui';
 import { PieChart } from '@/components/PieChart';
+import { TransactionCard } from '@/components/TransactionCard';
 import { useGroup } from '@/lib/useGroup';
-import { money, prettyDate } from '@/lib/format';
+import { money } from '@/lib/format';
 import { colors, colorFor } from '@/lib/theme';
 
 type Tab = 'transactions' | 'balances' | 'settle' | 'chart';
@@ -107,45 +108,17 @@ export default function GroupScreen() {
           (data.transactions.length === 0 ? (
             <Empty title="No expenses yet" subtitle='Tap “Add expense” to record the first one.' />
           ) : (
-            data.transactions.map((t) => {
-              const myShare = t.splits.find((s) => s.memberId === data.myMemberId)?.share ?? 0;
-              const isPayment = t.type === 'payment';
-              return (
-                <Pressable key={t.id} onPress={() => router.push(`/group/${id}/transaction/${t.id}`)} testID={`tx-${t.id}`}>
-                  <Card style={{ paddingVertical: 12 }}>
-                    <Row>
-                      <View
-                        style={{
-                          width: 42,
-                          height: 42,
-                          borderRadius: 10,
-                          backgroundColor: isPayment ? colors.positiveBg : colors.primaryLight,
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                      >
-                        <Text style={{ fontSize: 18 }}>{isPayment ? '💸' : '🧾'}</Text>
-                      </View>
-                      <View style={{ flex: 1, marginLeft: 12 }}>
-                        <Text style={{ fontWeight: '700', fontSize: 15, color: colors.text }} numberOfLines={1}>
-                          {isPayment ? `${memberName(t.paidBy)} paid ${memberName(t.splits[0]?.memberId ?? 0)}` : t.title}
-                        </Text>
-                        <Text style={{ color: colors.muted, fontSize: 12, marginTop: 2 }}>
-                          {prettyDate(t.date)}
-                          {isPayment ? '' : ` · ${memberName(t.paidBy)} paid · ${t.category}`}
-                        </Text>
-                      </View>
-                      <View style={{ alignItems: 'flex-end' }}>
-                        <Text style={{ fontWeight: '800', color: colors.text }}>{money(t.amount, cur)}</Text>
-                        {!isPayment && data.myMemberId ? (
-                          <Text style={{ fontSize: 11, color: colors.muted }}>your share {money(myShare, cur)}</Text>
-                        ) : null}
-                      </View>
-                    </Row>
-                  </Card>
-                </Pressable>
-              );
-            })
+            data.transactions.map((t) => (
+              <TransactionCard
+                key={t.id}
+                t={t}
+                currency={cur}
+                myMemberId={data.myMemberId}
+                memberName={memberName}
+                memberIndex={memberIndex}
+                onPress={() => router.push(`/group/${id}/transaction/${t.id}`)}
+              />
+            ))
           ))}
 
         {tab === 'balances' &&

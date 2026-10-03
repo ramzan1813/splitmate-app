@@ -77,6 +77,10 @@ export interface Insights {
   byMonth: { key: string; label: string; amount: number }[];
   byPerson: PersonStat[];
   byWeekday: { label: string; amount: number }[];
+  /** Spending per group in the period, largest first. */
+  byGroup: { id: number; name: string; amount: number; count: number }[];
+  /** Payments between members (settling up) in the period. */
+  settled: { amount: number; count: number };
   topExpenses: (Transaction & { groupName: string; paidByName: string })[];
   messages: string[];
 }
@@ -173,6 +177,17 @@ export function computeInsights(
   const byWeekday = WEEKDAYS.map((label) => ({ label, amount: 0 }));
   for (const t of inRange) byWeekday[weekday(t.date)]!.amount += t.amount;
 
+  const groupSpend = new Map<number, { id: number; name: string; amount: number; count: number }>();
+  for (const t of inRange) {
+    const g = groupSpend.get(t.groupId) || { id: t.groupId, name: groupById.get(t.groupId)!.name, amount: 0, count: 0 };
+    g.amount += t.amount;
+    g.count += 1;
+    groupSpend.set(t.groupId, g);
+  }
+  const byGroup = [...groupSpend.values()].sort((a, b) => b.amount - a.amount);
+  const payments = transactions.filter((t) => t.type === 'payment' && groupById.has(t.groupId) && t.date >= from && t.date <= to);
+  const settled = { amount: payments.reduce((a, t) => a + t.amount, 0), count: payments.length };
+
   const name = (mid: number) => memberInfo.get(mid)?.name ?? 'Unknown';
   const topExpenses = [...inRange]
     .sort((a, b) => b.amount - a.amount)
@@ -242,6 +257,8 @@ export function computeInsights(
     byMonth,
     byPerson,
     byWeekday,
+    byGroup,
+    settled,
     topExpenses,
     messages,
   };

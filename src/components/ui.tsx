@@ -2,7 +2,6 @@ import React from 'react';
 import {
   ActivityIndicator,
   Pressable,
-  ScrollView,
   StyleProp,
   StyleSheet,
   Text,
@@ -11,6 +10,7 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { colors, colorFor } from '@/lib/theme';
 import { initials } from '@/lib/format';
 
@@ -91,9 +91,21 @@ export function Avatar({ name, index = 0, size = 38 }: { name: string; index?: n
   );
 }
 
-export function Chip({ label, active, onPress, testID }: { label: string; active?: boolean; onPress?: () => void; testID?: string }) {
+export function Chip({
+  label,
+  active,
+  onPress,
+  onLongPress,
+  testID,
+}: {
+  label: string;
+  active?: boolean;
+  onPress?: () => void;
+  onLongPress?: () => void;
+  testID?: string;
+}) {
   return (
-    <Pressable testID={testID} onPress={onPress} style={[styles.chip, active && styles.chipActive]}>
+    <Pressable testID={testID} onPress={onPress} onLongPress={onLongPress} style={[styles.chip, active && styles.chipActive]}>
       <Text style={[styles.chipText, active && { color: colors.white }]}>{label}</Text>
     </Pressable>
   );
@@ -110,17 +122,20 @@ export function Segmented<T extends string>({
 }) {
   return (
     <View style={styles.segment}>
-      {options.map((o) => (
-        <Pressable
-          key={o.value}
-          onPress={() => onChange(o.value)}
-          style={[styles.segmentItem, value === o.value && styles.segmentItemActive]}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: value === o.value }}
-        >
-          <Text style={[styles.segmentText, value === o.value && { color: colors.primary }]}>{o.label}</Text>
-        </Pressable>
-      ))}
+      {options.map((o) => {
+        const active = value === o.value;
+        return (
+          <Pressable
+            key={o.value}
+            onPress={() => onChange(o.value)}
+            style={[styles.segmentItem, active && styles.segmentItemActive]}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+          >
+            <Text style={[styles.segmentText, active && { color: colors.primary }]}>{o.label}</Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -146,9 +161,15 @@ export function Empty({ title, subtitle, children }: { title: string; subtitle?:
 export function Screen({ children, scroll = true, style }: { children: React.ReactNode; scroll?: boolean; style?: StyleProp<ViewStyle> }) {
   if (!scroll) return <View style={[styles.screen, style]}>{children}</View>;
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={[{ padding: 16, paddingBottom: 40 }, style]} keyboardShouldPersistTaps="handled">
+    // scrolls the focused input above the keyboard (a plain ScrollView leaves it hidden behind the keyboard)
+    <KeyboardAwareScrollView
+      style={styles.screen}
+      contentContainerStyle={[{ padding: 16, paddingBottom: 40 }, style]}
+      keyboardShouldPersistTaps="handled"
+      bottomOffset={24}
+    >
       {children}
-    </ScrollView>
+    </KeyboardAwareScrollView>
   );
 }
 

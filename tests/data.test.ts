@@ -8,6 +8,9 @@ import { exportAll, exportGroup, findExisting, importFile, parseExport } from '.
 import { computeInsights, periodRange } from '../src/data/insights';
 import { buildXlsx } from '../src/lib/xlsx';
 import { unzipSync, strFromU8 } from 'fflate';
+import { createSampleGroups, getSampleGroupIds, removeSampleGroups } from '../src/data/samples';
+import { CURRENCIES, searchCurrencies } from '../src/lib/currencies';
+import { currencySymbol, money } from '../src/lib/format';
 
 beforeEach(async () => {
   const db = createNodeDb();
@@ -117,6 +120,68 @@ test('export -> import round trip, duplicates and "me"', async () => {
   assert.equal((await repo.listGroups()).length, 2);
 });
 
+test('files store normal amounts; old cent-based files still import', async () => {
+  const { g } = await seed();
+  const file = await exportGroup(g.id);
+  assert.equal(file.version, 2);
+  const food = file.groups[0]!.transactions.find((t) => t.title === 'Food')!;
+  assert.equal(food.amount, 100);
+  assert.deepEqual(food.splits.map((s) => [s.value, s.share]), [[50, 50], [30, 30], [20, 20]]);
+
+  const group = (version: number, t: unknown) =>
+    JSON.stringify({ format: 'splitmate', version, kind: 'group', groups: [{ uid: 'y', name: 'G', currency: 'PKR', members: [{ ref: 1, name: 'A' }, { ref: 2, name: 'B' }], transactions: [t] }] });
+  const tx = { type: 'expense', title: 'Rent', amount: 1500, paidBy: 1, splitType: 'equal', date: '2026-01-01', splits: [{ member: 1, value: 1, share: 750 }, { member: 2, value: 1, share: 750 }] };
+  assert.equal(parseExport(group(2, tx)).groups[0]!.transactions[0]!.amount, 150000); // Rs 1,500.00
+  assert.equal(parseExport(group(1, tx)).groups[0]!.transactions[0]!.amount, 1500); // v1 = cents
+  const decimals = { ...tx, amount: '1500.50', splits: [{ member: 1, value: 1, share: 750.25 }, { member: 2, value: 1, share: 750.25 }] };
+  assert.equal(parseExport(group(2, decimals)).groups[0]!.transactions[0]!.amount, 150050);
+  assert.throws(() => parseExport(group(2, { ...tx, amount: 1500.123 })), /2 decimal/);
+  assert.throws(() => parseExport(group(2, { ...tx, amount: 0 })), /greater than zero/);
+});
+
+test('custom categories', async () => {
+  assert.deepEqual(await repo.getCustomCategories(), []);
+  await repo.addCustomCategory('  Gym ');
+  await repo.addCustomCategory('gym');
+  await repo.addCustomCategory('Food'); // built-in, ignored
+  assert.deepEqual(await repo.getCustomCategories(), ['Gym']);
+  await assert.rejects(repo.addCustomCategory(' '), /name/);
+  await repo.removeCustomCategory('Gym');
+  assert.deepEqual(await repo.getCustomCategories(), []);
+});
+
+test('sample groups', async () => {
+  const mine = await repo.createGroup({ name: 'My own', myName: 'Ali' });
+  await createSampleGroups('Ali', new Date(2026, 0, 15));
+  const groups = await repo.listGroups();
+  assert.equal(groups.length, 4);
+  const ids = await getSampleGroupIds();
+  assert.equal(ids.length, 3);
+  for (const id of ids) {
+    const s = await repo.getGroupSummary(id);
+    assert.equal(s.members.find((m) => m.isMe)!.name, 'Ali');
+    assert.ok(s.transactions.length >= 6);
+    assert.ok(s.transactions.every((t) => t.date <= '2026-01-15'));
+    assert.equal(s.stats.reduce((a, x) => a + x.balance, 0), 0);
+  }
+  const flat = await repo.getGroupSummary(ids[1]!);
+  assert.equal(flat.transactions.filter((t) => t.title === 'Monthly rent').length, 3);
+  await removeSampleGroups();
+  assert.deepEqual((await repo.listGroups()).map((g) => g.id), [mine.id]);
+  assert.deepEqual(await getSampleGroupIds(), []);
+});
+
+test('currencies', async () => {
+  assert.ok(CURRENCIES.length > 150);
+  assert.equal(new Set(CURRENCIES).size, CURRENCIES.length);
+  assert.deepEqual(searchCurrencies('lkr').map((c) => c.code), ['LKR']);
+  assert.ok(searchCurrencies('rupee').some((c) => c.code === 'NPR'));
+  assert.equal(currencySymbol('PKR'), 'Rs ');
+  assert.equal(money(150000, 'KES'), 'KSh 1,500.00');
+  const g = await repo.createGroup({ name: 'Nairobi', currency: 'KES', myName: 'Me' });
+  assert.equal(g.currency, 'KES');
+});
+
 test('import rejects bad or malicious files', () => {
   assert.throws(() => parseExport('not json'), /invalid JSON/);
   assert.throws(() => parseExport('{"format":"other"}'), /not a SplitMate/);
@@ -158,6 +223,8 @@ test('insights', async () => {
   assert.equal(r.byMonth.at(-1)!.amount, 49000);
   assert.equal(r.byMonth.at(-2)!.amount, 20000);
   assert.equal(r.topExpenses[0]!.title, 'Hotel');
+  assert.deepEqual(r.byGroup.map((x) => [x.name, x.amount, x.count]), [['Trip', 49000, 3]]);
+  assert.deepEqual(r.settled, { amount: 5000, count: 1 });
   const all = computeInsights(groups, txs, 'all', fmt, today);
   assert.equal(all.total, 69000);
   assert.equal(all.changePct, null);

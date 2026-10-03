@@ -26,7 +26,7 @@ You need Node.js 22.13+ (https://nodejs.org). No admin rights are needed.
 ```bash
 cd splitmate-app
 npm install
-npm test            # 9 data-layer tests (splits, balances, import validation, insights, Excel)
+npm test            # 13 data-layer tests (splits, balances, import, samples, currencies, insights, Excel)
 npx expo start      # then press "w" for the browser, or scan the QR code with Expo Go
 ```
 
@@ -42,7 +42,7 @@ The repository includes a GitHub Actions workflow that builds a **signed release
    The `.gitignore` already keeps keystores, `node_modules` and generated native folders out of the repo.
 2. Add your signing key as repository secrets (see **SIGNING.md**). It takes 2 minutes and is strongly recommended.
 3. Go to **Actions → Build Android APK → Run workflow**.
-4. After about 15–20 minutes, open the finished run and download **splitmate-apk** under **Artifacts**. Unzip it to get `SplitMate-1.0.0.apk`, plus a `.sha256` checksum.
+4. After about 15–20 minutes, open the finished run and download **splitmate-apk** under **Artifacts**. Unzip it to get `SplitMate-<version>.apk`, plus a `.sha256` checksum.
 
 The workflow also runs the type check and unit tests, so a broken build never produces an APK.
 
@@ -64,7 +64,9 @@ The only way to remove the warnings completely is to publish through Google Play
 
 ## Updating the app later
 
-- Bump `expo.version` (e.g. `1.0.1`) and `expo.android.versionCode` (e.g. `2`) in `app.json`.
+- Bump `expo.version` (e.g. `1.2.0`) and `expo.android.versionCode` (e.g. `3`) in `app.json`, and the version shown at the bottom of Settings (`src/app/settings.tsx`).
+- Add a `## <version>` section at the top of `CHANGELOG.md`. The release workflow uses it as the GitHub Release notes.
+- Commit, then push a tag matching the version to build and publish it: `git tag v1.2.0 && git push origin main v1.2.0`. (Plain commits don't trigger a build; you can also start one from **Actions → Run workflow**.)
 - Always build with **the same keystore**, or Android will refuse to install the update over the old one.
 - Data stays on the phone between updates. Uninstalling deletes it, so export a backup first.
 

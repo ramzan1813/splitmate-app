@@ -1,13 +1,14 @@
-import { useLayoutEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import { Pressable, Text, TextInput, View } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Avatar, Button, Card, Chip, Field, Loading, Row, Screen, Segmented, SectionTitle, styles as ui } from '@/components/ui';
+import { DateField } from '@/components/Calendar';
 import { useGroup } from '@/lib/useGroup';
-import { createTransaction, updateTransaction } from '@/data/repo';
+import { addCustomCategory, createTransaction, getCustomCategories, removeCustomCategory, updateTransaction } from '@/data/repo';
 import { GroupSummary, SplitType } from '@/data/types';
 import { currencySymbol, money, parseAmount, toCents, todayISO } from '@/lib/format';
 import { CATEGORIES, colors } from '@/lib/theme';
-import { errorMessage, notify } from '@/lib/dialog';
+import { confirm, errorMessage, notify } from '@/lib/dialog';
 
 export default function ExpenseScreen() {
   const { id, tid } = useLocalSearchParams<{ id: string; tid?: string }>();
@@ -37,6 +38,36 @@ function ExpenseForm({ id, tid, data, memberIndex }: { id: string; tid?: string;
     return v;
   });
   const [saving, setSaving] = useState(false);
+  const [customCategories, setCustomCategories] = useState<string[]>([]);
+  const [newCategory, setNewCategory] = useState<string | null>(null); // null = the "new category" input is hidden
+
+  useEffect(() => {
+    getCustomCategories().then(setCustomCategories, () => {});
+  }, []);
+
+  // built-in + user-created, plus any category already used in this group (e.g. from an imported file)
+  const categoryOptions = useMemo(() => {
+    const used = data.categories.map((c) => c.name).concat(category);
+    return [...new Set([...CATEGORIES, ...customCategories, ...used])];
+  }, [customCategories, data.categories, category]);
+
+  const addCategory = async () => {
+    try {
+      const name = await addCustomCategory(newCategory ?? '');
+      setCustomCategories(await getCustomCategories());
+      setCategory(name);
+      setNewCategory(null);
+    } catch (e) {
+      notify('Could not add category', errorMessage(e));
+    }
+  };
+
+  const removeCategory = async (name: string) => {
+    if (!(await confirm('Remove category', `Remove "${name}" from the list? Expenses already in "${name}" keep it.`, 'Remove', true))) return;
+    await removeCustomCategory(name);
+    setCustomCategories(await getCustomCategories());
+    if (category === name) setCategory('General');
+  };
 
   useLayoutEffect(() => {
     nav.setOptions({ title: editing ? 'Edit expense' : 'Add expense' });
@@ -195,12 +226,38 @@ function ExpenseForm({ id, tid, data, memberIndex }: { id: string; tid?: string;
       </Card>
 
       <SectionTitle>Category</SectionTitle>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
-        {CATEGORIES.map((c) => (
-          <Chip key={c} label={c} active={category === c} onPress={() => setCategory(c)} />
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 6 }}>
+        {categoryOptions.map((c) => (
+          <Chip
+            key={c}
+            label={c}
+            active={category === c}
+            onPress={() => setCategory(c)}
+            onLongPress={customCategories.includes(c) ? () => removeCategory(c) : undefined}
+          />
         ))}
-      </ScrollView>
-      <Field label="Date (YYYY-MM-DD)" value={date} onChangeText={setDate} placeholder="2026-01-31" testID="exp-date" />
+        <Chip label="+ New" onPress={() => setNewCategory((v) => (v === null ? '' : null))} testID="category-new" />
+      </View>
+      {newCategory !== null && (
+        <Row style={{ gap: 8, marginBottom: 10 }}>
+          <View style={{ flex: 1 }}>
+            <TextInput
+              value={newCategory}
+              onChangeText={setNewCategory}
+              onSubmitEditing={addCategory}
+              placeholder="New category, e.g. Gym"
+              placeholderTextColor="#9CA3AF"
+              maxLength={40}
+              autoFocus
+              style={ui.input}
+              testID="category-new-name"
+            />
+          </View>
+          <Button title="Add" small onPress={addCategory} testID="category-add" />
+        </Row>
+      )}
+      {customCategories.length > 0 && <Text style={{ color: colors.muted, fontSize: 12, marginBottom: 10 }}>Long-press a category you created to remove it.</Text>}
+      <DateField label="Date" value={date} onChange={setDate} testID="exp-date" />
       <Field label="Note (optional)" value={note} onChangeText={setNote} multiline />
       <Button title={editing ? 'Save changes' : 'Add expense'} onPress={save} loading={saving} testID="exp-save" />
     </Screen>

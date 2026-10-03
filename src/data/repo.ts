@@ -2,8 +2,10 @@
 import { getDb, Param } from './db';
 import { computeShares, memberStats, suggestSettlements } from './logic';
 import { AppError, Group, GroupListItem, GroupSummary, Member, Split, Transaction, TxInput } from './types';
+import { CATEGORIES } from '../lib/theme';
+import { CURRENCIES } from '../lib/currencies';
 
-export const CURRENCIES = ['USD', 'EUR', 'GBP', 'PKR', 'INR', 'AED', 'SAR', 'CAD', 'AUD', 'JPY', 'CNY', 'BDT', 'TRY', 'MYR', 'SGD'];
+export { CURRENCIES };
 export const LIMITS = { name: 80, title: 120, note: 1000, description: 300, category: 40, maxAmount: 1_000_000_000 };
 
 const now = () => new Date().toISOString();
@@ -74,6 +76,39 @@ export async function setSetting(key: string, value: string | null) {
   const db = await getDb();
   if (value === null) await db.runAsync('DELETE FROM settings WHERE key = ?', [key]);
   else await db.runAsync('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [key, value]);
+}
+
+// ---------- categories ----------
+const CUSTOM_CATEGORIES_KEY = 'customCategories';
+
+/** Categories the user created, shared by all groups (built-in ones are CATEGORIES in lib/theme). */
+export async function getCustomCategories(): Promise<string[]> {
+  try {
+    const list: unknown = JSON.parse((await getSetting(CUSTOM_CATEGORIES_KEY)) || '[]');
+    return Array.isArray(list) ? list.filter((c): c is string => typeof c === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Adds a category and returns its stored name (an existing name with different casing is reused). */
+export async function addCustomCategory(rawName: string): Promise<string> {
+  const name = clean(rawName, LIMITS.category);
+  if (!name) throw new AppError('Enter a category name');
+  const same = (c: string) => c.toLowerCase() === name.toLowerCase();
+  const builtIn = CATEGORIES.find(same);
+  if (builtIn) return builtIn;
+  const list = await getCustomCategories();
+  const existing = list.find(same);
+  if (existing) return existing;
+  await setSetting(CUSTOM_CATEGORIES_KEY, JSON.stringify([...list, name]));
+  return name;
+}
+
+/** Removes a category from the picker. Expenses already using it keep their category. */
+export async function removeCustomCategory(name: string) {
+  const list = await getCustomCategories();
+  await setSetting(CUSTOM_CATEGORIES_KEY, JSON.stringify(list.filter((c) => c !== name)));
 }
 
 // ---------- groups ----------

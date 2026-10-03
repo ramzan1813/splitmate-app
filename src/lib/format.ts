@@ -1,25 +1,9 @@
-const SYMBOLS: Record<string, string> = {
-  USD: '$',
-  EUR: '€',
-  GBP: '£',
-  PKR: 'Rs ',
-  INR: '₹',
-  AED: 'AED ',
-  SAR: 'SAR ',
-  CAD: 'C$',
-  AUD: 'A$',
-  JPY: '¥',
-  CNY: 'CN¥',
-  BDT: '৳',
-  TRY: '₺',
-  MYR: 'RM ',
-  SGD: 'S$',
-};
+import { CURRENCIES, findCurrency } from './currencies';
 
-export const CURRENCIES = Object.keys(SYMBOLS);
+export { CURRENCIES };
 
 export function currencySymbol(code: string) {
-  return SYMBOLS[code] ?? `${code} `;
+  return findCurrency(code)?.symbol ?? `${code} `;
 }
 
 /** Format integer cents as money, e.g. 123456 -> "$1,234.56" */

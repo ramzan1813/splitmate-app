@@ -7,6 +7,7 @@ import { useApp } from '@/lib/app';
 import { removePin, setPin, verifyPin } from '@/lib/pin';
 import { exportAll } from '@/data/backup';
 import { eraseAllData } from '@/data/repo';
+import { createSampleGroups, getSampleGroupIds } from '@/data/samples';
 import { safeFileName, shareFile } from '@/lib/files';
 import { todayISO } from '@/lib/format';
 import { colors } from '@/lib/theme';
@@ -82,6 +83,16 @@ export default function AppSettings() {
     }
   };
 
+  const addSamples = async () => {
+    if ((await getSampleGroupIds()).length) return notify('Already added', 'The sample groups are already on your home screen.');
+    try {
+      await createSampleGroups(profileName || 'Me');
+      notify('Sample groups added', 'Open them from the home screen to see how SplitMate works.');
+    } catch (e) {
+      notify('Could not add samples', errorMessage(e));
+    }
+  };
+
   const erase = async () => {
     if (!(await confirm('Erase all data', 'Delete every group, expense and setting from this phone? This cannot be undone.', 'Erase', true))) return;
     if (!(await confirm('Are you sure?', 'Last chance — export a backup first if you might need this data.', 'Erase everything', true))) return;
@@ -146,6 +157,12 @@ export default function AppSettings() {
         </Row>
       </Card>
 
+      <SectionTitle>Getting started</SectionTitle>
+      <Card>
+        <Text style={{ color: colors.text, marginBottom: 12 }}>Add example groups (a trip, a shared flat and a family holiday) to see how SplitMate organises expenses.</Text>
+        <Button small variant="outline" title="Add sample groups" onPress={addSamples} style={{ alignSelf: 'flex-start' }} testID="add-samples" />
+      </Card>
+
       <SectionTitle>Privacy</SectionTitle>
       <Card>
         <Text style={{ color: colors.muted, fontSize: 13 }}>
@@ -155,7 +172,7 @@ export default function AppSettings() {
 
       <SectionTitle>Danger zone</SectionTitle>
       <Button title="Erase all data" variant="danger" onPress={erase} />
-      <Text style={{ color: colors.muted, textAlign: 'center', marginTop: 20, fontSize: 12 }}>SplitMate 1.0.0 · offline edition</Text>
+      <Text style={{ color: colors.muted, textAlign: 'center', marginTop: 20, fontSize: 12 }}>SplitMate 1.1.0 · offline edition</Text>
     </Screen>
   );
 }

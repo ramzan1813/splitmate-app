@@ -5,12 +5,18 @@ import { getGroup, getMembers, getTransactions, CURRENCIES, LIMITS, newUid } fro
 import { AppError, SplitType } from './types';
 
 export const FORMAT = 'splitmate';
-export const FORMAT_VERSION = 1;
+/**
+ * Version 1 files stored money as integer cents (1500 rupees -> 150000), which was easy to misread when
+ * editing or writing a file by hand. Version 2 stores money as normal amounts (1500 or 1500.5).
+ * Version 1 files are still read as cents so old backups restore correctly.
+ */
+export const FORMAT_VERSION = 2;
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_GROUPS = 500;
 const MAX_MEMBERS = 500;
 const MAX_TX = 100_000;
 
+/** In a file, money is in whole currency units; after parseExport it is in integer cents. */
 export interface ExportedGroup {
   uid: string;
   name: string;
@@ -40,6 +46,8 @@ export interface ExportFile {
   groups: ExportedGroup[];
 }
 
+const fromCents = (c: number) => c / 100;
+
 async function exportOne(groupId: number): Promise<ExportedGroup> {
   const g = await getGroup(groupId);
   const members = await getMembers(groupId);
@@ -54,14 +62,14 @@ async function exportOne(groupId: number): Promise<ExportedGroup> {
     transactions: [...txs].reverse().map((t) => ({
       type: t.type,
       title: t.title,
-      amount: t.amount,
+      amount: fromCents(t.amount),
       paidBy: t.paidBy,
       splitType: t.splitType,
       category: t.category,
       note: t.note,
       date: t.date,
       createdAt: t.createdAt,
-      splits: t.splits.map((s) => ({ member: s.memberId, value: s.value, share: s.share })),
+      splits: t.splits.map((s) => ({ member: s.memberId, value: t.splitType === 'unequal' ? fromCents(s.value) : s.value, share: fromCents(s.share) })),
     })),
   };
 }
@@ -94,6 +102,16 @@ const int = (v: unknown, field: string, min = 0) => {
   if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < min) throw new AppError(`Invalid file: ${field} must be a whole number`);
   return v;
 };
+/** Money from a file as integer cents. Version 1 files hold cents; later versions hold amounts like 1500 or 12.5. */
+const moneyIn = (v: unknown, field: string, min: number, decimal: boolean) => {
+  if (!decimal) return int(v, field, min);
+  const n = typeof v === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(v) ? Number(v) : v;
+  if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) throw new AppError(`Invalid file: ${field} must be a positive amount`);
+  const cents = Math.round(n * 100);
+  if (Math.abs(n * 100 - cents) > 1e-6) throw new AppError(`Invalid file: ${field} can have at most 2 decimal places`);
+  if (cents < min) throw new AppError(`Invalid file: ${field} must be greater than zero`);
+  return cents;
+};
 
 /** Parses and validates a file's text. Throws AppError with a readable message on any problem. */
 export function parseExport(text: string): ExportFile {
@@ -109,6 +127,7 @@ export function parseExport(text: string): ExportFile {
   if (typeof raw.version !== 'number' || raw.version > FORMAT_VERSION) {
     throw new AppError('This file was made by a newer version of SplitMate. Please update the app.');
   }
+  const decimal = raw.version >= 2;
   if (!Array.isArray(raw.groups) || raw.groups.length === 0) throw new AppError('The file contains no groups');
   if (raw.groups.length > MAX_GROUPS) throw new AppError('The file contains too many groups');
 
@@ -133,7 +152,7 @@ export function parseExport(text: string): ExportFile {
       if (!isObj(t)) throw new AppError(`Invalid ${where}`);
       const type: 'expense' | 'payment' | null = t.type === 'payment' ? 'payment' : t.type === 'expense' ? 'expense' : null;
       if (!type) throw new AppError(`Invalid type in ${where}`);
-      const amount = int(t.amount, `amount in ${where}`, 1);
+      const amount = moneyIn(t.amount, `amount in ${where}`, 1, decimal);
       if (amount > LIMITS.maxAmount * 100) throw new AppError(`Amount too large in ${where}`);
       const paidBy = int(t.paidBy, `payer in ${where}`, 1);
       if (!refs.has(paidBy)) throw new AppError(`Unknown payer in ${where}`);
@@ -148,9 +167,10 @@ export function parseExport(text: string): ExportFile {
         const member = int(s.member, `split member in ${where}`, 1);
         if (!refs.has(member) || seen.has(member)) throw new AppError(`Invalid split member in ${where}`);
         seen.add(member);
-        const value = typeof s.value === 'number' && Number.isFinite(s.value) && s.value >= 0 ? s.value : NaN;
+        let value = typeof s.value === 'number' && Number.isFinite(s.value) && s.value >= 0 ? s.value : NaN;
         if (Number.isNaN(value)) throw new AppError(`Invalid split value in ${where}`);
-        return { member, value, share: int(s.share, `split share in ${where}`, 0) };
+        if (decimal && splitType === 'unequal') value = moneyIn(value, `split value in ${where}`, 0, true);
+        return { member, value, share: moneyIn(s.share, `split share in ${where}`, 0, decimal) };
       });
       const sum = splits.reduce((a, s) => a + s.share, 0);
       if (sum !== amount) throw new AppError(`Split shares don't add up to the amount in ${where}`);

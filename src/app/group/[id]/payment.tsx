@@ -2,6 +2,7 @@ import { useLayoutEffect, useState } from 'react';
 import { Text, View } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Button, Chip, Field, Loading, Screen, SectionTitle } from '@/components/ui';
+import { DateField } from '@/components/Calendar';
 import { useGroup } from '@/lib/useGroup';
 import { createTransaction, updateTransaction } from '@/data/repo';
 import { GroupSummary } from '@/data/types';
@@ -85,7 +86,7 @@ function PaymentForm({ params, data }: { params: PayParams; data: GroupSummary }
           ))}
       </View>
       <Field label={`Amount (${currencySymbol(cur).trim()})`} value={amountText} onChangeText={setAmountText} keyboardType="decimal-pad" placeholder="0.00" testID="pay-amount" />
-      <Field label="Date (YYYY-MM-DD)" value={date} onChangeText={setDate} />
+      <DateField label="Date" value={date} onChange={setDate} />
       <Field label="Note (optional)" value={note} onChangeText={setNote} />
       <Button title={editing ? 'Save changes' : 'Save payment'} onPress={save} loading={saving} testID="pay-save" />
     </Screen>

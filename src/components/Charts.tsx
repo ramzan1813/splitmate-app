@@ -11,7 +11,10 @@ export function HBarList({ rows, format, testID }: { rows: { label: string; valu
   const max = Math.max(1, ...rows.map((r) => r.value));
   return (
     <View testID={testID}>
-      {rows.map((r) => (
+      {rows.map((r) => {
+        const pct = (r.value / max) * 100;
+        const min = r.value > 0 ? 4 : 0;
+        return (
         <View key={r.label} style={{ marginBottom: 12 }} accessible accessibilityLabel={`${r.label}: ${format(r.value)}${r.sub ? `, ${r.sub}` : ''}`}>
           <View style={{ flexDirection: 'row', marginBottom: 4 }}>
             {r.color ? <View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: r.color, marginRight: 8, marginTop: 4 }} /> : null}
@@ -22,10 +25,11 @@ export function HBarList({ rows, format, testID }: { rows: { label: string; valu
             {r.sub ? <Text style={{ color: colors.muted, width: 56, textAlign: 'right' }}>{r.sub}</Text> : null}
           </View>
           <View style={{ height: 8, backgroundColor: barTrack, borderRadius: 4 }}>
-            <View style={{ width: `${(r.value / max) * 100}%`, minWidth: r.value > 0 ? 4 : 0, height: 8, backgroundColor: barColor, borderRadius: 4 }} />
+            <View style={{ width: `${pct}%`, minWidth: min, height: 8, backgroundColor: barColor, borderRadius: 4 }} />
           </View>
         </View>
-      ))}
+        );
+      })}
     </View>
   );
 }
@@ -41,7 +45,9 @@ export function ColumnChart({ data, format, height = 140, highlightLast = true }
         {shown !== null && data[shown] ? `${data[shown]!.label}: ${format(data[shown]!.value)}` : ' '}
       </Text>
       <View style={{ flexDirection: 'row', alignItems: 'flex-end', height, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-        {data.map((d, i) => (
+        {data.map((d, i) => {
+          const barHeight = d.value > 0 ? Math.max(3, (d.value / max) * (height - 4)) : 0;
+          return (
           <Pressable
             key={d.label + i}
             onPress={() => setSel(sel === i ? null : i)}
@@ -53,7 +59,7 @@ export function ColumnChart({ data, format, height = 140, highlightLast = true }
               style={{
                 width: '70%',
                 maxWidth: 34,
-                height: d.value > 0 ? Math.max(3, (d.value / max) * (height - 4)) : 0,
+                height: barHeight,
                 backgroundColor: barColor,
                 opacity: shown === null || shown === i ? 1 : 0.45,
                 borderTopLeftRadius: 4,
@@ -61,7 +67,8 @@ export function ColumnChart({ data, format, height = 140, highlightLast = true }
               }}
             />
           </Pressable>
-        ))}
+          );
+        })}
       </View>
       <View style={{ flexDirection: 'row', marginTop: 4 }}>
         {data.map((d, i) => (
@@ -104,12 +111,12 @@ export function StackedBar({ parts, onSelect, selected }: { parts: { label: stri
   const visible = parts.filter((p) => p.value > 0);
   return (
     <View style={{ flexDirection: 'row', height: 12, borderRadius: 6, overflow: 'hidden', gap: 2 }}>
-      {visible.map((p) => (
+      {visible.map(({ label, value: weight, color }) => (
         <Pressable
-          key={p.label}
-          onPress={() => onSelect?.(selected === p.label ? null : p.label)}
-          style={{ flex: p.value, backgroundColor: p.color, opacity: !selected || selected === p.label ? 1 : 0.35 }}
-          accessibilityLabel={`${p.label}: ${Math.round((p.value / total) * 100)}%`}
+          key={label}
+          onPress={() => onSelect?.(selected === label ? null : label)}
+          style={{ flex: weight, backgroundColor: color, opacity: !selected || selected === label ? 1 : 0.35 }}
+          accessibilityLabel={`${label}: ${Math.round((weight / total) * 100)}%`}
         />
       ))}
     </View>

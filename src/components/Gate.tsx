@@ -1,6 +1,7 @@
 // First-launch welcome and the PIN lock screen, shown before the app's screens.
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, Text, View } from 'react-native';
+import { Platform, Text, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Field } from './ui';
 import { PinPad } from './PinPad';
@@ -8,6 +9,7 @@ import { colors } from '@/lib/theme';
 import { useApp } from '@/lib/app';
 import { lockoutRemaining, verifyPin, removePin } from '@/lib/pin';
 import { eraseAllData } from '@/data/repo';
+import { createSampleGroups } from '@/data/samples';
 import { confirm, notify } from '@/lib/dialog';
 
 function Logo() {
@@ -27,20 +29,24 @@ export function Welcome() {
   const [name, setName] = useState('');
   const start = async () => {
     if (!name.trim()) return notify('Your name', 'Enter your name to get started');
+    // example groups show how the app is used; failing to create them must not block getting started
+    await createSampleGroups(name).catch(() => {});
     await setProfileName(name);
   };
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={{ padding: 24, flexGrow: 1, justifyContent: 'center', maxWidth: 480, width: '100%', alignSelf: 'center' }} keyboardShouldPersistTaps="handled">
-          <Logo />
-          <Text style={{ color: colors.text, fontSize: 15, marginBottom: 16, textAlign: 'center' }}>
-            Everything stays on this phone. No account, no internet needed.
-          </Text>
-          <Field label="What should we call you?" value={name} onChangeText={setName} placeholder="Your name" onSubmitEditing={start} testID="welcome-name" />
-          <Button title="Get started" onPress={start} testID="welcome-start" />
-        </ScrollView>
-      </KeyboardAvoidingView>
+      <KeyboardAwareScrollView
+        contentContainerStyle={{ padding: 24, flexGrow: 1, justifyContent: 'center', maxWidth: 480, width: '100%', alignSelf: 'center' }}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={80}
+      >
+        <Logo />
+        <Text style={{ color: colors.text, fontSize: 15, marginBottom: 16, textAlign: 'center' }}>
+          Everything stays on this phone. No account, no internet needed.
+        </Text>
+        <Field label="What should we call you?" value={name} onChangeText={setName} placeholder="Your name" onSubmitEditing={start} testID="welcome-name" />
+        <Button title="Get started" onPress={start} testID="welcome-start" />
+      </KeyboardAwareScrollView>
     </SafeAreaView>
   );
 }

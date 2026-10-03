@@ -26,3 +26,19 @@ export const colorFor = (index: number) => palette[Math.abs(index) % palette.len
 export const OTHER_COLOR = '#9CA3AF';
 
 export const CATEGORIES = ['General', 'Food', 'Travel', 'Stay', 'Shopping', 'Entertainment', 'Fuel', 'Groceries', 'Bills', 'Rent', 'Other'];
+
+const CATEGORY_ICONS: Record<string, string> = {
+  General: '🧾',
+  Food: '🍽️',
+  Travel: '✈️',
+  Stay: '🏨',
+  Shopping: '🛍️',
+  Entertainment: '🎬',
+  Fuel: '⛽',
+  Groceries: '🛒',
+  Bills: '💡',
+  Rent: '🏠',
+  Other: '📦',
+};
+/** Icon for a category; categories the user created get the generic receipt. */
+export const categoryIcon = (category: string) => CATEGORY_ICONS[category] ?? '🧾';

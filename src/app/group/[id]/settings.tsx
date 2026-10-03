@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { ScrollView } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Button, Chip, Field, Loading, Screen, SectionTitle } from '@/components/ui';
+import { Button, Field, Loading, Screen, SectionTitle } from '@/components/ui';
+import { CurrencyPicker } from '@/components/CurrencyPicker';
 import { useGroup } from '@/lib/useGroup';
-import { CURRENCIES, deleteGroup, updateGroup } from '@/data/repo';
+import { deleteGroup, updateGroup } from '@/data/repo';
 import { GroupSummary } from '@/data/types';
 import { confirm, errorMessage, notify } from '@/lib/dialog';
 
@@ -49,11 +49,7 @@ function GroupSettings({ id, data, reload }: { id: string; data: GroupSummary; r
       <Field label="Group name" value={name} onChangeText={setName} testID="settings-name" />
       <Field label="Description" value={description} onChangeText={setDescription} />
       <SectionTitle>Currency</SectionTitle>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
-        {CURRENCIES.map((c) => (
-          <Chip key={c} label={c} active={currency === c} onPress={() => setCurrency(c)} />
-        ))}
-      </ScrollView>
+      <CurrencyPicker value={currency} onChange={setCurrency} />
       <Button title="Save settings" onPress={save} loading={saving} testID="settings-save" />
       <SectionTitle>Danger zone</SectionTitle>
       <Button title="Delete group" variant="danger" onPress={remove} testID="delete-group" />

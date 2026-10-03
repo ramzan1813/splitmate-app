@@ -2,9 +2,11 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { AppProvider, useApp } from '@/lib/app';
 import { Loading } from '@/components/ui';
 import { LockScreen, Welcome } from '@/components/Gate';
+import { DialogHost } from '@/components/Dialog';
 import { colors } from '@/lib/theme';
 
 function Root() {
@@ -48,10 +50,13 @@ function Root() {
 export default function RootLayout() {
   return (
     <SafeAreaProvider>
-      <AppProvider>
-        <StatusBar style="light" />
-        <Root />
-      </AppProvider>
+      <KeyboardProvider>
+        <AppProvider>
+          <StatusBar style="light" />
+          <Root />
+          <DialogHost />
+        </AppProvider>
+      </KeyboardProvider>
     </SafeAreaProvider>
   );
 }
