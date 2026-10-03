@@ -1,5 +1,5 @@
 import { useCallback, useLayoutEffect, useState } from 'react';
-import { FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
+import { FlatList, Platform, Pressable, RefreshControl, Text, View } from 'react-native';
 import { useFocusEffect, useNavigation, useRouter } from 'expo-router';
 import { Avatar, Button, Card, Empty, HeaderButton, Loading, Row } from '@/components/ui';
 import { listGroups } from '@/data/repo';
@@ -20,7 +20,7 @@ export default function Home() {
   useLayoutEffect(() => {
     nav.setOptions({
       headerRight: () => (
-        <Row style={{ alignItems: 'center' }}>
+        <Row style={{ alignItems: 'center', gap: 4 }}>
           <HeaderButton
             title="Insights"
             icon="📊"
@@ -29,7 +29,6 @@ export default function Home() {
             accessibilityLabel="Insights"
           />
           <HeaderButton
-            title="Settings"
             icon="⚙"
             onPress={() => router.push('/settings')}
             testID="open-app-settings"
@@ -75,7 +74,7 @@ export default function Home() {
       <FlatList
         data={groups}
         keyExtractor={(g) => String(g.id)}
-        contentContainerStyle={{ padding: 16, paddingBottom: 140, flexGrow: 1, maxWidth: 760, width: '100%', alignSelf: 'center' }}
+        contentContainerStyle={{ padding: 16, paddingBottom: 110, flexGrow: 1, maxWidth: 760, width: '100%', alignSelf: 'center' }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -131,9 +130,38 @@ export default function Home() {
           </Pressable>
         )}
       />
-      <View style={{ position: 'absolute', left: 16, right: 16, bottom: 24, flexDirection: 'row', gap: 12 }}>
-        <Button title="Import / Scan QR" variant="outline" onPress={() => router.push('/import')} style={{ flex: 1, backgroundColor: colors.white }} testID="import-group" />
-        <Button title="+ New group" onPress={() => router.push('/group/new')} style={{ flex: 1 }} testID="new-group" />
+
+      {/* Responsive Bottom Floating Action Bar */}
+      <View
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          alignItems: 'center',
+          paddingHorizontal: 16,
+          paddingBottom: Platform.OS === 'ios' ? 28 : 16,
+          paddingTop: 10,
+          backgroundColor: 'rgba(241, 245, 249, 0.96)',
+          borderTopWidth: 1,
+          borderTopColor: 'rgba(203, 213, 225, 0.7)',
+        }}
+      >
+        <View style={{ width: '100%', maxWidth: 760, flexDirection: 'row', gap: 12 }}>
+          <Button
+            title="Import / Scan QR"
+            variant="outline"
+            onPress={() => router.push('/import')}
+            style={{ flex: 1, backgroundColor: colors.white }}
+            testID="import-group"
+          />
+          <Button
+            title="+ New group"
+            onPress={() => router.push('/group/new')}
+            style={{ flex: 1 }}
+            testID="new-group"
+          />
+        </View>
       </View>
     </View>
   );

@@ -27,7 +27,8 @@ function Root() {
       screenOptions={{
         headerStyle: { backgroundColor: colors.primary },
         headerTintColor: colors.white,
-        headerTitleStyle: { fontWeight: '700' },
+        headerTitleStyle: { fontWeight: '700', fontSize: 17 },
+        headerTitleAlign: 'left',
         contentStyle: { backgroundColor: colors.bg },
       }}
     >

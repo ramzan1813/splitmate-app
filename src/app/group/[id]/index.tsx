@@ -1,5 +1,5 @@
 import { useLayoutEffect, useMemo, useState } from 'react';
-import { Modal, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
+import { Modal, Platform, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Avatar, Button, Card, Empty, HeaderButton, Loading, Row, Segmented, SectionTitle } from '@/components/ui';
 import { PieChart } from '@/components/PieChart';
@@ -28,7 +28,7 @@ export default function GroupScreen() {
     nav.setOptions({
       title: data?.group.name ?? '',
       headerRight: () => (
-        <Row style={{ alignItems: 'center' }}>
+        <Row style={{ alignItems: 'center', gap: 4 }}>
           <HeaderButton
             title="Invite"
             icon="🔗"
@@ -37,10 +37,10 @@ export default function GroupScreen() {
             testID="open-invite"
           />
           <HeaderButton
-            title="Members"
             icon="👥"
             onPress={() => router.push(`/group/${id}/members`)}
             testID="open-members"
+            accessibilityLabel="Members"
           />
           <HeaderButton
             icon="⚙"
@@ -238,12 +238,38 @@ export default function GroupScreen() {
         </Row>
       </ScrollView>
 
-      {(
-        <View style={{ position: 'absolute', left: 16, right: 16, bottom: 24, flexDirection: 'row', gap: 12 }}>
-          <Button title="Record payment" variant="outline" onPress={() => router.push(`/group/${id}/payment`)} style={{ flex: 1, backgroundColor: '#fff' }} testID="add-payment" />
-          <Button title="+ Add expense" onPress={() => router.push(`/group/${id}/expense`)} style={{ flex: 1 }} testID="add-expense" />
+      {/* Responsive Bottom Floating Action Bar */}
+      <View
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          alignItems: 'center',
+          paddingHorizontal: 16,
+          paddingBottom: Platform.OS === 'ios' ? 28 : 16,
+          paddingTop: 10,
+          backgroundColor: 'rgba(241, 245, 249, 0.96)',
+          borderTopWidth: 1,
+          borderTopColor: 'rgba(203, 213, 225, 0.7)',
+        }}
+      >
+        <View style={{ width: '100%', maxWidth: 760, flexDirection: 'row', gap: 12 }}>
+          <Button
+            title="Record payment"
+            variant="outline"
+            onPress={() => router.push(`/group/${id}/payment`)}
+            style={{ flex: 1, backgroundColor: '#fff' }}
+            testID="add-payment"
+          />
+          <Button
+            title="+ Add expense"
+            onPress={() => router.push(`/group/${id}/expense`)}
+            style={{ flex: 1 }}
+            testID="add-expense"
+          />
         </View>
-      )}
+      </View>
 
       {/* Group Invite & E2EE Sync Modal */}
       <Modal visible={showInviteModal} transparent animationType="slide" onRequestClose={() => setShowInviteModal(false)}>
