@@ -7,6 +7,7 @@ export interface Group {
   name: string;
   description: string;
   currency: string;
+  syncKey?: string; // 256-bit AES encryption key for E2EE sync
   createdAt: string;
   updatedAt: string;
 }
@@ -22,6 +23,7 @@ export interface Member {
   id: number;
   name: string;
   isMe: boolean;
+  memberUid?: string;
 }
 
 export interface Split {
@@ -32,6 +34,7 @@ export interface Split {
 
 export interface Transaction {
   id: number;
+  uid?: string; // unique ID across peers
   groupId: number;
   type: TxType;
   title: string;
@@ -41,6 +44,9 @@ export interface Transaction {
   category: string;
   note: string;
   date: string; // YYYY-MM-DD
+  authorId?: string;
+  authorName?: string;
+  updatedTs?: number;
   splits: Split[];
   createdAt: string;
   updatedAt: string;
@@ -85,6 +91,28 @@ export interface TxInput {
   category?: string;
   note?: string;
   date?: string;
+}
+
+export type SyncAction = 'UPSERT_TX' | 'DELETE_TX' | 'UPDATE_GROUP' | 'JOIN_GROUP';
+
+export interface SyncEvent<T = unknown> {
+  eventId: string;
+  groupUid: string;
+  authorId: string;
+  authorName: string;
+  timestamp: number;
+  action: SyncAction;
+  payload: T;
+}
+
+export interface SyncNotification {
+  id: number;
+  groupUid: string;
+  authorName: string;
+  title: string;
+  message: string;
+  read: boolean;
+  createdAt: string;
 }
 
 export class AppError extends Error {}

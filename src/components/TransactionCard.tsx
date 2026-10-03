@@ -54,6 +54,7 @@ function ExpenseCard({ t, currency: cur, myMemberId, memberName, memberIndex }: 
         <Row style={{ flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
           <Tag text={t.category} />
           <Tag text={`${SPLIT_LABELS[t.splitType]} · ${t.splits.length} ${t.splits.length === 1 ? 'person' : 'people'}`} />
+          {t.authorName ? <Tag text={`Added by ${t.authorName}`} /> : null}
         </Row>
 
         <Row style={{ marginTop: 12 }}>
@@ -148,6 +149,10 @@ function PaymentCard({ t, currency: cur, myMemberId, memberName, memberIndex }: 
           </Row>
         </Row>
 
+        <Row style={{ flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+          <Tag text="Payment" />
+          {t.authorName ? <Tag text={`Recorded by ${t.authorName}`} /> : null}
+        </Row>
         {t.title && t.title !== 'Payment' ? <Text style={{ color: colors.text, marginTop: 10 }}>{t.title}</Text> : null}
         {t.note ? (
           <Text style={{ color: colors.muted, fontStyle: 'italic', marginTop: 8 }} numberOfLines={3}>

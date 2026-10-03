@@ -11,7 +11,7 @@ export interface DB {
   withTransactionAsync(task: () => Promise<void>): Promise<void>;
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -60,6 +60,39 @@ const MIGRATIONS: Record<number, string> = {
     CREATE INDEX IF NOT EXISTS idx_tx_group ON transactions(group_id);
     CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
     CREATE INDEX IF NOT EXISTS idx_splits_member ON transaction_splits(member_id);
+  `,
+  2: `
+    ALTER TABLE groups ADD COLUMN sync_key TEXT NOT NULL DEFAULT '';
+    ALTER TABLE transactions ADD COLUMN uid TEXT NOT NULL DEFAULT '';
+    ALTER TABLE transactions ADD COLUMN author_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE transactions ADD COLUMN author_name TEXT NOT NULL DEFAULT '';
+    ALTER TABLE transactions ADD COLUMN updated_ts INTEGER NOT NULL DEFAULT 0;
+
+    CREATE TABLE IF NOT EXISTS sync_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT NOT NULL UNIQUE,
+      group_uid TEXT NOT NULL,
+      author_id TEXT NOT NULL,
+      author_name TEXT NOT NULL,
+      timestamp INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      synced INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sync_events_group ON sync_events(group_uid);
+    CREATE INDEX IF NOT EXISTS idx_sync_events_synced ON sync_events(synced);
+
+    CREATE TABLE IF NOT EXISTS sync_notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_uid TEXT NOT NULL,
+      author_name TEXT NOT NULL,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      read INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sync_notif_group ON sync_notifications(group_uid);
   `,
 };
 

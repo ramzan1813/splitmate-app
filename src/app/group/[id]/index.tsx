@@ -1,12 +1,14 @@
 import { useLayoutEffect, useMemo, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
+import { Modal, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Avatar, Button, Card, Empty, Loading, Row, Segmented, SectionTitle } from '@/components/ui';
 import { PieChart } from '@/components/PieChart';
 import { TransactionCard } from '@/components/TransactionCard';
+import { QRCode } from '@/components/QRCode';
 import { useGroup } from '@/lib/useGroup';
 import { money } from '@/lib/format';
 import { colors, colorFor } from '@/lib/theme';
+import { notify } from '@/lib/dialog';
 
 type Tab = 'transactions' | 'balances' | 'settle' | 'chart';
 
@@ -14,20 +16,24 @@ export default function GroupScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const nav = useNavigation();
-  const { data, error, reload, memberName, memberIndex } = useGroup(id);
+  const { data, error, reload, memberName, memberIndex, isConnected } = useGroup(id);
   const [tab, setTab] = useState<Tab>('transactions');
   const [refreshing, setRefreshing] = useState(false);
   const [chartMode, setChartMode] = useState<'paid' | 'share' | 'category'>('share');
+  const [showInviteModal, setShowInviteModal] = useState(false);
 
   useLayoutEffect(() => {
     nav.setOptions({
       title: data?.group.name ?? '',
       headerRight: () => (
         <Row>
-          <Pressable onPress={() => router.push(`/group/${id}/members`)} style={{ paddingHorizontal: 8 }} testID="open-members">
+          <Pressable onPress={() => setShowInviteModal(true)} style={{ paddingHorizontal: 6 }} testID="open-invite">
+            <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700', backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12 }}>Invite</Text>
+          </Pressable>
+          <Pressable onPress={() => router.push(`/group/${id}/members`)} style={{ paddingHorizontal: 6 }} testID="open-members">
             <Text style={{ color: '#fff', fontSize: 15, fontWeight: '600' }}>Members</Text>
           </Pressable>
-          <Pressable onPress={() => router.push(`/group/${id}/settings`)} style={{ paddingHorizontal: 8 }} testID="open-settings">
+          <Pressable onPress={() => router.push(`/group/${id}/settings`)} style={{ paddingHorizontal: 6 }} testID="open-settings">
             <Text style={{ color: '#fff', fontSize: 20 }}>⚙</Text>
           </Pressable>
         </Row>
@@ -37,6 +43,11 @@ export default function GroupScreen() {
 
   const cur = data?.group.currency ?? 'USD';
   const me = data?.stats.find((s) => s.memberId === data.myMemberId);
+
+  const inviteLink = useMemo(() => {
+    if (!data?.group?.uid) return '';
+    return `splitmate://join?uid=${data.group.uid}&key=${data.group.syncKey || ''}&name=${encodeURIComponent(data.group.name)}&cur=${data.group.currency}`;
+  }, [data]);
 
   const chartData = useMemo(() => {
     if (!data) return [];
@@ -73,7 +84,13 @@ export default function GroupScreen() {
       >
         {/* Summary header */}
         <View style={{ backgroundColor: colors.primary, borderRadius: 16, padding: 16, marginBottom: 14 }}>
-          <Text style={{ color: colors.primaryLight, fontSize: 13 }}>Total group spending</Text>
+          <Row style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={{ color: colors.primaryLight, fontSize: 13 }}>Total group spending</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 }}>
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: isConnected ? '#10B981' : '#F59E0B', marginRight: 6 }} />
+              <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>{isConnected ? 'E2EE Synced' : 'Sync Active'}</Text>
+            </View>
+          </Row>
           <Text style={{ color: '#fff', fontSize: 28, fontWeight: '800' }} testID="total-spending">
             {money(data.totals.totalExpenses, cur)}
           </Text>
@@ -214,6 +231,32 @@ export default function GroupScreen() {
           <Button title="+ Add expense" onPress={() => router.push(`/group/${id}/expense`)} style={{ flex: 1 }} testID="add-expense" />
         </View>
       )}
+
+      {/* Group Invite & E2EE Sync Modal */}
+      <Modal visible={showInviteModal} transparent animationType="slide" onRequestClose={() => setShowInviteModal(false)}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+          <View style={{ backgroundColor: '#fff', borderRadius: 20, padding: 24, maxWidth: 360, width: '100%', alignItems: 'center' }}>
+            <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: 4 }}>Group Invite & Sync</Text>
+            <Text style={{ fontSize: 13, color: colors.muted, textAlign: 'center', marginBottom: 16 }}>
+              Scan this QR code with another phone to join and sync <Text style={{ fontWeight: '700' }}>{data.group.name}</Text> end-to-end encrypted.
+            </Text>
+
+            {inviteLink ? <QRCode value={inviteLink} size={210} /> : null}
+
+            <View style={{ marginTop: 16, width: '100%' }}>
+              <Button
+                title="Copy Invite Link"
+                variant="outline"
+                onPress={() => {
+                  notify('Invite Link Copied', inviteLink);
+                }}
+                style={{ marginBottom: 8 }}
+              />
+              <Button title="Done" onPress={() => setShowInviteModal(false)} />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }

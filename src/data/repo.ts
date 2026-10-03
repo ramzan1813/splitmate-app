@@ -1,9 +1,12 @@
 // All reads/writes of app data. Money is stored as integer cents.
 import { getDb, Param } from './db';
 import { computeShares, memberStats, suggestSettlements } from './logic';
-import { AppError, Group, GroupListItem, GroupSummary, Member, Split, Transaction, TxInput } from './types';
+import { AppError, Group, GroupListItem, GroupSummary, Member, Split, Transaction, TxInput, TxType } from './types';
 import { CATEGORIES } from '../lib/theme';
 import { CURRENCIES } from '../lib/currencies';
+import { generateGroupKey } from '../lib/crypto';
+import { getIdentity } from '../lib/identity';
+import { createSyncEvent, SyncTxPayload } from './sync';
 
 export { CURRENCIES };
 export const LIMITS = { name: 80, title: 120, note: 1000, description: 300, category: 40, maxAmount: 1_000_000_000 };
@@ -32,6 +35,7 @@ interface GroupRow {
   name: string;
   description: string;
   currency: string;
+  sync_key?: string;
   created_at: string;
   updated_at: string;
 }
@@ -41,12 +45,14 @@ const mapGroup = (g: GroupRow): Group => ({
   name: g.name,
   description: g.description,
   currency: g.currency,
+  syncKey: g.sync_key || '',
   createdAt: g.created_at,
   updatedAt: g.updated_at,
 });
 
 interface TxRow {
   id: number;
+  uid?: string;
   group_id: number;
   type: 'expense' | 'payment';
   title: string;
@@ -56,6 +62,9 @@ interface TxRow {
   category: string;
   note: string;
   date: string;
+  author_id?: string;
+  author_name?: string;
+  updated_ts?: number;
   created_at: string;
   updated_at: string;
 }
@@ -144,6 +153,7 @@ export async function getTransactions(groupId?: number): Promise<Transaction[]> 
   }
   return rows.map((t) => ({
     id: t.id,
+    uid: t.uid || `tx_${t.id}`,
     groupId: t.group_id,
     type: t.type,
     title: t.title,
@@ -153,6 +163,9 @@ export async function getTransactions(groupId?: number): Promise<Transaction[]> 
     category: t.category,
     note: t.note,
     date: t.date,
+    authorId: t.author_id,
+    authorName: t.author_name,
+    updatedTs: t.updated_ts,
     createdAt: t.created_at,
     updatedAt: t.updated_at,
     splits: byTx.get(t.id) || [],
@@ -209,29 +222,31 @@ export async function getGroupSummary(id: number): Promise<GroupSummary> {
   };
 }
 
-export async function createGroup(input: { name: string; description?: string; currency?: string; myName: string; members?: string[] }) {
+export async function createGroup(input: { name: string; description?: string; currency?: string; myName: string; members?: string[]; syncKey?: string }) {
   const name = clean(input.name, LIMITS.name);
   if (!name) throw new AppError('Group name is required');
   const myName = clean(input.myName, LIMITS.name) || 'Me';
   const currency = CURRENCIES.includes(String(input.currency)) ? String(input.currency) : 'USD';
+  const syncKey = input.syncKey || generateGroupKey();
   const others = (input.members || []).map((m) => clean(m, LIMITS.name)).filter(Boolean);
   const db = await getDb();
   let gid = 0;
   await db.withTransactionAsync(async () => {
     const ts = now();
-    const r = await db.runAsync('INSERT INTO groups (uid, name, description, currency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [
-      newUid(),
-      name,
-      clean(input.description, LIMITS.description),
-      currency,
-      ts,
-      ts,
-    ]);
+    const r = await db.runAsync(
+      'INSERT INTO groups (uid, name, description, currency, sync_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [newUid(), name, clean(input.description, LIMITS.description), currency, syncKey, ts, ts]
+    );
     gid = r.lastInsertRowId;
     await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 1, ?)', [gid, myName, ts]);
     for (const n of others) await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [gid, n, ts]);
   });
   return getGroup(gid);
+}
+
+export async function setGroupSyncKey(id: number, syncKey: string) {
+  const db = await getDb();
+  await db.runAsync('UPDATE groups SET sync_key = ?, updated_at = ? WHERE id = ?', [syncKey, now(), id]);
 }
 
 export async function updateGroup(id: number, input: { name?: string; description?: string; currency?: string }) {
@@ -336,16 +351,21 @@ async function validateTx(groupId: number, body: TxInput) {
 }
 
 export async function createTransaction(groupId: number, body: TxInput) {
-  await getGroup(groupId);
+  const group = await getGroup(groupId);
+  const members = await getMembers(groupId);
+  const memberMap = new Map(members.map((m) => [m.id, m.name]));
   const t = await validateTx(groupId, body);
+  const identity = await getIdentity();
   const db = await getDb();
   let id = 0;
+  const txUid = `tx_${newUid()}`;
+  const updatedTs = Date.now();
   await db.withTransactionAsync(async () => {
     const ts = now();
     const r = await db.runAsync(
-      `INSERT INTO transactions (group_id, type, title, amount, paid_by, split_type, category, note, date, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [groupId, t.type, t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, ts, ts]
+      `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, updated_ts, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [groupId, txUid, t.type, t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, identity.id, identity.name, updatedTs, ts, ts]
     );
     id = r.lastInsertRowId;
     for (const s of t.shares) {
@@ -353,18 +373,41 @@ export async function createTransaction(groupId: number, body: TxInput) {
     }
   });
   await touch(groupId);
+
+  // Broadcast sync event
+  const payload: SyncTxPayload = {
+    txUid,
+    type: t.type as TxType,
+    title: t.title,
+    amount: t.amount,
+    paidByName: memberMap.get(t.paidBy) || 'Unknown',
+    splitType: t.splitType,
+    category: t.category,
+    note: t.note,
+    date: t.date,
+    splits: t.shares.map((s) => ({ memberName: memberMap.get(s.memberId) || 'Unknown', value: s.value, share: s.share })),
+    updatedTs,
+  };
+  await createSyncEvent(group.uid, 'UPSERT_TX', payload);
+
   return id;
 }
 
 export async function updateTransaction(groupId: number, txId: number, body: TxInput) {
+  const group = await getGroup(groupId);
+  const members = await getMembers(groupId);
+  const memberMap = new Map(members.map((m) => [m.id, m.name]));
   const db = await getDb();
   const existing = await db.getFirstAsync<TxRow>('SELECT * FROM transactions WHERE id = ? AND group_id = ?', [txId, groupId]);
   if (!existing) throw new AppError('Transaction not found');
   const t = await validateTx(groupId, { ...body, type: existing.type });
+  const identity = await getIdentity();
+  const txUid = existing.uid || `tx_${txId}`;
+  const updatedTs = Date.now();
   await db.withTransactionAsync(async () => {
     await db.runAsync(
-      'UPDATE transactions SET title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, updated_at = ? WHERE id = ?',
-      [t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, now(), txId]
+      'UPDATE transactions SET title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, author_id = ?, author_name = ?, updated_ts = ?, updated_at = ? WHERE id = ?',
+      [t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, identity.id, identity.name, updatedTs, now(), txId]
     );
     await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [txId]);
     for (const s of t.shares) {
@@ -372,14 +415,35 @@ export async function updateTransaction(groupId: number, txId: number, body: TxI
     }
   });
   await touch(groupId);
+
+  const payload: SyncTxPayload = {
+    txUid,
+    type: t.type as TxType,
+    title: t.title,
+    amount: t.amount,
+    paidByName: memberMap.get(t.paidBy) || 'Unknown',
+    splitType: t.splitType,
+    category: t.category,
+    note: t.note,
+    date: t.date,
+    splits: t.shares.map((s) => ({ memberName: memberMap.get(s.memberId) || 'Unknown', value: s.value, share: s.share })),
+    updatedTs,
+  };
+  await createSyncEvent(group.uid, 'UPSERT_TX', payload);
 }
 
 export async function deleteTransaction(groupId: number, txId: number) {
+  const group = await getGroup(groupId);
   const db = await getDb();
+  const existing = await db.getFirstAsync<TxRow>('SELECT uid FROM transactions WHERE id = ? AND group_id = ?', [txId, groupId]);
   const r = await db.runAsync('DELETE FROM transactions WHERE id = ? AND group_id = ?', [txId, groupId]);
   if (!r.changes) throw new AppError('Transaction not found');
   await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [txId]);
   await touch(groupId);
+
+  if (existing?.uid) {
+    await createSyncEvent(group.uid, 'DELETE_TX', { txUid: existing.uid });
+  }
 }
 
 /** Wipes every group, member, transaction and setting. */

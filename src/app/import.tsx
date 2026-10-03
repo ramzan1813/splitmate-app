@@ -1,17 +1,18 @@
 import { useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Avatar, Button, Card, Chip, Row, Screen, SectionTitle } from '@/components/ui';
+import { Avatar, Button, Card, Chip, Field, Row, Screen, SectionTitle } from '@/components/ui';
 import { ExportFile, findExisting, importFile, parseExport } from '@/data/backup';
 import { pickTextFile } from '@/lib/files';
 import { money } from '@/lib/format';
 import { colors } from '@/lib/theme';
 import { confirm, errorMessage, notify } from '@/lib/dialog';
 import { useApp } from '@/lib/app';
+import { createGroup, listGroups } from '@/data/repo';
 
 export default function ImportScreen() {
   const router = useRouter();
-  const { suspendLock } = useApp();
+  const { suspendLock, profileName } = useApp();
   const [file, setFile] = useState<ExportFile | null>(null);
   const [fileName, setFileName] = useState('');
   const [existing, setExisting] = useState<Record<string, number>>({});
@@ -19,6 +20,51 @@ export default function ImportScreen() {
   const [onDuplicate, setOnDuplicate] = useState<'replace' | 'copy'>('replace');
   const [eraseFirst, setEraseFirst] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [inviteUrl, setInviteUrl] = useState('');
+  const [joining, setJoining] = useState(false);
+
+  const handleJoinInvite = async () => {
+    const raw = inviteUrl.trim();
+    if (!raw) return;
+    try {
+      setJoining(true);
+      // parse splitmate://join?uid=...&key=...&name=...
+      const queryIdx = raw.indexOf('?');
+      const queryString = queryIdx !== -1 ? raw.slice(queryIdx + 1) : raw;
+      const params = new URLSearchParams(queryString);
+      const uid = params.get('uid');
+      const key = params.get('key');
+      const name = params.get('name') || 'Shared Group';
+      const cur = params.get('cur') || 'USD';
+
+      if (!uid || !key) {
+        throw new Error('Invalid invite link. Missing group ID or sync key.');
+      }
+
+      // Check if already in groups
+      const all = await listGroups();
+      const match = all.find((g) => g.uid === uid);
+      if (match) {
+        notify('Already Joined', `You are already part of ${match.name}.`);
+        router.replace(`/group/${match.id}`);
+        return;
+      }
+
+      const newG = await createGroup({
+        name,
+        currency: cur,
+        myName: profileName || 'Me',
+        syncKey: key,
+      });
+
+      notify('Joined Group', `Connected to ${name} with E2EE sync.`);
+      router.replace(`/group/${newG.id}`);
+    } catch (e) {
+      notify("Couldn't join", errorMessage(e));
+    } finally {
+      setJoining(false);
+    }
+  };
 
   const pick = async () => {
     try {
@@ -57,6 +103,23 @@ export default function ImportScreen() {
 
   return (
     <Screen style={{ maxWidth: 640, width: '100%', alignSelf: 'center' }}>
+      <Card style={{ marginBottom: 18 }}>
+        <Text style={{ fontWeight: '800', fontSize: 16, marginBottom: 4 }}>Join via Invite Link / QR</Text>
+        <Text style={{ color: colors.muted, fontSize: 13, marginBottom: 12 }}>
+          Paste an invite link (e.g. splitmate://join?...) shared by a friend to join and sync in real time.
+        </Text>
+        <TextInput
+          placeholder="Paste invite link here..."
+          value={inviteUrl}
+          onChangeText={setInviteUrl}
+          style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: 10, marginBottom: 10, backgroundColor: '#fff' }}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <Button title="Join Group" onPress={handleJoinInvite} loading={joining} disabled={!inviteUrl.trim()} />
+      </Card>
+
+      <SectionTitle>Import Backup or JSON File</SectionTitle>
       <Text style={{ color: colors.muted, marginBottom: 12 }}>
         Import a group file a friend shared with you, or restore a backup you exported earlier (files ending in .splitmate.json).
       </Text>
