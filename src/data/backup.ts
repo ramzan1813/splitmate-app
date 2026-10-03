@@ -102,9 +102,8 @@ const int = (v: unknown, field: string, min = 0) => {
   if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < min) throw new AppError(`Invalid file: ${field} must be a whole number`);
   return v;
 };
-/** Money from a file as integer cents. Version 1 files hold cents; later versions hold amounts like 1500 or 12.5. */
-const moneyIn = (v: unknown, field: string, min: number, decimal: boolean) => {
-  if (!decimal) return int(v, field, min);
+/** Money from a file as integer cents. Standard amounts like 1500 or 12.5 are converted to cents. */
+const moneyIn = (v: unknown, field: string, min = 0) => {
   const n = typeof v === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(v) ? Number(v) : v;
   if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) throw new AppError(`Invalid file: ${field} must be a positive amount`);
   const cents = Math.round(n * 100);
@@ -123,11 +122,10 @@ export function parseExport(text: string): ExportFile {
   } catch {
     throw new AppError('This is not a SplitMate file (invalid JSON)');
   }
-  if (!isObj(raw) || raw.format !== FORMAT) throw new AppError('This is not a SplitMate file');
-  if (typeof raw.version !== 'number' || raw.version > FORMAT_VERSION) {
+  if (!isObj(raw) || (raw.format && raw.format !== FORMAT)) throw new AppError('This is not a SplitMate file');
+  if (typeof raw.version === 'number' && raw.version > FORMAT_VERSION) {
     throw new AppError('This file was made by a newer version of SplitMate. Please update the app.');
   }
-  const decimal = raw.version >= 2;
   if (!Array.isArray(raw.groups) || raw.groups.length === 0) throw new AppError('The file contains no groups');
   if (raw.groups.length > MAX_GROUPS) throw new AppError('The file contains too many groups');
 
@@ -152,7 +150,7 @@ export function parseExport(text: string): ExportFile {
       if (!isObj(t)) throw new AppError(`Invalid ${where}`);
       const type: 'expense' | 'payment' | null = t.type === 'payment' ? 'payment' : t.type === 'expense' ? 'expense' : null;
       if (!type) throw new AppError(`Invalid type in ${where}`);
-      const amount = moneyIn(t.amount, `amount in ${where}`, 1, decimal);
+      const amount = moneyIn(t.amount, `amount in ${where}`, 1);
       if (amount > LIMITS.maxAmount * 100) throw new AppError(`Amount too large in ${where}`);
       const paidBy = int(t.paidBy, `payer in ${where}`, 1);
       if (!refs.has(paidBy)) throw new AppError(`Unknown payer in ${where}`);
@@ -168,12 +166,25 @@ export function parseExport(text: string): ExportFile {
         if (!refs.has(member) || seen.has(member)) throw new AppError(`Invalid split member in ${where}`);
         seen.add(member);
         let value = typeof s.value === 'number' && Number.isFinite(s.value) && s.value >= 0 ? s.value : NaN;
-        if (Number.isNaN(value)) throw new AppError(`Invalid split value in ${where}`);
-        if (decimal && splitType === 'unequal') value = moneyIn(value, `split value in ${where}`, 0, true);
-        return { member, value, share: moneyIn(s.share, `split share in ${where}`, 0, decimal) };
+        if (Number.isNaN(value)) {
+          if (splitType === 'equal') value = 1;
+          else throw new AppError(`Invalid split value in ${where}`);
+        }
+        if (splitType === 'unequal') value = moneyIn(value, `split value in ${where}`, 0);
+        const share = s.share !== undefined ? moneyIn(s.share, `split share in ${where}`, 0) : 0;
+        return { member, value, share };
       });
       const sum = splits.reduce((a, s) => a + s.share, 0);
-      if (sum !== amount) throw new AppError(`Split shares don't add up to the amount in ${where}`);
+      if (sum !== amount) {
+        const computed = computeShares(
+          amount,
+          splitType,
+          splits.map((s) => ({ memberId: s.member, value: s.value }))
+        );
+        for (let i = 0; i < splits.length; i++) {
+          splits[i]!.share = computed[i]!.share;
+        }
+      }
       if (type === 'payment' && (splits.length !== 1 || splits[0]!.member === paidBy)) throw new AppError(`Invalid payment in ${where}`);
       return {
         type,

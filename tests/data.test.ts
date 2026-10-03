@@ -120,7 +120,7 @@ test('export -> import round trip, duplicates and "me"', async () => {
   assert.equal((await repo.listGroups()).length, 2);
 });
 
-test('files store normal amounts; old cent-based files still import', async () => {
+test('files store normal amounts and import with exact currency precision', async () => {
   const { g } = await seed();
   const file = await exportGroup(g.id);
   assert.equal(file.version, 2);
@@ -131,8 +131,10 @@ test('files store normal amounts; old cent-based files still import', async () =
   const group = (version: number, t: unknown) =>
     JSON.stringify({ format: 'splitmate', version, kind: 'group', groups: [{ uid: 'y', name: 'G', currency: 'PKR', members: [{ ref: 1, name: 'A' }, { ref: 2, name: 'B' }], transactions: [t] }] });
   const tx = { type: 'expense', title: 'Rent', amount: 1500, paidBy: 1, splitType: 'equal', date: '2026-01-01', splits: [{ member: 1, value: 1, share: 750 }, { member: 2, value: 1, share: 750 }] };
-  assert.equal(parseExport(group(2, tx)).groups[0]!.transactions[0]!.amount, 150000); // Rs 1,500.00
-  assert.equal(parseExport(group(1, tx)).groups[0]!.transactions[0]!.amount, 1500); // v1 = cents
+  assert.equal(parseExport(group(2, tx)).groups[0]!.transactions[0]!.amount, 150000); // Rs 1,500.00 -> 150000 cents
+  assert.equal(parseExport(group(1, tx)).groups[0]!.transactions[0]!.amount, 150000); // Rs 1,500.00 -> 150000 cents
+  const largeTx = { ...tx, amount: 15000, splits: [{ member: 1, value: 1, share: 7500 }, { member: 2, value: 1, share: 7500 }] };
+  assert.equal(parseExport(group(2, largeTx)).groups[0]!.transactions[0]!.amount, 1500000); // 15,000 -> 1,500,000 cents ($15,000.00)
   const decimals = { ...tx, amount: '1500.50', splits: [{ member: 1, value: 1, share: 750.25 }, { member: 2, value: 1, share: 750.25 }] };
   assert.equal(parseExport(group(2, decimals)).groups[0]!.transactions[0]!.amount, 150050);
   assert.throws(() => parseExport(group(2, { ...tx, amount: 1500.123 })), /2 decimal/);
