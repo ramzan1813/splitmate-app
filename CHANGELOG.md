@@ -2,6 +2,20 @@
 
 Release notes for each version. The release workflow copies the section matching the version in `app.json` into the GitHub Release.
 
+## 1.2.0 — 2026-10-03
+
+### New
+- **On-Device Cryptographic Accounts & Identity.** No email, password or phone number needed. Your identity and private keys are generated and stored 100% on your device.
+- **End-to-End Encrypted (E2EE) Remote Sync.** Groups now have their own 256-bit AES encryption key. When connected to Wi-Fi or cellular networks, expenses, payments and edits synchronize in real time across group members through a blind, zero-knowledge relay.
+- **QR Code & Deep Link Invites.** Tap **Invite** in any group header to display an instant offline QR code or copy a shareable invite link (`splitmate://join?...`). Friends can scan or paste the link in **Import / Join** to sync automatically.
+- **In-App Sync Notifications & Activity Feed.** Get real-time alerts when friends record an expense, payment, or settlement, viewable in Settings and Group screens.
+- **Transaction Author Badges.** Expense and payment cards clearly display who recorded each transaction (e.g. *Added by Sara*, *Recorded by Bob*).
+- **Standalone Cloudflare Worker Relay.** Includes a zero-knowledge WebSocket relay server in `relay/` that can be deployed for free to Cloudflare Workers in 1 command.
+
+### Improved
+- **Database Schema Migration 2.** Automatically upgrades existing local databases with sync event logs and Lamport timestamp conflict resolution (Last-Write-Wins).
+- **Import Screen.** Enhanced with a dedicated **Join via Invite Link / QR** input alongside JSON file imports.
+
 ## 1.1.0 — 2026-10-03
 
 ### New

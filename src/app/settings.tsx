@@ -246,7 +246,7 @@ export default function AppSettings() {
 
       <SectionTitle>Danger zone</SectionTitle>
       <Button title="Erase all data" variant="danger" onPress={erase} />
-      <Text style={{ color: colors.muted, textAlign: 'center', marginTop: 20, fontSize: 12 }}>SplitMate 1.1.0 · E2EE Sync Edition</Text>
+      <Text style={{ color: colors.muted, textAlign: 'center', marginTop: 20, fontSize: 12 }}>SplitMate 1.2.0 · E2EE Sync Edition</Text>
     </Screen>
   );
 }

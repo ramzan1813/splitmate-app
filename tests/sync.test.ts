@@ -157,3 +157,96 @@ test('sync: delete transaction event deletes row on peer', async () => {
   const txsAfter = await repo.getTransactions(g.id);
   assert.equal(txsAfter.length, 0);
 });
+
+test('identity: generates and persists on-device user account identity', async () => {
+  const { getIdentity, setAccountName, updateRelayUrl } = await import('../src/lib/identity');
+
+  const identity1 = await getIdentity();
+  assert.ok(identity1.id.startsWith('usr_'));
+  assert.ok(identity1.publicKey.length > 0);
+  assert.ok(identity1.secretKey.length > 0);
+
+  // Calling it again returns the same persisted identity
+  const identity2 = await getIdentity();
+  assert.equal(identity2.id, identity1.id);
+  assert.equal(identity2.publicKey, identity1.publicKey);
+
+  // Updating account name and relay url
+  await setAccountName('Alice In Wonderland');
+  await updateRelayUrl('wss://custom-relay.example.com/ws');
+
+  const updatedIdentity = await getIdentity();
+  assert.equal(updatedIdentity.name, 'Alice In Wonderland');
+  assert.equal(updatedIdentity.relayUrl, 'wss://custom-relay.example.com/ws');
+});
+
+test('sync: ignores outdated sync events (Last-Write-Wins conflict resolution)', async () => {
+  const db = createNodeDb();
+  await migrate(db);
+  setDb(db);
+
+  const g = await repo.createGroup({ name: 'Camping', myName: 'Alice' });
+  const [alice] = (await repo.getMembers(g.id)).map((m) => m.id) as [number];
+  await repo.createTransaction(g.id, { type: 'expense', title: 'Tent', amount: 100, paidBy: alice, splits: [{ memberId: alice }] });
+
+  const txs = await repo.getTransactions(g.id);
+  const txUid = txs[0]!.uid!;
+
+  // Event with future timestamp (newer)
+  const newerEvent: SyncEvent<SyncTxPayload> = {
+    eventId: 'evt_newer',
+    groupUid: g.uid,
+    authorId: 'usr_peer',
+    authorName: 'Bob',
+    timestamp: Date.now() + 5000,
+    action: 'UPSERT_TX',
+    payload: {
+      txUid,
+      type: 'expense',
+      title: 'Luxury Tent',
+      amount: 15000,
+      paidByName: 'Alice',
+      splitType: 'equal',
+      category: 'General',
+      note: 'Upgraded',
+      date: '2026-10-03',
+      splits: [{ memberName: 'Alice', value: 1, share: 15000 }],
+      updatedTs: Date.now() + 5000,
+    },
+  };
+
+  await applyRemoteSyncEvent(newerEvent);
+  let updatedTxs = await repo.getTransactions(g.id);
+  assert.equal(updatedTxs[0]!.title, 'Luxury Tent');
+  assert.equal(updatedTxs[0]!.amount, 15000);
+
+  // Event with past timestamp (older) - should be rejected by LWW
+  const olderEvent: SyncEvent<SyncTxPayload> = {
+    eventId: 'evt_older',
+    groupUid: g.uid,
+    authorId: 'usr_peer',
+    authorName: 'Bob',
+    timestamp: Date.now() - 50000,
+    action: 'UPSERT_TX',
+    payload: {
+      txUid,
+      type: 'expense',
+      title: 'Old Tent',
+      amount: 5000,
+      paidByName: 'Alice',
+      splitType: 'equal',
+      category: 'General',
+      note: 'Old',
+      date: '2026-10-03',
+      splits: [{ memberName: 'Alice', value: 1, share: 5000 }],
+      updatedTs: Date.now() - 50000,
+    },
+  };
+
+  await applyRemoteSyncEvent(olderEvent);
+  updatedTxs = await repo.getTransactions(g.id);
+  // Title should remain 'Luxury Tent' because older event was rejected
+  assert.equal(updatedTxs[0]!.title, 'Luxury Tent');
+  assert.equal(updatedTxs[0]!.amount, 15000);
+});
+
