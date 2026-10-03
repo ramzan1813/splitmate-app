@@ -13,77 +13,93 @@ A lightweight, zero-knowledge WebSocket relay server that routes end-to-end encr
 
 ## 🌐 Default Built-in Relay URL
 
-The mobile application comes pre-configured with the default relay server:
+The mobile application is pre-configured with the default relay server:
 - **HTTPS Health Check:** `https://splitmate-relay.rn45819.workers.dev/health`
+- **Web Join Landing Page:** `https://splitmate-relay.rn45819.workers.dev/join`
 - **WebSocket Sync Endpoint:** `wss://splitmate-relay.rn45819.workers.dev/ws`
-
-If no custom URL is provided in the mobile app settings, it automatically uses this server.
 
 ---
 
-## 🚀 Deploying from GitHub via Cloudflare Dashboard
+## 🚀 Method 1: Deploy Directly from Local Terminal (Recommended & Fastest)
 
-You can deploy your own instance of this relay directly from your GitHub repository with Cloudflare's continuous deployment (CI/CD). Every time you push changes to your repository, Cloudflare will automatically build and update your relay.
+You can deploy the worker directly to your Cloudflare account from your computer in 3 quick steps using `npx wrangler`:
+
+### 1. Open Terminal in the `relay` Folder
+```bash
+cd relay
+```
+
+### 2. Log in to Cloudflare (Only Needed Once)
+Run the login command. It will open your default browser to authorize Wrangler with your free Cloudflare account:
+```bash
+npx wrangler login
+```
+*Follow the prompt in your browser to approve access.*
+
+### 3. Deploy to Cloudflare
+```bash
+npx wrangler deploy
+```
+
+Wrangler will package and upload the worker to Cloudflare's global edge network in ~5 seconds and output your live URL:
+```text
+Uploaded splitmate-relay (2.15 KiB)
+Deployed splitmate-relay triggers (https://splitmate-relay.rn45819.workers.dev)
+Current Version ID: ...
+```
+
+---
+
+## 🛠 Local Development & Live Debugging
+
+To run and debug the relay locally on your computer:
+```bash
+cd relay
+npx wrangler dev
+```
+Wrangler will start a local server at `http://localhost:8787` with live hot-reloading and console logging.
+
+---
+
+## 🌐 Method 2: Deploy from GitHub via Cloudflare Dashboard (CI/CD)
+
+If you prefer Cloudflare to auto-build and deploy every time you push to GitHub:
 
 ### Step 1: Connect Repository in Cloudflare Dashboard
 1. Log in to the [Cloudflare Dashboard](https://dash.cloudflare.com/).
 2. In the left sidebar, navigate to **Compute (Workers & Pages)**.
 3. Click **Create Application** → select the **Workers** tab.
 4. Click **Connect to Git** (or **Import from Git**).
-5. Authorize GitHub and select your repository: `splitmate-app` (or your repo name).
+5. Select your repository (`splitmate-app`).
 
----
+### Step 2: Configure Build Settings
 
-### Step 2: Configure Build & Deployment Settings
-Fill in the deployment form with the following settings:
-
-| Field Name | Value to Enter | Description |
-|---|---|---|
-| **Project Name** | `splitmate-relay` | Your worker's name (determines your worker URL) |
-| **Production Branch** | `main` *(or `feat/sync-relay`)* | The branch Cloudflare will deploy from |
-| **Root Directory** | `relay` | Specifies that the worker code is in the `relay/` subfolder |
-| **Build Command** | `npx wrangler deploy --dry-run` *(or leave default)* | Validates the worker configuration during build |
-| **Deploy Command** | `npx wrangler deploy` *(or `npm run deploy`)* | Deploys the worker to Cloudflare's edge network |
+| Field Name | Value to Enter |
+|---|---|
+| **Project Name** | `splitmate-relay` |
+| **Production Branch** | `main` *(or `feat/sync-relay`)* |
+| **Root Directory** | `relay` |
+| **Build Command** | `npx wrangler deploy --dry-run` *(or leave blank)* |
+| **Deploy Command** | `npx wrangler deploy` |
 
 Click **Save and Deploy**.
 
 ---
 
-### Step 3: Get Your Live Relay URL
-1. Once Cloudflare finishes the build (usually takes ~15 seconds), Cloudflare will display your live deployment URL:
-   ```text
-   https://splitmate-relay.rn45819.workers.dev
-   ```
-2. Verify it is running by opening `https://splitmate-relay.rn45819.workers.dev/health` in your browser. You will see:
+## ✅ Verifying Your Deployment
+
+1. **Test Health Endpoint:**
+   Open in browser: `https://splitmate-relay.rn45819.workers.dev/health`
+   You should see:
    ```json
    {"status":"ok","name":"SplitMate E2EE Relay","version":"1.0.0"}
    ```
 
----
+2. **Test Join Landing Page:**
+   Open in browser: `https://splitmate-relay.rn45819.workers.dev/join?name=Test%20Trip&cur=USD`
+   You will see the responsive web landing page that auto-opens the SplitMate mobile app.
 
-### Step 4: Connecting a Custom Relay in SplitMate App (Optional)
-Since `wss://splitmate-relay.rn45819.workers.dev/ws` is the default, manual entry is optional:
-1. Open the **SplitMate** mobile app.
-2. Tap the **Settings** tab.
-3. Under **E2EE Remote Sync Relay**:
-   - If left empty, the app automatically connects to `wss://splitmate-relay.rn45819.workers.dev/ws`.
-   - If you wish to use a different custom server, type your WebSocket URL (e.g. `wss://<custom-worker>.<subdomain>.workers.dev/ws`) and tap **Save Relay URL**.
-   - Tap **Reset Default** anytime to restore the default built-in relay.
-
----
-
-## 💻 Optional: Deploy via Local CLI (Alternative)
-
-If you ever want to test or deploy from your local terminal instead of GitHub:
-
-```bash
-# 1. Install Wrangler
-npm install -g wrangler
-
-# 2. Login to Cloudflare
-wrangler login
-
-# 3. Deploy
-cd relay
-npm run deploy
-```
+3. **In the SplitMate Mobile App:**
+   - Go to **Settings → E2EE Remote Sync Relay**.
+   - The default URL is `wss://splitmate-relay.rn45819.workers.dev/ws`.
+   - If you deploy to a custom subdomain or worker name, paste your WebSocket URL and tap **Save Relay URL**.
