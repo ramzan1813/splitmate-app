@@ -11,13 +11,14 @@ export interface UserIdentity {
   relayUrl: string;
 }
 
-const DEFAULT_RELAY_URL = 'wss://relay.splitmate.app/ws';
+export const DEFAULT_RELAY_URL = 'wss://splitmate-relay.rn45819.workers.dev/ws';
 
 export async function getIdentity(): Promise<UserIdentity> {
   let id = await getSetting('profile.id');
   let secret = await getSetting('profile.secret');
   let name = (await getSetting('profile.name')) || 'Me';
-  let relayUrl = (await getSetting('sync.relay_url')) || DEFAULT_RELAY_URL;
+  const customRelay = (await getSetting('sync.relay_url'))?.trim();
+  const relayUrl = customRelay && customRelay.length > 0 ? customRelay : DEFAULT_RELAY_URL;
 
   if (!id || !secret) {
     secret = generateRandomHex(32);

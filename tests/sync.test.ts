@@ -178,6 +178,11 @@ test('identity: generates and persists on-device user account identity', async (
   const updatedIdentity = await getIdentity();
   assert.equal(updatedIdentity.name, 'Alice In Wonderland');
   assert.equal(updatedIdentity.relayUrl, 'wss://custom-relay.example.com/ws');
+
+  // Clearing relay url falls back to default
+  await updateRelayUrl('');
+  const fallbackIdentity = await getIdentity();
+  assert.equal(fallbackIdentity.relayUrl, 'wss://splitmate-relay.rn45819.workers.dev/ws');
 });
 
 test('sync: ignores outdated sync events (Last-Write-Wins conflict resolution)', async () => {

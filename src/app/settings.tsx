@@ -12,7 +12,7 @@ import { safeFileName, shareFile } from '@/lib/files';
 import { todayISO } from '@/lib/format';
 import { colors } from '@/lib/theme';
 import { confirm, errorMessage, notify } from '@/lib/dialog';
-import { getIdentity, updateRelayUrl, UserIdentity } from '@/lib/identity';
+import { DEFAULT_RELAY_URL, getIdentity, updateRelayUrl, UserIdentity } from '@/lib/identity';
 import { getSyncNotifications, markNotificationsRead } from '@/data/sync';
 import { SyncNotification } from '@/data/types';
 
@@ -46,9 +46,12 @@ export default function AppSettings() {
   };
 
   const saveRelay = async () => {
-    if (!relayUrl.trim()) return notify('URL required');
-    await updateRelayUrl(relayUrl);
-    notify('Saved', 'Relay server URL updated.');
+    const trimmed = relayUrl.trim();
+    await updateRelayUrl(trimmed);
+    const updated = await getIdentity();
+    setIdentity(updated);
+    setRelayUrl(updated.relayUrl);
+    notify('Saved', trimmed ? 'Custom relay server URL saved.' : 'Using default built-in relay server.');
   };
 
   const startPin = (s: PinStep) => {
@@ -157,16 +160,32 @@ export default function AppSettings() {
       <SectionTitle>E2EE Remote Sync Relay</SectionTitle>
       <Card>
         <Text style={{ color: colors.muted, fontSize: 13, marginBottom: 8 }}>
-          Cloudflare Worker WebSocket Relay URL. All relayed messages are zero-knowledge end-to-end encrypted with group keys.
+          Cloudflare Worker WebSocket Relay URL. Leave blank or use default for built-in high speed E2EE synchronization. All messages are encrypted on-device.
         </Text>
         <TextInput
           value={relayUrl}
           onChangeText={setRelayUrl}
+          placeholder={DEFAULT_RELAY_URL}
+          placeholderTextColor="#9CA3AF"
           style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 8, fontSize: 13, backgroundColor: '#fff', marginBottom: 10 }}
           autoCapitalize="none"
           autoCorrect={false}
         />
-        <Button small variant="outline" title="Update Relay URL" onPress={saveRelay} style={{ alignSelf: 'flex-start' }} />
+        <Row style={{ gap: 8 }}>
+          <Button small variant="outline" title="Save Relay URL" onPress={saveRelay} />
+          {relayUrl !== DEFAULT_RELAY_URL && (
+            <Button
+              small
+              variant="ghost"
+              title="Reset Default"
+              onPress={async () => {
+                await updateRelayUrl('');
+                setRelayUrl(DEFAULT_RELAY_URL);
+                notify('Reset', 'Restored default relay server.');
+              }}
+            />
+          )}
+        </Row>
       </Card>
 
       {/* Sync Notifications */}
