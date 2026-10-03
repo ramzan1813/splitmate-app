@@ -125,6 +125,11 @@ export async function getGroup(id: number): Promise<Group> {
   const db = await getDb();
   const g = await db.getFirstAsync<GroupRow>('SELECT * FROM groups WHERE id = ?', [id]);
   if (!g) throw new AppError('Group not found');
+  if (!g.sync_key) {
+    const newKey = generateGroupKey();
+    await db.runAsync('UPDATE groups SET sync_key = ?, updated_at = ? WHERE id = ?', [newKey, now(), id]);
+    g.sync_key = newKey;
+  }
   return mapGroup(g);
 }
 
