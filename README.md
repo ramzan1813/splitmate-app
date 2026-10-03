@@ -48,20 +48,45 @@ SplitMate includes a standalone, zero-knowledge WebSocket relay server in the `r
 
 You can deploy your own instance directly from GitHub CI/CD or local CLI with `npx wrangler deploy` (see [`relay/README.md`](relay/README.md)).
 
-## Get the APK (installable app)
+## Building the Installable Android APK
 
-The repository includes a GitHub Actions workflow that builds a **signed release APK** for free.
+You can build a standalone, production-ready `.apk` using either **Expo Cloud (EAS Build)** or **GitHub Actions CI/CD**:
 
-1. Upload the repository to your GitHub account.
-2. Add your signing key as repository secrets (see **SIGNING.md**).
-3. Go to **Actions → Build Android APK → Run workflow**. You can choose which branch to build.
-4. Download the APK from the finished run artifacts or Releases.
+### Method 1: Fast Expo Cloud Build (Recommended & Fastest)
+
+Build the APK in the cloud with zero local Android Studio or SDK setup:
+
+1. **Log in to your Expo account:**
+   ```bash
+   npx eas-cli@latest login
+   ```
+2. **Trigger the Cloud APK Build:**
+   ```bash
+   npm run build:apk
+   # or: npx eas-cli@latest build -p android --profile preview
+   ```
+3. **Download & Install:**
+   When EAS finishes compiling, it outputs a direct download link and QR code in your terminal. Open the link on your phone, download the `.apk`, and install it.
+
+---
+
+### Method 2: Free GitHub Actions CI/CD
+
+The repository includes a GitHub Actions workflow that builds a **signed release APK** directly in GitHub:
+
+1. Push this repository to your GitHub account.
+2. (Recommended) Add your signing keys as repository secrets (see [SIGNING.md](SIGNING.md)).
+3. Go to **Actions → Build Android APK → Run workflow**.
+4. Download the `.apk` and `.sha256` checksum directly from the **Releases** section or workflow artifacts.
+
+---
 
 ## Project structure
 
 ```
 splitmate-app/
   app.json                  App config (permissions, icons, plugins)
+  eas.json                  Expo Application Services (EAS) cloud build profiles
   metro.config.js           Web support for SQLite (wasm + isolation headers)
   plugins/withReleaseSigning.js   Signs release builds with your keystore
   .github/workflows/build-apk.yml  Cloud APK build (with branch selector)
