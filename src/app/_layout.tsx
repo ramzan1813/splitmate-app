@@ -35,6 +35,7 @@ function Root() {
       <Stack.Screen name="insights" options={{ title: 'Insights' }} />
       <Stack.Screen name="settings" options={{ title: 'Settings' }} />
       <Stack.Screen name="import" options={{ title: 'Import' }} />
+      <Stack.Screen name="join" options={{ title: 'Join Group' }} />
       <Stack.Screen name="group/new" options={{ title: 'New group' }} />
       <Stack.Screen name="group/[id]/index" options={{ title: '' }} />
       <Stack.Screen name="group/[id]/expense" options={{ title: 'Add expense' }} />

@@ -80,30 +80,34 @@ export function HeaderButton({
   accessibilityLabel?: string;
   highlight?: boolean;
 }) {
+  const isIconOnly = !title && !!icon;
+
   return (
     <Pressable
       testID={testID}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || title}
       onPress={onPress}
+      hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
       style={({ pressed }) => [
         {
-          backgroundColor: highlight ? 'rgba(255, 255, 255, 0.28)' : 'rgba(255, 255, 255, 0.18)',
+          backgroundColor: highlight ? 'rgba(255, 255, 255, 0.28)' : 'rgba(255, 255, 255, 0.16)',
           borderWidth: 1,
-          borderColor: highlight ? 'rgba(255, 255, 255, 0.45)' : 'rgba(255, 255, 255, 0.25)',
-          paddingHorizontal: 10,
-          paddingVertical: 5,
-          borderRadius: 14,
-          marginHorizontal: 3,
+          borderColor: highlight ? 'rgba(255, 255, 255, 0.45)' : 'rgba(255, 255, 255, 0.22)',
+          paddingHorizontal: isIconOnly ? 7 : 8,
+          paddingVertical: 4,
+          borderRadius: 12,
+          marginHorizontal: 2,
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'center',
+          minHeight: 28,
         },
-        pressed && { backgroundColor: 'rgba(255, 255, 255, 0.4)', transform: [{ scale: 0.96 }] },
+        pressed && { backgroundColor: 'rgba(255, 255, 255, 0.38)', transform: [{ scale: 0.95 }] },
       ]}
     >
-      {icon ? <Text style={{ color: '#fff', fontSize: 14, marginRight: title ? 4 : 0 }}>{icon}</Text> : null}
-      {title ? <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>{title}</Text> : null}
+      {icon ? <Text style={{ color: '#fff', fontSize: 13, marginRight: title ? 3 : 0 }}>{icon}</Text> : null}
+      {title ? <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>{title}</Text> : null}
     </Pressable>
   );
 }

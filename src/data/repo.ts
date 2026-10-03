@@ -222,12 +222,13 @@ export async function getGroupSummary(id: number): Promise<GroupSummary> {
   };
 }
 
-export async function createGroup(input: { name: string; description?: string; currency?: string; myName: string; members?: string[]; syncKey?: string }) {
+export async function createGroup(input: { name: string; description?: string; currency?: string; myName: string; members?: string[]; syncKey?: string; uid?: string }) {
   const name = clean(input.name, LIMITS.name);
   if (!name) throw new AppError('Group name is required');
   const myName = clean(input.myName, LIMITS.name) || 'Me';
   const currency = CURRENCIES.includes(String(input.currency)) ? String(input.currency) : 'USD';
   const syncKey = input.syncKey || generateGroupKey();
+  const groupUid = input.uid || newUid();
   const others = (input.members || []).map((m) => clean(m, LIMITS.name)).filter(Boolean);
   const db = await getDb();
   let gid = 0;
@@ -235,7 +236,7 @@ export async function createGroup(input: { name: string; description?: string; c
     const ts = now();
     const r = await db.runAsync(
       'INSERT INTO groups (uid, name, description, currency, sync_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [newUid(), name, clean(input.description, LIMITS.description), currency, syncKey, ts, ts]
+      [groupUid, name, clean(input.description, LIMITS.description), currency, syncKey, ts, ts]
     );
     gid = r.lastInsertRowId;
     await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 1, ?)', [gid, myName, ts]);

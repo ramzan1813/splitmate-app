@@ -255,3 +255,35 @@ test('sync: ignores outdated sync events (Last-Write-Wins conflict resolution)',
   assert.equal(updatedTxs[0]!.amount, 15000);
 });
 
+test('join: preserves group UID when joining via invite link', async () => {
+  const db = createNodeDb();
+  await migrate(db);
+  setDb(db);
+
+  const inviteLink = 'https://splitmate-relay.rn45819.workers.dev/join?uid=grp_beach_trip_99&key=secretkey123&name=Beach%20Trip&cur=EUR';
+  const url = new URL(inviteLink);
+  const uid = url.searchParams.get('uid')!;
+  const key = url.searchParams.get('key')!;
+  const name = decodeURIComponent(url.searchParams.get('name')!);
+  const cur = url.searchParams.get('cur')!;
+
+  assert.equal(uid, 'grp_beach_trip_99');
+  assert.equal(key, 'secretkey123');
+  assert.equal(name, 'Beach Trip');
+  assert.equal(cur, 'EUR');
+
+  const joinedGroup = await repo.createGroup({
+    name,
+    currency: cur,
+    myName: 'Bob',
+    syncKey: key,
+    uid,
+  });
+
+  assert.equal(joinedGroup.uid, 'grp_beach_trip_99');
+  assert.equal(joinedGroup.name, 'Beach Trip');
+  assert.equal(joinedGroup.currency, 'EUR');
+  assert.equal(joinedGroup.syncKey, 'secretkey123');
+});
+
+
