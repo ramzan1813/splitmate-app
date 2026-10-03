@@ -41,11 +41,12 @@ To lint, run `npx expo lint`.
 
 ## E2EE Cloudflare Worker Relay (`relay/`)
 
-SplitMate includes a standalone, zero-knowledge WebSocket relay server in the `relay/` folder:
+SplitMate includes a standalone, zero-knowledge WebSocket relay server in the `relay/` folder powered by **Cloudflare SQLite Durable Objects**:
 - **Default Built-in URL:** `wss://splitmate-relay.rn45819.workers.dev/ws`
 - **Web Join Landing Page:** `https://splitmate-relay.rn45819.workers.dev/join?...`
+- **Health Check:** `https://splitmate-relay.rn45819.workers.dev/health`
 
-You can deploy your own instance directly from GitHub or CLI (see [`relay/README.md`](relay/README.md)).
+You can deploy your own instance directly from GitHub CI/CD or local CLI with `npx wrangler deploy` (see [`relay/README.md`](relay/README.md)).
 
 ## Get the APK (installable app)
 
@@ -64,15 +65,16 @@ splitmate-app/
   metro.config.js           Web support for SQLite (wasm + isolation headers)
   plugins/withReleaseSigning.js   Signs release builds with your keystore
   .github/workflows/build-apk.yml  Cloud APK build (with branch selector)
-  relay/                    Zero-knowledge Cloudflare Worker WebSocket relay
-    src/index.ts            Relay server logic & /join landing page
-    wrangler.toml           Cloudflare Worker config
+  relay/                    Zero-knowledge Cloudflare Worker + Durable Objects relay
+    src/index.ts            RelayRoom Durable Object logic & /join landing page
+    wrangler.toml           Cloudflare Worker config with Durable Objects & logging
     package.json            Worker dependencies and build scripts
+    package-lock.json       Cloudflare CI/CD deterministic build lockfile
   src/
     data/                   On-device "backend"
       db.ts                 SQLite open + schema migrations
       platform.ts           expo-sqlite adapter
-      repo.ts               Groups, members, transactions, settings
+      repo.ts               Groups, members, transactions, settings (auto-healing keys)
       sync.ts               E2EE sync engine, event log, conflict resolution
       logic.ts              Split maths, balances, settle-up plan
       insights.ts           Dashboard calculations

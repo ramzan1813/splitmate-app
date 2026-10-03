@@ -1,11 +1,12 @@
-# SplitMate E2EE Relay Server (Cloudflare Worker)
+# SplitMate E2EE Relay Server (Cloudflare Worker + Durable Objects)
 
-A lightweight, zero-knowledge WebSocket relay server that routes end-to-end encrypted (E2EE) sync messages between SplitMate group members.
+A high-performance, zero-knowledge WebSocket relay server powered by **Cloudflare SQLite Durable Objects** that routes end-to-end encrypted (E2EE) sync messages between SplitMate group members in real time.
 
 ---
 
 ## 🔒 Security & Privacy Architecture
 - **Zero Plaintext:** All payloads sent through the relay are encrypted on the user's phone using AES-GCM-256 with the group's private encryption key before transmission.
+- **Guaranteed Room Single-Instance Routing:** Uses Cloudflare SQLite Durable Objects (`RelayRoom`) so that all members of a group connect to the exact same room coordinator instance worldwide for zero-latency broadcasting and event replay.
 - **Zero Database Storage:** The server acts as an ephemeral relay and does not store unencrypted group data, transactions, personal names, or balances.
 - **Zero Account Data:** Rooms are identified only by SHA-256 room hashes derived from group IDs. The server never knows who is communicating or what they are splitting.
 
@@ -41,9 +42,10 @@ npx wrangler login
 npx wrangler deploy
 ```
 
-Wrangler will package and upload the worker to Cloudflare's global edge network in ~5 seconds and output your live URL:
+Wrangler will package, run SQLite migrations, and upload the worker to Cloudflare's global network in seconds with live observability logging enabled:
 ```text
-Uploaded splitmate-relay (2.15 KiB)
+Binding: env.ROOMS (RelayRoom) -> Durable Object
+Uploaded splitmate-relay
 Deployed splitmate-relay triggers (https://splitmate-relay.rn45819.workers.dev)
 Current Version ID: ...
 ```

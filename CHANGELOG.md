@@ -7,6 +7,7 @@ Release notes for each version. The release workflow copies the section matching
 ### New
 - **On-Device Cryptographic Accounts & Identity.** No email, password or phone number needed. Your identity and private keys are generated and stored 100% on your device.
 - **End-to-End Encrypted (E2EE) Remote Sync.** Groups have a private 256-bit AES-GCM encryption key. When connected to Wi-Fi or cellular networks, expenses, payments and edits synchronize in real time across group members through a blind, zero-knowledge relay.
+- **SQLite Durable Objects Relay Coordination.** Upgraded the Cloudflare Worker relay to SQLite-backed Durable Objects (`RelayRoom`), guaranteeing that all peers in a group room connect to the exact same coordinator instance worldwide for zero-latency broadcasting and event replay.
 - **Native Camera QR Code Scanner.** Scan group invites directly within the app using the built-in camera QR scanner with automatic viewfinder and permission handling.
 - **Universal QR Code & Deep Link Invites.** Tap **Invite** in any group header to display an ISO/IEC 18004 compliant QR code or share an invite link (`https://splitmate-relay.rn45819.workers.dev/join?...` / `splitmate://join?...`).
 - **Dedicated `/join` Screen & Web Landing Page.** Opening an invite link automatically opens the group preview with a 1-tap join button, preserving the group UID and encryption keys.
@@ -16,12 +17,16 @@ Release notes for each version. The release workflow copies the section matching
 - **Standalone Cloudflare Worker Relay.** Includes a zero-knowledge WebSocket relay server in `relay/` that can be deployed directly from GitHub or local CLI to Cloudflare Workers free tier.
 
 ### Improved
+- **Automatic Group Sync Key Auto-Healing.** Opening any group automatically ensures a persistent 256-bit AES-GCM encryption key is assigned and saved, preventing empty key parameters in QR codes and invite links.
+- **Relay Observability & Logging.** Configured invocation logging in `wrangler.toml` for real-time traffic observability and diagnostics in the Cloudflare dashboard.
+- **Cloudflare CI/CD Deterministic Builds.** Added `relay/package-lock.json` and SQLite migration configuration for push-to-deploy Git builds in Cloudflare Workers & Pages.
 - **Header Navigation UI.** Responsive, distinguished glassmorphic pill buttons (`HeaderButton`) across Home and Group screens with touch feedback and balanced mobile hit-slop.
 - **Database Schema Migration 2.** Automatically upgrades existing local databases with sync event logs and Lamport timestamp conflict resolution (Last-Write-Wins).
 - **Import Screen.** Enhanced with a dedicated **📷 Scan QR Code** button and **Join via Invite Link** input alongside JSON file imports.
 - **Test Suite.** Expanded to 22 automated tests covering core maths, database migrations, 256-bit AES encryption, multi-device sync, QR matrix encoding, and deep linking.
 
 ### Fixed
+- **Missing Encryption Key on Existing Groups.** Fixed an issue where groups created before E2EE sync was enabled would generate QR codes with empty `key=` query parameters.
 - **JSON Import Decimal Precision.** Fixed an issue where amounts imported from JSON files were scaled down by two decimal places (e.g., 15000 became 150.00).
 
 ---
