@@ -6,15 +6,25 @@ Release notes for each version. The release workflow copies the section matching
 
 ### New
 - **On-Device Cryptographic Accounts & Identity.** No email, password or phone number needed. Your identity and private keys are generated and stored 100% on your device.
-- **End-to-End Encrypted (E2EE) Remote Sync.** Groups now have their own 256-bit AES encryption key. When connected to Wi-Fi or cellular networks, expenses, payments and edits synchronize in real time across group members through a blind, zero-knowledge relay.
-- **QR Code & Deep Link Invites.** Tap **Invite** in any group header to display an instant offline QR code or copy a shareable invite link (`splitmate://join?...`). Friends can scan or paste the link in **Import / Join** to sync automatically.
+- **End-to-End Encrypted (E2EE) Remote Sync.** Groups have a private 256-bit AES-GCM encryption key. When connected to Wi-Fi or cellular networks, expenses, payments and edits synchronize in real time across group members through a blind, zero-knowledge relay.
+- **Native Camera QR Code Scanner.** Scan group invites directly within the app using the built-in camera QR scanner with automatic viewfinder and permission handling.
+- **Universal QR Code & Deep Link Invites.** Tap **Invite** in any group header to display an ISO/IEC 18004 compliant QR code or share an invite link (`https://splitmate-relay.rn45819.workers.dev/join?...` / `splitmate://join?...`).
+- **Dedicated `/join` Screen & Web Landing Page.** Opening an invite link automatically opens the group preview with a 1-tap join button, preserving the group UID and encryption keys.
 - **In-App Sync Notifications & Activity Feed.** Get real-time alerts when friends record an expense, payment, or settlement, viewable in Settings and Group screens.
 - **Transaction Author Badges.** Expense and payment cards clearly display who recorded each transaction (e.g. *Added by Sara*, *Recorded by Bob*).
-- **Standalone Cloudflare Worker Relay.** Includes a zero-knowledge WebSocket relay server in `relay/` that can be deployed for free to Cloudflare Workers in 1 command.
+- **Pre-configured Default Cloudflare Relay.** Pre-configured with built-in relay (`wss://splitmate-relay.rn45819.workers.dev/ws`) with automatic fallback and custom server override options in Settings.
+- **Standalone Cloudflare Worker Relay.** Includes a zero-knowledge WebSocket relay server in `relay/` that can be deployed directly from GitHub or local CLI to Cloudflare Workers free tier.
 
 ### Improved
+- **Header Navigation UI.** Responsive, distinguished glassmorphic pill buttons (`HeaderButton`) across Home and Group screens with touch feedback and balanced mobile hit-slop.
 - **Database Schema Migration 2.** Automatically upgrades existing local databases with sync event logs and Lamport timestamp conflict resolution (Last-Write-Wins).
-- **Import Screen.** Enhanced with a dedicated **Join via Invite Link / QR** input alongside JSON file imports.
+- **Import Screen.** Enhanced with a dedicated **📷 Scan QR Code** button and **Join via Invite Link** input alongside JSON file imports.
+- **Test Suite.** Expanded to 22 automated tests covering core maths, database migrations, 256-bit AES encryption, multi-device sync, QR matrix encoding, and deep linking.
+
+### Fixed
+- **JSON Import Decimal Precision.** Fixed an issue where amounts imported from JSON files were scaled down by two decimal places (e.g., 15000 became 150.00).
+
+---
 
 ## 1.1.0 — 2026-10-03
 
@@ -30,12 +40,7 @@ Release notes for each version. The release workflow copies the section matching
 - **Consistent look.** Messages, confirmations and the transaction details screen now match the rest of the app.
 - **Typing is never hidden.** The screen scrolls so the field you are typing in stays above the keyboard.
 
-### Fixed
-- **Imported amounts were 100 times too small.** A group file with an amount of 1500 was imported as 15.00. Group and backup files now store normal amounts (1500 means 1,500). Files exported by earlier versions still import correctly.
-
-### Good to know
-- Group files and backups exported from 1.1.0 use a newer file format. Update SplitMate on every phone that shares a group, because older versions can't open these files.
-- Your existing groups, expenses and settings are kept when you update.
+---
 
 ## 1.0.0
 

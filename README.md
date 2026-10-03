@@ -10,7 +10,9 @@ Built with Expo SDK 57 (React Native 0.86, TypeScript, Expo Router).
 |---|---|
 | **On-device accounts** | No email, passwords or phone numbers. Cryptographic identities and keypairs are generated and stored 100% on-device. |
 | **E2EE Remote Sync** | 256-bit AES-GCM encrypted real-time sync across Wi-Fi, 4G and 5G through a blind, zero-knowledge Cloudflare Worker relay. |
-| **QR & Link Invites** | Instant offline SVG QR codes and deep links (`splitmate://join?...`) to share and join groups in one tap. |
+| **QR Code & Deep Link Invites** | ISO/IEC 18004 compliant QR codes and universal invite links (`https://splitmate-relay.rn45819.workers.dev/join?...` / `splitmate://join?...`) to share and join groups in one tap. |
+| **Native Camera QR Scanner** | Built-in camera scanner with viewfinder and permission handling to scan peer invite QR codes instantly. |
+| **In-App Activity Notifications** | Real-time alerts when friends record an expense, payment, or settlement, viewable in Settings and Group screens. |
 | Groups & members | Groups with 160+ currencies. Friends are just names, and you mark which member is you. |
 | Expenses | Split **equally, unequally, by percentage or by shares**, with live validation. Each expense has a category, date, author tag and note. |
 | Payments | One-to-one payments, plus **Settle up** suggestions you can record in one tap. |
@@ -28,30 +30,28 @@ You need Node.js 22.13+ (https://nodejs.org). No admin rights are needed.
 ```bash
 cd splitmate-app
 npm install
-npm test            # 17 data & sync tests (splits, balances, import, crypto, 2-device sync)
+npm test            # 22 data, crypto, sync & QR tests
 npx expo start      # then press "w" for the browser, or scan the QR code with Expo Go
 ```
 
+To typecheck, run `npx tsc --noEmit`.
 To lint, run `npx expo lint`.
 
 > The browser version uses SQLite compiled to WebAssembly, and `metro.config.js` already sets the headers it needs.
 
 ## E2EE Cloudflare Worker Relay (`relay/`)
 
-SplitMate includes a standalone, zero-knowledge WebSocket relay server in the `relay/` folder. It can be deployed in 1 command to Cloudflare's free tier:
+SplitMate includes a standalone, zero-knowledge WebSocket relay server in the `relay/` folder:
+- **Default Built-in URL:** `wss://splitmate-relay.rn45819.workers.dev/ws`
+- **Web Join Landing Page:** `https://splitmate-relay.rn45819.workers.dev/join?...`
 
-```bash
-cd relay
-npm run deploy
-```
-
-Set your worker URL in the app under **Settings → E2EE Remote Sync Relay**.
+You can deploy your own instance directly from GitHub or CLI (see [`relay/README.md`](relay/README.md)).
 
 ## Get the APK (installable app)
 
 The repository includes a GitHub Actions workflow that builds a **signed release APK** for free.
 
-1. Create a new **private** repository on GitHub and upload the contents of the `splitmate-app` folder.
+1. Upload the repository to your GitHub account.
 2. Add your signing key as repository secrets (see **SIGNING.md**).
 3. Go to **Actions → Build Android APK → Run workflow**. You can choose which branch to build.
 4. Download the APK from the finished run artifacts or Releases.
@@ -65,9 +65,9 @@ splitmate-app/
   plugins/withReleaseSigning.js   Signs release builds with your keystore
   .github/workflows/build-apk.yml  Cloud APK build (with branch selector)
   relay/                    Zero-knowledge Cloudflare Worker WebSocket relay
-    src/index.ts            Relay server logic
+    src/index.ts            Relay server logic & /join landing page
     wrangler.toml           Cloudflare Worker config
-  vendor/decode-uri-component/     Safe local replacement
+    package.json            Worker dependencies and build scripts
   src/
     data/                   On-device "backend"
       db.ts                 SQLite open + schema migrations
@@ -79,10 +79,11 @@ splitmate-app/
       backup.ts             Export/import with validation
       types.ts
     app/                    Screens (Expo Router)
-      index.tsx             Groups
+      index.tsx             Groups (with HeaderButton insights & settings)
       insights.tsx          Insights dashboard
       settings.tsx          Name, Identity, PIN, Relay config, backup/restore
-      import.tsx            Import group / Join via invite link
+      import.tsx            Import group / Scan QR code / Join via invite link
+      join.tsx              Deep link join screen for invite links & QR codes
       group/new.tsx
       group/[id]/index.tsx       Expenses · Balances · Settle up · Chart · QR Invite
       group/[id]/expense.tsx     Add/edit expense
@@ -91,7 +92,7 @@ splitmate-app/
       group/[id]/report.tsx      Report, print/PDF, Excel
       group/[id]/settings.tsx    Edit/delete group
       group/[id]/transaction/[tid].tsx
-    components/             UI kit, charts, QR Code, PIN pad, lock/welcome
+    components/             UI kit (HeaderButton), charts, QR Code, QRScannerModal, PIN pad
     lib/                    Crypto, Identity, Formatting, files, PIN, Excel writer
-  tests/                    Node tests for data & sync layer (real SQLite)
+  tests/                    Node tests for data, sync & QR layer (real SQLite)
 ```
