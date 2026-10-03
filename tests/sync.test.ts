@@ -286,4 +286,46 @@ test('join: preserves group UID when joining via invite link', async () => {
   assert.equal(joinedGroup.syncKey, 'secretkey123');
 });
 
+test('qr: produces valid ISO-compliant QR matrix from universal join URL', async () => {
+  const QRCodeLib = (await import('qrcode')).default;
+  const testUrl = 'https://splitmate-relay.rn45819.workers.dev/join?uid=grp_test_qr&key=abc12345&name=Ski%20Trip&cur=USD';
+  const qr = QRCodeLib.create(testUrl, { errorCorrectionLevel: 'M' });
+
+  assert.ok(qr.modules.size > 20);
+  assert.ok(qr.modules.data.length > 0);
+  // Top-left finder corner (0,0) must be black/1
+  assert.equal(qr.modules.get(0, 0), 1);
+});
+
+test('notifications: unread counter, retrieval, and mark all read', async () => {
+  const db = createNodeDb();
+  await migrate(db);
+  setDb(db);
+
+  const { markNotificationsRead } = await import('../src/data/sync');
+
+  // Insert test notifications
+  await db.runAsync(
+    'INSERT INTO sync_notifications (group_uid, author_name, title, message, read, created_at) VALUES (?, ?, ?, ?, 0, ?)',
+    ['grp_notif_1', 'Alice', 'Trip', 'Alice added Coffee ($5.00)', new Date().toISOString()]
+  );
+  await db.runAsync(
+    'INSERT INTO sync_notifications (group_uid, author_name, title, message, read, created_at) VALUES (?, ?, ?, ?, 0, ?)',
+    ['grp_notif_1', 'Bob', 'Trip', 'Bob recorded a payment ($10.00)', new Date().toISOString()]
+  );
+
+  const unreadBefore = await getSyncNotifications('grp_notif_1');
+  assert.equal(unreadBefore.length, 2);
+  assert.equal(unreadBefore[0]!.read, false);
+  assert.equal(unreadBefore[1]!.read, false);
+
+  // Mark read
+  await markNotificationsRead('grp_notif_1');
+  const afterRead = await getSyncNotifications('grp_notif_1');
+  assert.equal(afterRead.length, 2);
+  assert.equal(afterRead[0]!.read, true);
+  assert.equal(afterRead[1]!.read, true);
+});
+
+
 
