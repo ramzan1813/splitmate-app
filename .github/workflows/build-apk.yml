@@ -2,7 +2,8 @@
 # 1. Push this folder (splitmate-app) to a GitHub repository.
 # 2. (Recommended) add the 4 signing secrets — see SIGNING.md.
 # 3. Actions tab -> "Build Android APK" -> Run workflow.
-# 4. Download "splitmate-apk" from the finished run's Artifacts section.
+# 4. Download the APK from the repo's Releases section (right side of the main page),
+#    or from the "splitmate-apk" artifact of the finished run.
 name: Build Android APK
 
 on:
@@ -17,6 +18,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      version: ${{ steps.apk.outputs.version }}
     steps:
       - uses: actions/checkout@v6
 
@@ -67,8 +70,10 @@ jobs:
         run: ./gradlew assembleRelease --no-daemon
 
       - name: Rename APK
+        id: apk
         run: |
           VERSION=$(node -p "require('./app.json').expo.version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           mv android/app/build/outputs/apk/release/app-release.apk "SplitMate-$VERSION.apk"
           sha256sum "SplitMate-$VERSION.apk" | tee "SplitMate-$VERSION.apk.sha256"
 
@@ -83,3 +88,40 @@ jobs:
             SplitMate-*.apk
             SplitMate-*.apk.sha256
           retention-days: 30
+
+  # Publishes the APK as a GitHub Release so it shows under "Releases" on the repo page.
+  # Release tag = v<version from app.json>. Re-running for the same version replaces the APK.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # needed to create the release; only this job gets it
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: splitmate-apk
+
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          TAG="v$VERSION"
+          NOTES="SplitMate $VERSION for Android.
+
+          Download SplitMate-$VERSION.apk below, open it on your phone and tap Install.
+          Android will ask to allow installing from this source, and Play Protect may show
+          'Unknown app': tap More details -> Install anyway.
+
+          SHA-256: $(cut -d' ' -f1 "SplitMate-$VERSION.apk.sha256")
+          Built from commit ${GITHUB_SHA::7}."
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG exists - replacing its APK."
+            gh release upload "$TAG" "SplitMate-$VERSION.apk" "SplitMate-$VERSION.apk.sha256" --clobber
+            gh release edit "$TAG" --notes "$NOTES"
+          else
+            gh release create "$TAG" "SplitMate-$VERSION.apk" "SplitMate-$VERSION.apk.sha256" \
+              --target "$GITHUB_SHA" --title "SplitMate $VERSION" --notes "$NOTES" --latest
+          fi
