@@ -2,6 +2,21 @@
 
 Release notes for each version. The release workflow copies the section matching the version in `app.json` into the GitHub Release.
 
+## 1.3.0 — 2026-10-04
+
+### New
+- **P2P Full Group State Hydration & Restoration (`REQUEST_STATE` & `STATE_SNAPSHOT`).** Joining or restoring a group after reinstallation automatically requests full state from active peers over the zero-knowledge E2EE relay, downloading all past transactions, splits, members, and categories without any central database.
+- **Member Identity Binding on Join ("Who Are You?").** When opening an invite link or scanning a QR code, the join screen displays existing members so you can bind your device identity directly to your member record (e.g. *Ikram*), taking ownership of your past expenses and balances immediately.
+- **Member Merging & Reassignment (`MERGE_MEMBERS`).** Consolidate placeholder or duplicate members in **Group Members** with automatic re-assignment of all past payments, expenses, and split shares, synchronized in real time to all peers.
+- **EAS Auto-Incrementing Build Versioning.** Configured EAS preview build profile to automatically increment Android version codes, allowing seamless in-place APK updates without uninstalling or losing local SQLite data.
+
+### Improved
+- **Automatic Group Sync Key Auto-Healing.** Opening any group automatically ensures a persistent 256-bit AES-GCM encryption key is assigned and saved, preventing empty key parameters in QR codes and invite links.
+- **Invite Links with Member Manifest.** Group invite links and QR codes now include member names, providing instant preview chips on the join screen before connecting.
+- **Test Suite.** Expanded to 24 automated tests covering core maths, database migrations, 256-bit AES encryption, multi-device P2P state hydration, member merging, QR matrix encoding, and deep linking.
+
+---
+
 ## 1.2.0 — 2026-10-03
 
 ### New
@@ -17,14 +32,10 @@ Release notes for each version. The release workflow copies the section matching
 - **Standalone Cloudflare Worker Relay.** Includes a zero-knowledge WebSocket relay server in `relay/` that can be deployed directly from GitHub or local CLI to Cloudflare Workers free tier.
 
 ### Improved
-- **Automatic Group Sync Key Auto-Healing.** Opening any group automatically ensures a persistent 256-bit AES-GCM encryption key is assigned and saved, preventing empty key parameters in QR codes and invite links.
 - **Relay Observability & Logging.** Configured invocation logging in `wrangler.toml` for real-time traffic observability and diagnostics in the Cloudflare dashboard.
 - **Cloudflare CI/CD Deterministic Builds.** Added `relay/package-lock.json` and SQLite migration configuration for push-to-deploy Git builds in Cloudflare Workers & Pages.
 - **Header Navigation UI.** Responsive, distinguished glassmorphic pill buttons (`HeaderButton`) across Home and Group screens with touch feedback and balanced mobile hit-slop.
-- **P2P Full Group State Hydration & Restoration (`REQUEST_STATE` & `STATE_SNAPSHOT`).** When a peer joins or restores a group after reinstalling, the app automatically requests full state from active peers over the zero-knowledge E2EE relay, downloading all past transactions, splits, members, and categories without any cloud database.
-- **Member Identity Binding on Join.** When scanning a QR code or opening an invite, the join screen displays existing members so you can bind your device identity directly to your member record (e.g. *Ikram*), immediately taking ownership of your past expenses and balances.
-- **Member Merging & Reassignment.** Merge duplicate or placeholder member records directly inside **Group Members** with full re-assignment of all past payments, expenses, and split shares, synchronized in real time to all peers (`MERGE_MEMBERS`).
-- **Test Suite.** Expanded to 24 automated tests covering core maths, database migrations, 256-bit AES encryption, multi-device P2P state hydration, member merging, QR matrix encoding, and deep linking.
+- **Import Screen.** Enhanced with a dedicated **📷 Scan QR Code** button and **Join via Invite Link** input alongside JSON file imports.
 
 ### Fixed
 - **Missing Encryption Key on Existing Groups.** Fixed an issue where groups created before E2EE sync was enabled would generate QR codes with empty `key=` query parameters.
