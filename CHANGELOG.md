@@ -21,9 +21,10 @@ Release notes for each version. The release workflow copies the section matching
 - **Relay Observability & Logging.** Configured invocation logging in `wrangler.toml` for real-time traffic observability and diagnostics in the Cloudflare dashboard.
 - **Cloudflare CI/CD Deterministic Builds.** Added `relay/package-lock.json` and SQLite migration configuration for push-to-deploy Git builds in Cloudflare Workers & Pages.
 - **Header Navigation UI.** Responsive, distinguished glassmorphic pill buttons (`HeaderButton`) across Home and Group screens with touch feedback and balanced mobile hit-slop.
-- **Database Schema Migration 2.** Automatically upgrades existing local databases with sync event logs and Lamport timestamp conflict resolution (Last-Write-Wins).
-- **Import Screen.** Enhanced with a dedicated **📷 Scan QR Code** button and **Join via Invite Link** input alongside JSON file imports.
-- **Test Suite.** Expanded to 22 automated tests covering core maths, database migrations, 256-bit AES encryption, multi-device sync, QR matrix encoding, and deep linking.
+- **P2P Full Group State Hydration & Restoration (`REQUEST_STATE` & `STATE_SNAPSHOT`).** When a peer joins or restores a group after reinstalling, the app automatically requests full state from active peers over the zero-knowledge E2EE relay, downloading all past transactions, splits, members, and categories without any cloud database.
+- **Member Identity Binding on Join.** When scanning a QR code or opening an invite, the join screen displays existing members so you can bind your device identity directly to your member record (e.g. *Ikram*), immediately taking ownership of your past expenses and balances.
+- **Member Merging & Reassignment.** Merge duplicate or placeholder member records directly inside **Group Members** with full re-assignment of all past payments, expenses, and split shares, synchronized in real time to all peers (`MERGE_MEMBERS`).
+- **Test Suite.** Expanded to 24 automated tests covering core maths, database migrations, 256-bit AES encryption, multi-device P2P state hydration, member merging, QR matrix encoding, and deep linking.
 
 ### Fixed
 - **Missing Encryption Key on Existing Groups.** Fixed an issue where groups created before E2EE sync was enabled would generate QR codes with empty `key=` query parameters.
