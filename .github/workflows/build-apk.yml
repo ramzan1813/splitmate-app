@@ -76,6 +76,12 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Setup Gradle cache & optimizations
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          gradle-home-cache-cleanup: true
+
       - uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
@@ -109,7 +115,8 @@ jobs:
           SPLITMATE_KEYSTORE_PASSWORD: ${{ secrets.SPLITMATE_KEYSTORE_PASSWORD }}
           SPLITMATE_KEY_ALIAS: ${{ secrets.SPLITMATE_KEY_ALIAS }}
           SPLITMATE_KEY_PASSWORD: ${{ secrets.SPLITMATE_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease --no-daemon
+          GRADLE_OPTS: -Dorg.gradle.jvmargs="-Xmx4096m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8"
+        run: ./gradlew assembleRelease --build-cache --parallel
 
       - name: Rename APK
         id: apk
