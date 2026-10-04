@@ -1,5 +1,6 @@
 export type SplitType = 'equal' | 'unequal' | 'percent' | 'shares';
 export type TxType = 'expense' | 'payment';
+export type PermissionModel = 'admin_only' | 'contributor' | 'collaborative';
 
 export interface Group {
   id: number;
@@ -7,6 +8,9 @@ export interface Group {
   name: string;
   description: string;
   currency: string;
+  permissionModel: PermissionModel;
+  creatorId: string;
+  creatorName: string;
   syncKey?: string; // 256-bit AES encryption key for E2EE sync
   createdAt: string;
   updatedAt: string;
@@ -46,6 +50,8 @@ export interface Transaction {
   date: string; // YYYY-MM-DD
   authorId?: string;
   authorName?: string;
+  updatedById?: string;
+  updatedByName?: string;
   updatedTs?: number;
   splits: Split[];
   createdAt: string;
@@ -76,6 +82,9 @@ export interface GroupSummary {
   totals: { totalExpenses: number; expenseCount: number; paymentCount: number };
   categories: { name: string; amount: number }[];
   myMemberId: number | null;
+  myIdentityId: string;
+  isCreator: boolean;
+  canAdd: boolean;
   transactions: Transaction[];
 }
 

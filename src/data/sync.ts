@@ -70,6 +70,10 @@ export interface SyncTxPayload {
   note: string;
   date: string;
   splits: { memberName: string; value: number; share: number }[];
+  authorId?: string;
+  authorName?: string;
+  updatedById?: string;
+  updatedByName?: string;
   updatedTs: number;
 }
 
@@ -85,7 +89,10 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
   const existing = await db.getFirstAsync<{ id: number }>('SELECT id FROM sync_events WHERE event_id = ?', [event.eventId]);
   if (existing) return false;
 
-  const group = await db.getFirstAsync<Group>('SELECT * FROM groups WHERE uid = ?', [event.groupUid]);
+  const group = await db.getFirstAsync<{ id: number; uid: string; name: string; currency: string; creator_id: string; permission_model: Group['permissionModel'] }>(
+    'SELECT id, uid, name, currency, creator_id, permission_model FROM groups WHERE uid = ?',
+    [event.groupUid]
+  );
   if (!group) return false; // Group not found locally
 
   const nowIso = new Date().toISOString();
@@ -121,6 +128,19 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
           [group.uid, event.authorName, group.name, msg, nowIso]
         );
       }
+    } else if (event.action === 'UPDATE_GROUP') {
+      const payload = event.payload as { name?: string; description?: string; currency?: string; permissionModel?: Group['permissionModel'] };
+      if (payload && (!group.creator_id || group.creator_id === event.authorId)) {
+        await db.runAsync(
+          "UPDATE groups SET name = COALESCE(NULLIF(?, ''), name), description = COALESCE(NULLIF(?, ''), description), currency = COALESCE(NULLIF(?, ''), currency), permission_model = COALESCE(NULLIF(?, ''), permission_model), updated_at = ? WHERE id = ?",
+          [payload.name || '', payload.description || '', payload.currency || '', payload.permissionModel || '', nowIso, group.id]
+        );
+        const msg = `${event.authorName} updated group settings (${payload.permissionModel || group.permission_model})`;
+        await db.runAsync(
+          'INSERT INTO sync_notifications (group_uid, author_name, title, message, read, created_at) VALUES (?, ?, ?, ?, 0, ?)',
+          [group.uid, event.authorName, group.name, msg, nowIso]
+        );
+      }
     } else if (event.action === 'MERGE_MEMBERS') {
       const payload = event.payload as { sourceMemberName: string; targetMemberName: string };
       if (payload?.sourceMemberName && payload?.targetMemberName) {
@@ -134,6 +154,22 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
     } else if (event.action === 'UPSERT_TX') {
       const payload = event.payload as SyncTxPayload;
       if (!payload || !payload.txUid) return;
+
+      // Permission check for admin_only / contributor mode
+      const isCreator = !group.creator_id || group.creator_id === event.authorId;
+      const permModel = group.permission_model || 'collaborative';
+
+      // Check if transaction with this txUid exists
+      const existingTx = await db.getFirstAsync<{ id: number; author_id: string; updated_ts: number }>(
+        'SELECT id, author_id, updated_ts FROM transactions WHERE group_id = ? AND uid = ?',
+        [group.id, payload.txUid]
+      );
+
+      // Permission Enforcement:
+      // In admin_only: only creator can add or edit
+      if (permModel === 'admin_only' && !isCreator) return;
+      // In contributor: only creator can edit existing transactions
+      if (permModel === 'contributor' && existingTx && !isCreator) return;
 
       // Ensure members exist in group
       const members = await db.getAllAsync<{ id: number; name: string }>('SELECT id, name FROM members WHERE group_id = ?', [group.id]);
@@ -151,12 +187,6 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
         nameMap.set(payload.paidByName.toLowerCase().trim(), payerId);
       }
 
-      // Check if transaction with this txUid exists
-      const existingTx = await db.getFirstAsync<{ id: number; updated_ts: number }>(
-        'SELECT id, updated_ts FROM transactions WHERE group_id = ? AND uid = ?',
-        [group.id, payload.txUid]
-      );
-
       // Conflict Resolution: Last-Write-Wins based on timestamp
       if (existingTx && (existingTx.updated_ts || 0) >= payload.updatedTs) {
         return; // Local version is newer or equal, ignore older remote update
@@ -166,7 +196,7 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
       if (existingTx) {
         txId = existingTx.id;
         await db.runAsync(
-          `UPDATE transactions SET type = ?, title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, author_id = ?, author_name = ?, updated_ts = ?, updated_at = ?
+          `UPDATE transactions SET type = ?, title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, author_id = ?, author_name = ?, updated_by_id = ?, updated_by_name = ?, updated_ts = ?, updated_at = ?
            WHERE id = ?`,
           [
             payload.type,
@@ -177,8 +207,10 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
             payload.category,
             payload.note,
             payload.date,
-            event.authorId,
-            event.authorName,
+            payload.authorId || existingTx.author_id,
+            payload.authorName || '',
+            payload.updatedById || event.authorId,
+            payload.updatedByName || event.authorName,
             payload.updatedTs,
             nowIso,
             txId,
@@ -187,8 +219,8 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
         await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [txId]);
       } else {
         const ins = await db.runAsync(
-          `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, updated_ts, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, updated_by_id, updated_by_name, updated_ts, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             group.id,
             payload.txUid,
@@ -200,8 +232,10 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
             payload.category,
             payload.note,
             payload.date,
-            event.authorId,
-            event.authorName,
+            payload.authorId || event.authorId,
+            payload.authorName || event.authorName,
+            payload.updatedById || '',
+            payload.updatedByName || '',
             payload.updatedTs,
             nowIso,
             nowIso,
@@ -231,22 +265,29 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
       }
 
       // 2. Create in-app notification
-      const actionDesc = payload.type === 'payment' ? 'recorded a payment of' : 'added';
+      const actionDesc = existingTx ? 'updated' : payload.type === 'payment' ? 'recorded a payment of' : 'added';
       const msg = `${event.authorName} ${actionDesc} ${payload.title} (${money(payload.amount, group.currency)})`;
       await db.runAsync(
         'INSERT INTO sync_notifications (group_uid, author_name, title, message, read, created_at) VALUES (?, ?, ?, ?, 0, ?)',
         [group.uid, event.authorName, group.name, msg, nowIso]
       );
     } else if (event.action === 'DELETE_TX') {
-      const payload = event.payload as { txUid: string };
+      const payload = event.payload as { txUid: string; authorId?: string };
       if (payload?.txUid) {
-        const existingTx = await db.getFirstAsync<{ id: number }>('SELECT id FROM transactions WHERE group_id = ? AND uid = ?', [
+        const existingTx = await db.getFirstAsync<{ id: number; author_id: string }>('SELECT id, author_id FROM transactions WHERE group_id = ? AND uid = ?', [
           group.id,
           payload.txUid,
         ]);
         if (existingTx) {
-          await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [existingTx.id]);
-          await db.runAsync('DELETE FROM transactions WHERE id = ?', [existingTx.id]);
+          const isCreator = !group.creator_id || group.creator_id === event.authorId;
+          const permModel = group.permission_model || 'collaborative';
+          // In admin_only & contributor: only creator can delete
+          // In collaborative: creator OR tx author can delete
+          const canDelete = isCreator || (permModel === 'collaborative' && Boolean(existingTx.author_id) && existingTx.author_id === event.authorId);
+          if (canDelete) {
+            await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [existingTx.id]);
+            await db.runAsync('DELETE FROM transactions WHERE id = ?', [existingTx.id]);
+          }
         }
       }
     }

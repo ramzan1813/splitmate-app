@@ -2,7 +2,7 @@ import { Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Avatar, Button, Card, Empty, Loading, Row, Screen, SectionTitle } from '@/components/ui';
 import { useGroup } from '@/lib/useGroup';
-import { deleteTransaction } from '@/data/repo';
+import { deleteTransaction, getGroupPermissions } from '@/data/repo';
 import { money, prettyDate } from '@/lib/format';
 import { categoryIcon, colors } from '@/lib/theme';
 import { confirm, errorMessage, notify } from '@/lib/dialog';
@@ -23,6 +23,7 @@ export default function TransactionDetail() {
   const name = (mid: number) => (mid === me ? 'You' : memberName(mid));
   const myShare = tx.splits.find((s) => s.memberId === me)?.share ?? 0;
   const myNet = me === null ? 0 : (tx.paidBy === me ? tx.amount : 0) - myShare;
+  const perms = getGroupPermissions(data.group, data.myIdentityId);
 
   const remove = async () => {
     if (!(await confirm('Delete', `Delete this ${isPayment ? 'payment' : 'expense'}? This cannot be undone.`, 'Delete', true))) return;
@@ -118,9 +119,40 @@ export default function TransactionDetail() {
         </>
       ) : null}
 
-      <Row style={{ gap: 10, marginTop: 6 }}>
-        <Button title="Delete" variant="danger" onPress={remove} style={{ flex: 1 }} testID="tx-delete" />
-        <Button title="Edit" onPress={() => router.replace(`/group/${id}/${isPayment ? 'payment' : 'expense'}?tid=${tx.id}`)} style={{ flex: 1 }} testID="tx-edit" />
+      {/* Audit Trail & Permission Info */}
+      <Card style={{ marginTop: 10, paddingVertical: 10 }}>
+        {tx.authorName ? (
+          <Row style={{ justifyContent: 'space-between', marginBottom: tx.updatedByName ? 4 : 0 }}>
+            <Text style={{ fontSize: 12, color: colors.muted }}>Created by</Text>
+            <Text style={{ fontSize: 12, fontWeight: '700', color: colors.text }}>{tx.authorName}</Text>
+          </Row>
+        ) : null}
+        {tx.updatedByName ? (
+          <Row style={{ justifyContent: 'space-between' }}>
+            <Text style={{ fontSize: 12, color: colors.muted }}>Last updated by</Text>
+            <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primaryDark }}>{tx.updatedByName}</Text>
+          </Row>
+        ) : null}
+        <Row style={{ justifyContent: 'space-between', marginTop: 4 }}>
+          <Text style={{ fontSize: 12, color: colors.muted }}>Permission mode</Text>
+          <Text style={{ fontSize: 12, fontWeight: '600', color: colors.muted }}>
+            {data.group.permissionModel === 'admin_only' ? '👑 Admin Only' : data.group.permissionModel === 'contributor' ? '✍️ Contributor' : '🤝 Collaborative'}
+          </Text>
+        </Row>
+      </Card>
+
+      <Row style={{ gap: 10, marginTop: 12 }}>
+        {perms.canDeleteTx({ authorId: tx.authorId }) && (
+          <Button title="Delete" variant="danger" onPress={remove} style={{ flex: 1 }} testID="tx-delete" />
+        )}
+        {perms.canEditTx({ authorId: tx.authorId }) && (
+          <Button
+            title="Edit"
+            onPress={() => router.replace(`/group/${id}/${isPayment ? 'payment' : 'expense'}?tid=${tx.id}`)}
+            style={{ flex: 1 }}
+            testID="tx-edit"
+          />
+        )}
       </Row>
     </Screen>
   );

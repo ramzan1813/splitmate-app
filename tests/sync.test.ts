@@ -129,33 +129,78 @@ test('sync: two-device synchronization and notification simulation', async () =>
   assert.ok(notifsB[0]!.message.includes('Alice added Hotel ($200.00)'));
 });
 
-test('sync: delete transaction event deletes row on peer', async () => {
+test('sync: delete transaction event deletes row on peer and enforces permissions', async () => {
   const db = createNodeDb();
   await migrate(db);
   setDb(db);
 
-  const g = await repo.createGroup({ name: 'Dinner', myName: 'Alice' });
-  const [alice] = (await repo.getMembers(g.id)).map((m) => m.id) as [number];
-  await repo.createTransaction(g.id, { type: 'expense', title: 'Pizza', amount: 30, paidBy: alice, splits: [{ memberId: alice }] });
+  // Group created with Alice as creator
+  const g = await repo.createGroup({
+    name: 'Dinner',
+    myName: 'Bob',
+    creatorId: 'usr_alice_remote',
+    creatorName: 'Alice',
+    uid: 'grp_dinner_del',
+    syncKey: 'key_dinner_del',
+  });
 
-  const txs = await repo.getTransactions(g.id);
-  assert.equal(txs.length, 1);
-  const txUid = txs[0]!.uid!;
+  const [bob] = (await repo.getMembers(g.id)).map((m) => m.id) as [number];
 
-  const deleteEvent: SyncEvent = {
-    eventId: 'evt_del_1',
+  // Alice added an expense on her device, synced to Bob
+  const syncPayload: SyncTxPayload = {
+    txUid: 'tx_pizza_123',
+    type: 'expense',
+    title: 'Pizza',
+    amount: 3000,
+    paidByName: 'Alice',
+    splitType: 'equal',
+    category: 'Food',
+    note: '',
+    date: '2026-10-04',
+    splits: [{ memberName: 'Alice', value: 1, share: 1500 }, { memberName: 'Bob', value: 1, share: 1500 }],
+    updatedTs: Date.now(),
+  };
+  await applyRemoteSyncEvent({
+    eventId: 'evt_upsert_1',
     groupUid: g.uid,
-    authorId: 'usr_remote_1',
-    authorName: 'Bob',
+    authorId: 'usr_alice_remote',
+    authorName: 'Alice',
+    timestamp: Date.now(),
+    action: 'UPSERT_TX',
+    payload: syncPayload,
+  });
+
+  let txs = await repo.getTransactions(g.id);
+  assert.equal(txs.length, 1);
+  assert.equal(txs[0]!.title, 'Pizza');
+
+  // 1. Unauthorized stranger (not creator, not author) sends DELETE_TX -> rejected
+  const unauthorizedDelete: SyncEvent = {
+    eventId: 'evt_del_unauth',
+    groupUid: g.uid,
+    authorId: 'usr_stranger_999',
+    authorName: 'Stranger',
     timestamp: Date.now(),
     action: 'DELETE_TX',
-    payload: { txUid },
+    payload: { txUid: 'tx_pizza_123' },
   };
+  await applyRemoteSyncEvent(unauthorizedDelete);
+  txs = await repo.getTransactions(g.id);
+  assert.equal(txs.length, 1); // Still present!
 
-  await applyRemoteSyncEvent(deleteEvent);
-
-  const txsAfter = await repo.getTransactions(g.id);
-  assert.equal(txsAfter.length, 0);
+  // 2. Authorized creator/author Alice sends DELETE_TX -> deleted on Bob's device
+  const authorizedDelete: SyncEvent = {
+    eventId: 'evt_del_auth',
+    groupUid: g.uid,
+    authorId: 'usr_alice_remote',
+    authorName: 'Alice',
+    timestamp: Date.now(),
+    action: 'DELETE_TX',
+    payload: { txUid: 'tx_pizza_123' },
+  };
+  await applyRemoteSyncEvent(authorizedDelete);
+  txs = await repo.getTransactions(g.id);
+  assert.equal(txs.length, 0); // Successfully deleted!
 });
 
 test('identity: generates and persists on-device user account identity', async () => {
@@ -699,6 +744,344 @@ test('sync: lazy chunked batched state snapshot streaming for large groups', asy
 
   const summaryB = await repo.getGroupSummary(groupB.id);
   assert.equal(summaryB.totals.expenseCount, 60);
+});
+
+test('permissions: Model 1 (admin_only) allows admin full control but blocks non-admin additions and edits', async () => {
+  const db = createNodeDb();
+  await migrate(db);
+  setDb(db);
+
+  // Group created in admin_only mode by Alice (remote creator)
+  const g = await repo.createGroup({
+    name: 'Admin Broadcast Group',
+    myName: 'Bob',
+    creatorId: 'usr_alice_admin',
+    creatorName: 'Alice',
+    permissionModel: 'admin_only',
+    uid: 'grp_admin_only_test',
+    syncKey: 'key_admin_only_test',
+  });
+
+  const summary = await repo.getGroupSummary(g.id);
+  assert.equal(summary.canAdd, false);
+  assert.equal(summary.isCreator, false);
+
+  const [bob] = (await repo.getMembers(g.id)).map((m) => m.id) as [number];
+
+  // 1. Local attempt by Bob to add expense throws AppError
+  await assert.rejects(
+    async () => {
+      await repo.createTransaction(g.id, {
+        type: 'expense',
+        title: 'Unauthorized Coffee',
+        amount: 5,
+        paidBy: bob,
+        splits: [{ memberId: bob }],
+      });
+    },
+    /Only the group admin can add expenses/
+  );
+
+  // 2. Alice (Admin) adds an expense via sync -> accepted
+  const txPayload: SyncTxPayload = {
+    txUid: 'tx_admin_announce',
+    type: 'expense',
+    title: 'Conference Hall',
+    amount: 50000,
+    paidByName: 'Alice',
+    splitType: 'equal',
+    category: 'General',
+    note: '',
+    date: '2026-10-04',
+    splits: [{ memberName: 'Alice', value: 1, share: 25000 }, { memberName: 'Bob', value: 1, share: 25000 }],
+    updatedTs: Date.now(),
+  };
+
+  const adminEvent: SyncEvent<SyncTxPayload> = {
+    eventId: 'evt_admin_tx',
+    groupUid: g.uid,
+    authorId: 'usr_alice_admin',
+    authorName: 'Alice',
+    timestamp: Date.now(),
+    action: 'UPSERT_TX',
+    payload: txPayload,
+  };
+  await applyRemoteSyncEvent(adminEvent);
+
+  let txs = await repo.getTransactions(g.id);
+  assert.equal(txs.length, 1);
+  assert.equal(txs[0]!.title, 'Conference Hall');
+
+  // 3. Non-admin peer (e.g. Charlie) tries to edit Alice's transaction via sync -> rejected by sync engine
+  const unauthEditEvent: SyncEvent<SyncTxPayload> = {
+    eventId: 'evt_unauth_edit',
+    groupUid: g.uid,
+    authorId: 'usr_charlie_stranger',
+    authorName: 'Charlie',
+    timestamp: Date.now() + 10,
+    action: 'UPSERT_TX',
+    payload: {
+      ...txPayload,
+      title: 'Hacked Title',
+      updatedTs: Date.now() + 10,
+    },
+  };
+  await applyRemoteSyncEvent(unauthEditEvent);
+
+  txs = await repo.getTransactions(g.id);
+  assert.equal(txs[0]!.title, 'Conference Hall'); // Unchanged!
+});
+
+test('permissions: Model 2 (contributor) allows non-admin to add, but restricts edits and deletes to admin', async () => {
+  const db = createNodeDb();
+  await migrate(db);
+  setDb(db);
+
+  // Group created in contributor mode by Alice (remote creator)
+  const g = await repo.createGroup({
+    name: 'Contributor Group',
+    myName: 'Bob',
+    creatorId: 'usr_alice_admin',
+    creatorName: 'Alice',
+    permissionModel: 'contributor',
+    uid: 'grp_contrib_test',
+    syncKey: 'key_contrib_test',
+  });
+
+  const summary = await repo.getGroupSummary(g.id);
+  assert.equal(summary.canAdd, true);
+  assert.equal(summary.isCreator, false);
+
+  const [bob] = (await repo.getMembers(g.id)).map((m) => m.id) as [number];
+
+  // 1. Bob (non-admin) CAN create an expense
+  const txId = await repo.createTransaction(g.id, {
+    type: 'expense',
+    title: 'Bob Lunch',
+    amount: 15,
+    paidBy: bob,
+    splits: [{ memberId: bob }],
+  });
+  let txs = await repo.getTransactions(g.id);
+  assert.equal(txs.length, 1);
+  assert.equal(txs[0]!.title, 'Bob Lunch');
+
+  // 2. Bob tries to edit or delete -> blocked locally in repo
+  await assert.rejects(
+    async () => {
+      await repo.updateTransaction(g.id, txId, {
+        type: 'expense',
+        title: 'Bob Modified Lunch',
+        amount: 20,
+        paidBy: bob,
+        splits: [{ memberId: bob }],
+      });
+    },
+    /permission to edit this transaction/
+  );
+
+  await assert.rejects(
+    async () => {
+      await repo.deleteTransaction(g.id, txId);
+    },
+    /permission to delete this transaction/
+  );
+
+  // 3. Remote non-admin peer tries to edit via sync -> rejected
+  const remoteEdit: SyncEvent<SyncTxPayload> = {
+    eventId: 'evt_contrib_edit_rej',
+    groupUid: g.uid,
+    authorId: 'usr_charlie',
+    authorName: 'Charlie',
+    timestamp: Date.now() + 10,
+    action: 'UPSERT_TX',
+    payload: {
+      txUid: txs[0]!.uid!,
+      type: 'expense',
+      title: 'Charlie Overwrite',
+      amount: 5000,
+      paidByName: 'Bob',
+      splitType: 'equal',
+      category: 'Food',
+      note: '',
+      date: '2026-10-04',
+      splits: [{ memberName: 'Bob', value: 1, share: 5000 }],
+      updatedTs: Date.now() + 10,
+    },
+  };
+  await applyRemoteSyncEvent(remoteEdit);
+  txs = await repo.getTransactions(g.id);
+  assert.equal(txs[0]!.title, 'Bob Lunch'); // Not overwritten
+
+  // 4. Group admin Alice edits the transaction via sync -> accepted
+  const adminEdit: SyncEvent<SyncTxPayload> = {
+    eventId: 'evt_contrib_edit_ok',
+    groupUid: g.uid,
+    authorId: 'usr_alice_admin',
+    authorName: 'Alice',
+    timestamp: Date.now() + 20,
+    action: 'UPSERT_TX',
+    payload: {
+      txUid: txs[0]!.uid!,
+      type: 'expense',
+      title: 'Bob Lunch (Approved by Admin)',
+      amount: 1500,
+      paidByName: 'Bob',
+      splitType: 'equal',
+      category: 'Food',
+      note: 'Admin verified',
+      date: '2026-10-04',
+      splits: [{ memberName: 'Bob', value: 1, share: 1500 }],
+      updatedTs: Date.now() + 20,
+      updatedById: 'usr_alice_admin',
+      updatedByName: 'Alice',
+    },
+  };
+  await applyRemoteSyncEvent(adminEdit);
+  txs = await repo.getTransactions(g.id);
+  assert.equal(txs[0]!.title, 'Bob Lunch (Approved by Admin)');
+  assert.equal(txs[0]!.updatedByName, 'Alice');
+});
+
+test('permissions: Model 3 (collaborative) allows edit with audit trail, and protects delete to author or creator', async () => {
+  const db = createNodeDb();
+  await migrate(db);
+  setDb(db);
+
+  // Group created by Bob (local creator)
+  const g = await repo.createGroup({
+    name: 'Collaborative Trip',
+    myName: 'Bob',
+    permissionModel: 'collaborative',
+    uid: 'grp_collab_test',
+    syncKey: 'key_collab_test',
+  });
+
+  const [bob] = (await repo.getMembers(g.id)).map((m) => m.id) as [number];
+
+  // 1. Remote user Charlie adds an expense
+  const charlieTxPayload: SyncTxPayload = {
+    txUid: 'tx_charlie_museum',
+    type: 'expense',
+    title: 'Museum Entry',
+    amount: 4000,
+    paidByName: 'Charlie',
+    splitType: 'equal',
+    category: 'Activities',
+    note: '',
+    date: '2026-10-04',
+    authorId: 'usr_charlie',
+    authorName: 'Charlie',
+    splits: [{ memberName: 'Charlie', value: 1, share: 2000 }, { memberName: 'Bob', value: 1, share: 2000 }],
+    updatedTs: Date.now(),
+  };
+  await applyRemoteSyncEvent({
+    eventId: 'evt_charlie_add',
+    groupUid: g.uid,
+    authorId: 'usr_charlie',
+    authorName: 'Charlie',
+    timestamp: Date.now(),
+    action: 'UPSERT_TX',
+    payload: charlieTxPayload,
+  });
+
+  let txs = await repo.getTransactions(g.id);
+  assert.equal(txs.length, 1);
+  const txId = txs[0]!.id;
+  assert.equal(txs[0]!.authorName, 'Charlie');
+
+  // 2. Bob (group creator & member) updates Charlie's expense -> audit trail records Bob
+  await repo.updateTransaction(g.id, txId, {
+    type: 'expense',
+    title: 'Museum Entry + Audio Guide',
+    amount: 50,
+    paidBy: bob,
+    splits: [{ memberId: bob }],
+  });
+
+  txs = await repo.getTransactions(g.id);
+  assert.equal(txs[0]!.title, 'Museum Entry + Audio Guide');
+  assert.equal(txs[0]!.authorName, 'Charlie');
+  assert.equal(txs[0]!.updatedByName, 'Bob'); // Audit trail updated!
+
+  // 3. A 3rd party peer (Dave) tries to delete Charlie's transaction -> rejected
+  const daveDelete: SyncEvent = {
+    eventId: 'evt_dave_delete_rej',
+    groupUid: g.uid,
+    authorId: 'usr_dave_stranger',
+    authorName: 'Dave',
+    timestamp: Date.now(),
+    action: 'DELETE_TX',
+    payload: { txUid: 'tx_charlie_museum' },
+  };
+  await applyRemoteSyncEvent(daveDelete);
+  txs = await repo.getTransactions(g.id);
+  assert.equal(txs.length, 1); // Delete prevented!
+
+  // 4. Charlie (the author) sends DELETE_TX -> accepted
+  const charlieDelete: SyncEvent = {
+    eventId: 'evt_charlie_delete_ok',
+    groupUid: g.uid,
+    authorId: 'usr_charlie',
+    authorName: 'Charlie',
+    timestamp: Date.now(),
+    action: 'DELETE_TX',
+    payload: { txUid: 'tx_charlie_museum' },
+  };
+  await applyRemoteSyncEvent(charlieDelete);
+  txs = await repo.getTransactions(g.id);
+  assert.equal(txs.length, 0); // Deleted by author!
+});
+
+test('permissions: group creator updates permission model and syncs change to peers', async () => {
+  const db = createNodeDb();
+  await migrate(db);
+  setDb(db);
+
+  // Bob is creator of group
+  const g = await repo.createGroup({
+    name: 'Permissions Sync Test',
+    myName: 'Bob',
+    permissionModel: 'collaborative',
+  });
+
+  // Bob changes model to admin_only
+  const updated = await repo.updateGroup(g.id, {
+    permissionModel: 'admin_only',
+  });
+  assert.equal(updated.permissionModel, 'admin_only');
+
+  // Verify sync event can be applied on peer
+  const dbPeer = createNodeDb();
+  await migrate(dbPeer);
+  setDb(dbPeer);
+
+  const peerGroup = await repo.createGroup({
+    name: 'Permissions Sync Test',
+    myName: 'Charlie',
+    creatorId: g.creatorId,
+    creatorName: 'Bob',
+    permissionModel: 'collaborative',
+    uid: g.uid,
+    syncKey: g.syncKey,
+  });
+
+  const updateEvent: SyncEvent = {
+    eventId: 'evt_update_perm_model',
+    groupUid: g.uid,
+    authorId: g.creatorId,
+    authorName: 'Bob',
+    timestamp: Date.now(),
+    action: 'UPDATE_GROUP',
+    payload: {
+      permissionModel: 'admin_only',
+    },
+  };
+  await applyRemoteSyncEvent(updateEvent);
+
+  const peerSummary = await repo.getGroupSummary(peerGroup.id);
+  assert.equal(peerSummary.group.permissionModel, 'admin_only');
+  assert.equal(peerSummary.canAdd, false); // Peer now has read-only access!
 });
 
 

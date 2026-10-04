@@ -11,7 +11,7 @@ export interface DB {
   withTransactionAsync(task: () => Promise<void>): Promise<void>;
 }
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -93,6 +93,13 @@ const MIGRATIONS: Record<number, string> = {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_sync_notif_group ON sync_notifications(group_uid);
+  `,
+  3: `
+    ALTER TABLE groups ADD COLUMN permission_model TEXT NOT NULL DEFAULT 'collaborative';
+    ALTER TABLE groups ADD COLUMN creator_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE groups ADD COLUMN creator_name TEXT NOT NULL DEFAULT '';
+    ALTER TABLE transactions ADD COLUMN updated_by_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE transactions ADD COLUMN updated_by_name TEXT NOT NULL DEFAULT '';
   `,
 };
 

@@ -2,6 +2,24 @@
 
 Release notes for each version. The release workflow copies the section matching the version in `app.json` into the GitHub Release.
 
+## 1.4.0 — 2026-10-04
+
+### New
+- **3 Group Permission & Role Models.** Choose how group members collaborate:
+  1. **👑 Admin Only (Broadcast Mode):** Only the creator/admin can add, edit, or delete transactions and modify group settings. Joined peers have a clean read-only view.
+  2. **✍️ Contributor Mode:** Creator has full administrative control; joined members can add new expenses and payments, but cannot edit or delete existing ones.
+  3. **🤝 Collaborative Mode (Default):** All members can add and update transactions. Deletion is strictly protected: only the author who created the transaction or the group creator can delete it.
+- **Audit Trail & Attribution Tracking.** Transactions track and display both the original creator (*Created by Alice*) and the last editor (*Last updated by Bob*), synchronized across peers in real time.
+- **Batched Lazy Syncing for High-Volume Groups.** Automatic chunked streaming (25 transactions per batch) with progress tracking during P2P state restoration, ensuring fault tolerance and zero relay buffer exhaustion even for groups with thousands of records.
+- **WebSocket Keepalive Ping/Pong.** Relay server sends periodic 45-second heartbeat pings to keep long-lived connections open through NATs, firewalls, and mobile carrier proxies.
+
+### Improved
+- **Permission-Guarded UI.** Group screens, floating action bars, and transaction detail views dynamically adapt based on the user's role and permission model.
+- **Group Settings Control.** Group creators can seamlessly switch permission models in Group Settings, instantly broadcasting the updated permissions to all connected peers.
+- **Comprehensive Test Suite.** Expanded to 31 unit and integration tests covering all 3 permission models, audit trails, chunked state transfer, and P2P conflict resolution.
+
+---
+
 ## 1.3.0 — 2026-10-04
 
 ### New

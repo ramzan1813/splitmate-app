@@ -10,6 +10,7 @@ Built with Expo SDK 57 (React Native 0.86, TypeScript, Expo Router).
 |---|---|
 | **On-device accounts** | No email, passwords or phone numbers. Cryptographic identities and keypairs are generated and stored 100% on-device. |
 | **E2EE Remote Sync** | 256-bit AES-GCM encrypted real-time sync across Wi-Fi, 4G and 5G through a blind, zero-knowledge Cloudflare Worker relay. |
+| **Group Permission Models** | 3 configurable roles per group: **Admin Only** (broadcast/read-only for peers), **Contributor** (peers can add expenses, admin can edit/delete), and **Collaborative** (author-protected deletion with audit trail). |
 | **QR Code & Deep Link Invites** | ISO/IEC 18004 compliant QR codes and universal invite links (`https://splitmate-relay.rn45819.workers.dev/join?...` / `splitmate://join?...`) to share and join groups in one tap. |
 | **Native Camera QR Scanner** | Built-in camera scanner with viewfinder and permission handling to scan peer invite QR codes instantly. |
 | **In-App Activity Notifications** | Real-time alerts when friends record an expense, payment, or settlement, viewable in Settings and Group screens. |
@@ -30,7 +31,7 @@ You need Node.js 22.13+ (https://nodejs.org). No admin rights are needed.
 ```bash
 cd splitmate-app
 npm install
-npm test            # 22 data, crypto, sync & QR tests
+npm test            # 31 data, crypto, sync, permission & QR tests
 npx expo start      # then press "w" for the browser, or scan the QR code with Expo Go
 ```
 

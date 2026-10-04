@@ -255,21 +255,29 @@ export default function GroupScreen() {
           borderTopColor: 'rgba(203, 213, 225, 0.7)',
         }}
       >
-        <View style={{ width: '100%', maxWidth: 760, flexDirection: 'row', gap: 12 }}>
-          <Button
-            title="Record payment"
-            variant="outline"
-            onPress={() => router.push(`/group/${id}/payment`)}
-            style={{ flex: 1, backgroundColor: '#fff' }}
-            testID="add-payment"
-          />
-          <Button
-            title="+ Add expense"
-            onPress={() => router.push(`/group/${id}/expense`)}
-            style={{ flex: 1 }}
-            testID="add-expense"
-          />
-        </View>
+        {data.canAdd ? (
+          <View style={{ width: '100%', maxWidth: 760, flexDirection: 'row', gap: 12 }}>
+            <Button
+              title="Record payment"
+              variant="outline"
+              onPress={() => router.push(`/group/${id}/payment`)}
+              style={{ flex: 1, backgroundColor: '#fff' }}
+              testID="add-payment"
+            />
+            <Button
+              title="+ Add expense"
+              onPress={() => router.push(`/group/${id}/expense`)}
+              style={{ flex: 1 }}
+              testID="add-expense"
+            />
+          </View>
+        ) : (
+          <View style={{ width: '100%', maxWidth: 760, alignItems: 'center', paddingVertical: 8 }}>
+            <Text style={{ fontSize: 13, fontWeight: '700', color: colors.muted }}>
+              🔒 Read-Only Group · Only admin ({data.group.creatorName || 'creator'}) can add expenses
+            </Text>
+          </View>
+        )}
       </View>
 
       {/* Group Invite & E2EE Sync Modal */}

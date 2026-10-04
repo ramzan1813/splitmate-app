@@ -35,6 +35,9 @@ interface GroupRow {
   name: string;
   description: string;
   currency: string;
+  permission_model?: string;
+  creator_id?: string;
+  creator_name?: string;
   sync_key?: string;
   created_at: string;
   updated_at: string;
@@ -45,6 +48,9 @@ const mapGroup = (g: GroupRow): Group => ({
   name: g.name,
   description: g.description,
   currency: g.currency,
+  permissionModel: (g.permission_model as Group['permissionModel']) || 'collaborative',
+  creatorId: g.creator_id || '',
+  creatorName: g.creator_name || '',
   syncKey: g.sync_key || '',
   createdAt: g.created_at,
   updatedAt: g.updated_at,
@@ -64,9 +70,42 @@ interface TxRow {
   date: string;
   author_id?: string;
   author_name?: string;
+  updated_by_id?: string;
+  updated_by_name?: string;
   updated_ts?: number;
   created_at: string;
   updated_at: string;
+}
+
+export function getGroupPermissions(group: Group, currentUserId: string) {
+  const isCreator = !group.creatorId || group.creatorId === currentUserId;
+  const model = group.permissionModel || 'collaborative';
+
+  if (model === 'admin_only') {
+    return {
+      isCreator,
+      canAdd: isCreator,
+      canEditTx: (_tx?: { authorId?: string }) => isCreator,
+      canDeleteTx: (_tx?: { authorId?: string }) => isCreator,
+    };
+  }
+
+  if (model === 'contributor') {
+    return {
+      isCreator,
+      canAdd: true,
+      canEditTx: (_tx?: { authorId?: string }) => isCreator,
+      canDeleteTx: (_tx?: { authorId?: string }) => isCreator,
+    };
+  }
+
+  // 'collaborative'
+  return {
+    isCreator,
+    canAdd: true,
+    canEditTx: (_tx?: { authorId?: string }) => true,
+    canDeleteTx: (tx?: { authorId?: string }) => isCreator || (Boolean(tx?.authorId) && tx?.authorId === currentUserId),
+  };
 }
 
 async function touch(groupId: number) {
@@ -170,6 +209,8 @@ export async function getTransactions(groupId?: number): Promise<Transaction[]> 
     date: t.date,
     authorId: t.author_id,
     authorName: t.author_name,
+    updatedById: t.updated_by_id,
+    updatedByName: t.updated_by_name,
     updatedTs: t.updated_ts,
     createdAt: t.created_at,
     updatedAt: t.updated_at,
@@ -202,6 +243,9 @@ export async function getGroupSummary(id: number): Promise<GroupSummary> {
   const members = await getMembers(id);
   const transactions = await getTransactions(id);
   const stats = memberStats(members, transactions);
+  const identity = await getIdentity();
+  const perms = getGroupPermissions(group, identity.id);
+
   const categories: Record<string, number> = {};
   let totalExpenses = 0;
   for (const t of transactions) {
@@ -223,6 +267,9 @@ export async function getGroupSummary(id: number): Promise<GroupSummary> {
       .map(([name, amount]) => ({ name, amount }))
       .sort((a, b) => b.amount - a.amount),
     myMemberId: members.find((m) => m.isMe)?.id ?? null,
+    myIdentityId: identity.id,
+    isCreator: perms.isCreator,
+    canAdd: perms.canAdd,
     transactions,
   };
 }
@@ -231,6 +278,9 @@ export async function createGroup(input: {
   name: string;
   description?: string;
   currency?: string;
+  permissionModel?: Group['permissionModel'];
+  creatorId?: string;
+  creatorName?: string;
   myName: string;
   members?: string[];
   syncKey?: string;
@@ -240,6 +290,10 @@ export async function createGroup(input: {
   if (!name) throw new AppError('Group name is required');
   const myName = clean(input.myName, LIMITS.name) || 'Me';
   const currency = CURRENCIES.includes(String(input.currency)) ? String(input.currency) : 'USD';
+  const permissionModel = input.permissionModel || 'collaborative';
+  const identity = await getIdentity();
+  const creatorId = input.creatorId || identity.id;
+  const creatorName = input.creatorName || myName;
   const syncKey = input.syncKey || generateGroupKey();
   const groupUid = input.uid || newUid();
   const others = (input.members || [])
@@ -262,8 +316,8 @@ export async function createGroup(input: {
   await db.withTransactionAsync(async () => {
     const ts = now();
     const r = await db.runAsync(
-      'INSERT INTO groups (uid, name, description, currency, sync_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [groupUid, name, clean(input.description, LIMITS.description), currency, syncKey, ts, ts]
+      'INSERT INTO groups (uid, name, description, currency, permission_model, creator_id, creator_name, sync_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [groupUid, name, clean(input.description, LIMITS.description), currency, permissionModel, creatorId, creatorName, syncKey, ts, ts]
     );
     gid = r.lastInsertRowId;
     await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 1, ?)', [gid, myName, ts]);
@@ -321,6 +375,9 @@ export interface GroupSnapshotChunkPayload {
   name: string;
   description: string;
   currency: string;
+  permissionModel?: Group['permissionModel'];
+  creatorId?: string;
+  creatorName?: string;
   chunkIndex?: number;
   totalChunks?: number;
   batchId?: string;
@@ -337,6 +394,8 @@ export interface GroupSnapshotChunkPayload {
     date: string;
     authorId?: string;
     authorName?: string;
+    updatedById?: string;
+    updatedByName?: string;
     updatedTs: number;
     splits: { memberName: string; value: number; share: number }[];
   }[];
@@ -355,6 +414,9 @@ export async function exportGroupSnapshot(groupId: number): Promise<GroupSnapsho
     name: group.name,
     description: group.description,
     currency: group.currency,
+    permissionModel: group.permissionModel,
+    creatorId: group.creatorId,
+    creatorName: group.creatorName,
     chunkIndex: 0,
     totalChunks: 1,
     members: members.map((m) => m.name),
@@ -370,6 +432,8 @@ export async function exportGroupSnapshot(groupId: number): Promise<GroupSnapsho
       date: t.date,
       authorId: t.authorId,
       authorName: t.authorName,
+      updatedById: t.updatedById,
+      updatedByName: t.updatedByName,
       updatedTs: t.updatedTs || (t.createdAt ? new Date(t.createdAt).getTime() : Date.now()),
       splits: t.splits.map((s) => ({
         memberName: memberMap.get(s.memberId) || 'Unknown',
@@ -400,6 +464,9 @@ export async function exportGroupSnapshotBatches(
       name: full.name,
       description: full.description,
       currency: full.currency,
+      permissionModel: full.permissionModel,
+      creatorId: full.creatorId,
+      creatorName: full.creatorName,
       chunkIndex: i,
       totalChunks,
       batchId,
@@ -418,7 +485,15 @@ export async function applyGroupSnapshot(groupId: number, snapshot: GroupSnapsho
   const nowIso = now();
 
   await db.withTransactionAsync(async () => {
-    // 1. Ensure all members in snapshot exist
+    // 1. Update group metadata & permission model if present
+    if (snapshot.permissionModel || snapshot.creatorId) {
+      await db.runAsync(
+        "UPDATE groups SET permission_model = COALESCE(NULLIF(?, ''), permission_model), creator_id = COALESCE(NULLIF(?, ''), creator_id), creator_name = COALESCE(NULLIF(?, ''), creator_name), updated_at = ? WHERE id = ?",
+        [snapshot.permissionModel || '', snapshot.creatorId || '', snapshot.creatorName || '', nowIso, groupId]
+      );
+    }
+
+    // 2. Ensure all members in snapshot exist
     const currentMembers = await getMembers(groupId);
     const memberNameMap = new Map<string, number>(currentMembers.map((m) => [m.name.toLowerCase().trim(), m.id]));
 
@@ -430,7 +505,7 @@ export async function applyGroupSnapshot(groupId: number, snapshot: GroupSnapsho
       }
     }
 
-    // 2. Import / Merge transactions
+    // 3. Import / Merge transactions
     for (const tx of snapshot.transactions) {
       let payerId = memberNameMap.get(tx.paidByName.toLowerCase().trim());
       if (!payerId) {
@@ -448,7 +523,7 @@ export async function applyGroupSnapshot(groupId: number, snapshot: GroupSnapsho
         // Last-Write-Wins: update only if snapshot is newer
         if ((tx.updatedTs || 0) > (existingTx.updated_ts || 0)) {
           await db.runAsync(
-            `UPDATE transactions SET type = ?, title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, author_id = ?, author_name = ?, updated_ts = ?, updated_at = ?
+            `UPDATE transactions SET type = ?, title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, author_id = ?, author_name = ?, updated_by_id = ?, updated_by_name = ?, updated_ts = ?, updated_at = ?
              WHERE id = ?`,
             [
               tx.type,
@@ -461,6 +536,8 @@ export async function applyGroupSnapshot(groupId: number, snapshot: GroupSnapsho
               tx.date,
               tx.authorId || '',
               tx.authorName || '',
+              tx.updatedById || '',
+              tx.updatedByName || '',
               tx.updatedTs,
               nowIso,
               existingTx.id,
@@ -486,8 +563,8 @@ export async function applyGroupSnapshot(groupId: number, snapshot: GroupSnapsho
       } else {
         // Insert new transaction
         const ins = await db.runAsync(
-          `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, updated_ts, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, updated_by_id, updated_by_name, updated_ts, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             groupId,
             tx.txUid,
@@ -501,6 +578,8 @@ export async function applyGroupSnapshot(groupId: number, snapshot: GroupSnapsho
             tx.date,
             tx.authorId || '',
             tx.authorName || '',
+            tx.updatedById || '',
+            tx.updatedByName || '',
             tx.updatedTs || Date.now(),
             nowIso,
             nowIso,
@@ -535,14 +614,31 @@ export async function setGroupSyncKey(id: number, syncKey: string) {
   await db.runAsync('UPDATE groups SET sync_key = ?, updated_at = ? WHERE id = ?', [syncKey, now(), id]);
 }
 
-export async function updateGroup(id: number, input: { name?: string; description?: string; currency?: string }) {
+export async function updateGroup(
+  id: number,
+  input: { name?: string; description?: string; currency?: string; permissionModel?: Group['permissionModel'] }
+) {
   const g = await getGroup(id);
+  const identity = await getIdentity();
+  if (g.creatorId && g.creatorId !== identity.id) {
+    throw new AppError('Only the group creator can modify group settings and permissions.');
+  }
+
   const name = input.name !== undefined ? clean(input.name, LIMITS.name) : g.name;
   if (!name) throw new AppError('Group name is required');
   const description = input.description !== undefined ? clean(input.description, LIMITS.description) : g.description;
   const currency = input.currency && CURRENCIES.includes(input.currency) ? input.currency : g.currency;
+  const permissionModel = input.permissionModel || g.permissionModel || 'collaborative';
+
   const db = await getDb();
-  await db.runAsync('UPDATE groups SET name = ?, description = ?, currency = ?, updated_at = ? WHERE id = ?', [name, description, currency, now(), id]);
+  const ts = now();
+  await db.runAsync(
+    'UPDATE groups SET name = ?, description = ?, currency = ?, permission_model = ?, updated_at = ? WHERE id = ?',
+    [name, description, currency, permissionModel, ts, id]
+  );
+
+  // Broadcast settings change event
+  await createSyncEvent(g.uid, 'UPDATE_GROUP', { name, description, currency, permissionModel });
   return getGroup(id);
 }
 
@@ -638,10 +734,17 @@ async function validateTx(groupId: number, body: TxInput) {
 
 export async function createTransaction(groupId: number, body: TxInput) {
   const group = await getGroup(groupId);
+  const identity = await getIdentity();
+  const perms = getGroupPermissions(group, identity.id);
+  if (!perms.canAdd) {
+    throw new AppError('Only the group admin can add expenses in this group.');
+  }
+
   const members = await getMembers(groupId);
   const memberMap = new Map(members.map((m) => [m.id, m.name]));
+  const myMember = members.find((m) => m.isMe);
+  const myDisplayName = myMember?.name || identity.name || 'Me';
   const t = await validateTx(groupId, body);
-  const identity = await getIdentity();
   const db = await getDb();
   let id = 0;
   const txUid = `tx_${newUid()}`;
@@ -651,7 +754,7 @@ export async function createTransaction(groupId: number, body: TxInput) {
     const r = await db.runAsync(
       `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, updated_ts, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [groupId, txUid, t.type, t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, identity.id, identity.name, updatedTs, ts, ts]
+      [groupId, txUid, t.type, t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, identity.id, myDisplayName, updatedTs, ts, ts]
     );
     id = r.lastInsertRowId;
     for (const s of t.shares) {
@@ -671,6 +774,8 @@ export async function createTransaction(groupId: number, body: TxInput) {
     category: t.category,
     note: t.note,
     date: t.date,
+    authorId: identity.id,
+    authorName: myDisplayName,
     splits: t.shares.map((s) => ({ memberName: memberMap.get(s.memberId) || 'Unknown', value: s.value, share: s.share })),
     updatedTs,
   };
@@ -681,19 +786,26 @@ export async function createTransaction(groupId: number, body: TxInput) {
 
 export async function updateTransaction(groupId: number, txId: number, body: TxInput) {
   const group = await getGroup(groupId);
-  const members = await getMembers(groupId);
-  const memberMap = new Map(members.map((m) => [m.id, m.name]));
+  const identity = await getIdentity();
   const db = await getDb();
   const existing = await db.getFirstAsync<TxRow>('SELECT * FROM transactions WHERE id = ? AND group_id = ?', [txId, groupId]);
   if (!existing) throw new AppError('Transaction not found');
+  const perms = getGroupPermissions(group, identity.id);
+  if (!perms.canEditTx({ authorId: existing.author_id })) {
+    throw new AppError('You do not have permission to edit this transaction.');
+  }
+
+  const members = await getMembers(groupId);
+  const memberMap = new Map(members.map((m) => [m.id, m.name]));
+  const myMember = members.find((m) => m.isMe);
+  const myDisplayName = myMember?.name || identity.name || 'Me';
   const t = await validateTx(groupId, { ...body, type: existing.type });
-  const identity = await getIdentity();
   const txUid = existing.uid || `tx_${txId}`;
   const updatedTs = Date.now();
   await db.withTransactionAsync(async () => {
     await db.runAsync(
-      'UPDATE transactions SET title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, author_id = ?, author_name = ?, updated_ts = ?, updated_at = ? WHERE id = ?',
-      [t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, identity.id, identity.name, updatedTs, now(), txId]
+      'UPDATE transactions SET title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, updated_by_id = ?, updated_by_name = ?, updated_ts = ?, updated_at = ? WHERE id = ?',
+      [t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, identity.id, myDisplayName, updatedTs, now(), txId]
     );
     await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [txId]);
     for (const s of t.shares) {
@@ -712,6 +824,10 @@ export async function updateTransaction(groupId: number, txId: number, body: TxI
     category: t.category,
     note: t.note,
     date: t.date,
+    authorId: existing.author_id,
+    authorName: existing.author_name,
+    updatedById: identity.id,
+    updatedByName: myDisplayName,
     splits: t.shares.map((s) => ({ memberName: memberMap.get(s.memberId) || 'Unknown', value: s.value, share: s.share })),
     updatedTs,
   };
@@ -720,15 +836,22 @@ export async function updateTransaction(groupId: number, txId: number, body: TxI
 
 export async function deleteTransaction(groupId: number, txId: number) {
   const group = await getGroup(groupId);
+  const identity = await getIdentity();
   const db = await getDb();
-  const existing = await db.getFirstAsync<TxRow>('SELECT uid FROM transactions WHERE id = ? AND group_id = ?', [txId, groupId]);
+  const existing = await db.getFirstAsync<TxRow>('SELECT uid, author_id FROM transactions WHERE id = ? AND group_id = ?', [txId, groupId]);
+  if (!existing) throw new AppError('Transaction not found');
+  const perms = getGroupPermissions(group, identity.id);
+  if (!perms.canDeleteTx({ authorId: existing.author_id })) {
+    throw new AppError('You do not have permission to delete this transaction.');
+  }
+
   const r = await db.runAsync('DELETE FROM transactions WHERE id = ? AND group_id = ?', [txId, groupId]);
   if (!r.changes) throw new AppError('Transaction not found');
   await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [txId]);
   await touch(groupId);
 
   if (existing?.uid) {
-    await createSyncEvent(group.uid, 'DELETE_TX', { txUid: existing.uid });
+    await createSyncEvent(group.uid, 'DELETE_TX', { txUid: existing.uid, authorId: existing.author_id });
   }
 }
 
