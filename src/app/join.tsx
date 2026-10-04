@@ -49,19 +49,34 @@ export default function JoinScreen() {
 
         // Check if raw invite string is present
         if (params.invite) {
-          const raw = decodeURIComponent(params.invite);
-          const queryIdx = raw.indexOf('?');
-          const queryString = queryIdx !== -1 ? raw.slice(queryIdx + 1) : raw;
-          const search = new URLSearchParams(queryString);
-          rawUid = search.get('uid') || rawUid;
-          rawKey = search.get('key') || rawKey;
-          rawName = search.get('name') ? decodeURIComponent(search.get('name')!) : rawName;
-          rawCur = search.get('cur') || rawCur;
-          if (search.get('members')) {
-            rawMembers = decodeURIComponent(search.get('members')!)
-              .split(',')
-              .map((m) => m.trim())
-              .filter(Boolean);
+          const raw = decodeURIComponent(params.invite).trim();
+          if (raw.startsWith('{')) {
+            try {
+              const parsed = JSON.parse(raw);
+              rawUid = parsed.uid || rawUid;
+              rawKey = parsed.key || parsed.syncKey || rawKey;
+              rawName = parsed.name || rawName;
+              rawCur = parsed.cur || parsed.currency || rawCur;
+              if (Array.isArray(parsed.members)) {
+                rawMembers = parsed.members.map((m: any) => (typeof m === 'string' ? m : m.name)).filter(Boolean);
+              }
+            } catch {
+              // ignore json parse error
+            }
+          } else {
+            const queryIdx = raw.indexOf('?');
+            const queryString = queryIdx !== -1 ? raw.slice(queryIdx + 1) : raw;
+            const search = new URLSearchParams(queryString);
+            rawUid = search.get('uid') || rawUid;
+            rawKey = search.get('key') || search.get('syncKey') || rawKey;
+            rawName = search.get('name') ? decodeURIComponent(search.get('name')!) : rawName;
+            rawCur = search.get('cur') || search.get('currency') || rawCur;
+            if (search.get('members')) {
+              rawMembers = decodeURIComponent(search.get('members')!)
+                .split(',')
+                .map((m) => m.trim())
+                .filter(Boolean);
+            }
           }
         }
 
@@ -75,7 +90,11 @@ export default function JoinScreen() {
         const existingGroups = await listGroups();
         const existing = existingGroups.find((g) => g.uid === rawUid);
         if (existing) {
-          // Already in group, navigate directly
+          notify('Group Already Joined', `Opening ${existing.name}. Synchronizing data...`);
+          if (existing.syncKey || rawKey) {
+            await syncManager.connectGroup(existing.uid, existing.syncKey || rawKey);
+            await syncManager.requestState(existing.uid);
+          }
           router.replace(`/group/${existing.id}`);
           return;
         }
@@ -115,8 +134,9 @@ export default function JoinScreen() {
         uid: groupInfo.uid,
       });
 
-      // Connect to E2EE relay to immediately request state from online peers
-      syncManager.connectGroup(groupInfo.uid, groupInfo.key);
+      // Connect to E2EE relay and immediately request full state snapshot from online peers
+      await syncManager.connectGroup(groupInfo.uid, groupInfo.key);
+      await syncManager.requestState(groupInfo.uid);
 
       notify('Joined Group', `Connected to ${groupInfo.name} as ${myChosenName} with E2EE sync.`);
       router.replace(`/group/${newGroup.id}`);

@@ -310,7 +310,7 @@ export default function GroupScreen() {
         onClose={() => setShowScanner(false)}
         onScan={(scanned) => {
           setShowScanner(false);
-          router.push(`/import?invite=${encodeURIComponent(scanned)}`);
+          router.push(`/join?invite=${encodeURIComponent(scanned)}`);
         }}
       />
     </View>

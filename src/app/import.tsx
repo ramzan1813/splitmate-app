@@ -32,47 +32,10 @@ export default function ImportScreen() {
     }
   }, [params.invite]);
 
-  const handleJoinInvite = async () => {
+  const handleJoinInvite = () => {
     const raw = inviteUrl.trim();
     if (!raw) return;
-    try {
-      setJoining(true);
-      // parse splitmate://join?uid=...&key=...&name=...
-      const queryIdx = raw.indexOf('?');
-      const queryString = queryIdx !== -1 ? raw.slice(queryIdx + 1) : raw;
-      const params = new URLSearchParams(queryString);
-      const uid = params.get('uid');
-      const key = params.get('key');
-      const name = params.get('name') || 'Shared Group';
-      const cur = params.get('cur') || 'USD';
-
-      if (!uid || !key) {
-        throw new Error('Invalid invite link. Missing group ID or sync key.');
-      }
-
-      // Check if already in groups
-      const all = await listGroups();
-      const match = all.find((g) => g.uid === uid);
-      if (match) {
-        notify('Already Joined', `You are already part of ${match.name}.`);
-        router.replace(`/group/${match.id}`);
-        return;
-      }
-
-      const newG = await createGroup({
-        name,
-        currency: cur,
-        myName: profileName || 'Me',
-        syncKey: key,
-      });
-
-      notify('Joined Group', `Connected to ${name} with E2EE sync.`);
-      router.replace(`/group/${newG.id}`);
-    } catch (e) {
-      notify("Couldn't join", errorMessage(e));
-    } finally {
-      setJoining(false);
-    }
+    router.push(`/join?invite=${encodeURIComponent(raw)}`);
   };
 
   const pick = async () => {
@@ -216,13 +179,7 @@ export default function ImportScreen() {
         onClose={() => setShowScanner(false)}
         onScan={(data) => {
           setShowScanner(false);
-          setInviteUrl(data);
-          // If it's a splitmate link, trigger join
-          if (data.startsWith('splitmate://')) {
-            setTimeout(() => {
-              setInviteUrl(data);
-            }, 100);
-          }
+          router.push(`/join?invite=${encodeURIComponent(data)}`);
         }}
       />
     </Screen>

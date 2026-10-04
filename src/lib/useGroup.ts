@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { getGroupSummary } from '@/data/repo';
 import { GroupSummary } from '@/data/types';
@@ -10,6 +10,7 @@ export function useGroup(id: string | number | undefined) {
   const [data, setData] = useState<GroupSummary | null>(null);
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(false);
+  const groupUidRef = useRef<string | null>(null);
 
   const reload = useCallback(async () => {
     const gid = Number(id);
@@ -17,6 +18,7 @@ export function useGroup(id: string | number | undefined) {
     try {
       const summary = await getGroupSummary(gid);
       setData(summary);
+      groupUidRef.current = summary.group.uid;
       setError('');
       if (summary?.group?.uid && summary?.group?.syncKey) {
         syncManager.connectGroup(summary.group.uid, summary.group.syncKey);
@@ -34,23 +36,23 @@ export function useGroup(id: string | number | undefined) {
   );
 
   useEffect(() => {
-    const unsub = subscribeToSync((event, groupUid) => {
-      if (data?.group.uid === groupUid) {
+    const unsub = subscribeToSync((_event, groupUid) => {
+      if (!groupUidRef.current || groupUidRef.current === groupUid) {
         reload();
       }
     });
 
     const interval = setInterval(() => {
-      if (data?.group.uid) {
-        setConnected(syncManager.isConnected(data.group.uid));
+      if (groupUidRef.current) {
+        setConnected(syncManager.isConnected(groupUidRef.current));
       }
-    }, 3000);
+    }, 2000);
 
     return () => {
       unsub();
       clearInterval(interval);
     };
-  }, [data?.group.uid, reload]);
+  }, [reload]);
 
   const memberName = (mid: number) => data?.members.find((m) => m.id === mid)?.name ?? 'Unknown';
   const memberIndex = (mid: number) => Math.max(0, data?.members.findIndex((m) => m.id === mid) ?? 0);

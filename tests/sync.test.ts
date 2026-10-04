@@ -471,5 +471,161 @@ test('members: merge member reassigns all past transactions and splits', async (
   assert.equal(ikramStat.balance, -2000); // -$20.00
 });
 
+test('groups: createGroup deduplication prevents duplicate rows when UID already exists', async () => {
+  const db = createNodeDb();
+  await migrate(db);
+  setDb(db);
+
+  const original = await repo.createGroup({
+    name: 'London Trip',
+    currency: 'GBP',
+    myName: 'Ramzan',
+    members: ['Ikram'],
+    uid: 'grp_london_123',
+    syncKey: 'key_london_abc',
+  });
+
+  assert.equal(original.uid, 'grp_london_123');
+  assert.equal(original.name, 'London Trip');
+
+  // Attempt to create the same group again with the same UID (e.g. repeated QR scan or join)
+  const duplicate = await repo.createGroup({
+    name: 'London Trip (Scanned Again)',
+    currency: 'GBP',
+    myName: 'Ramzan',
+    members: ['Ikram'],
+    uid: 'grp_london_123',
+    syncKey: 'key_london_abc',
+  });
+
+  assert.equal(duplicate.id, original.id);
+  assert.equal(duplicate.uid, 'grp_london_123');
+
+  // Verify only 1 group exists in the database
+  const allGroups = await repo.listGroups();
+  assert.equal(allGroups.length, 1);
+  assert.equal(allGroups[0]!.uid, 'grp_london_123');
+});
+
+test('sync: end-to-end REQUEST_STATE and STATE_SNAPSHOT handshake between peers', async () => {
+  // === Setup Device A (Host with full dataset) ===
+  const dbA = createNodeDb();
+  await migrate(dbA);
+  setDb(dbA);
+
+  const groupA = await repo.createGroup({
+    name: 'Euro Trip 2026',
+    currency: 'EUR',
+    myName: 'Alice',
+    members: ['Bob', 'Charlie'],
+    uid: 'grp_euro_2026',
+    syncKey: 'synckey_euro_xyz',
+  });
+
+  const membersA = await repo.getMembers(groupA.id);
+  const aliceA = membersA.find((m) => m.name === 'Alice')!.id;
+  const bobA = membersA.find((m) => m.name === 'Bob')!.id;
+  const charlieA = membersA.find((m) => m.name === 'Charlie')!.id;
+
+  // Alice adds Expense 1: Train Tickets (300 EUR)
+  await repo.createTransaction(groupA.id, {
+    type: 'expense',
+    title: 'Train Tickets',
+    amount: 300,
+    paidBy: aliceA,
+    splitType: 'equal',
+    splits: [{ memberId: aliceA }, { memberId: bobA }, { memberId: charlieA }],
+    category: 'Transport',
+    date: '2026-10-04',
+  });
+
+  // Bob adds Expense 2: Dinner in Paris (150 EUR)
+  await repo.createTransaction(groupA.id, {
+    type: 'expense',
+    title: 'Paris Dinner',
+    amount: 150,
+    paidBy: bobA,
+    splitType: 'equal',
+    splits: [{ memberId: aliceA }, { memberId: bobA }, { memberId: charlieA }],
+    category: 'Food',
+    date: '2026-10-04',
+  });
+
+  // === Setup Device B (Bob joins on a fresh mobile phone) ===
+  const dbB = createNodeDb();
+  await migrate(dbB);
+  setDb(dbB);
+
+  // Bob creates group shell via QR scan
+  const groupB = await repo.createGroup({
+    name: 'Euro Trip 2026',
+    currency: 'EUR',
+    myName: 'Bob',
+    members: ['Alice', 'Charlie'],
+    uid: 'grp_euro_2026',
+    syncKey: 'synckey_euro_xyz',
+  });
+
+  // Device B sends REQUEST_STATE
+  const requestEvent: SyncEvent = {
+    eventId: 'evt_req_1',
+    groupUid: 'grp_euro_2026',
+    authorId: 'usr_bob_device',
+    authorName: 'Bob',
+    timestamp: Date.now(),
+    action: 'REQUEST_STATE',
+    payload: { requestedAt: Date.now() },
+  };
+
+  // Device A receives REQUEST_STATE
+  setDb(dbA);
+  const snapshotA = await repo.exportGroupSnapshot(groupA.id);
+  assert.equal(snapshotA.transactions.length, 2);
+  assert.equal(snapshotA.members.length, 3);
+
+  // Device A sends STATE_SNAPSHOT back to Device B
+  const snapshotEvent: SyncEvent = {
+    eventId: 'evt_snap_1',
+    groupUid: 'grp_euro_2026',
+    authorId: 'usr_alice_device',
+    authorName: 'Alice',
+    timestamp: Date.now(),
+    action: 'STATE_SNAPSHOT',
+    payload: snapshotA,
+  };
+
+  // Device B receives and applies STATE_SNAPSHOT
+  setDb(dbB);
+  const applied = await applyRemoteSyncEvent(snapshotEvent);
+  assert.equal(applied, true);
+
+  // Verify Device B now has all 2 transactions, correct members and balances
+  const txsB = await repo.getTransactions(groupB.id);
+  assert.equal(txsB.length, 2);
+
+  const trainTx = txsB.find((t) => t.title === 'Train Tickets')!;
+  assert.equal(trainTx.amount, 30000); // 300.00 EUR in cents
+
+  const dinnerTx = txsB.find((t) => t.title === 'Paris Dinner')!;
+  assert.equal(dinnerTx.amount, 15000); // 150.00 EUR in cents
+
+  const summaryB = await repo.getGroupSummary(groupB.id);
+  assert.equal(summaryB.totals.totalExpenses, 45000); // 450.00 EUR total
+
+  // Alice paid 300, share 150 -> balance +150
+  // Bob paid 150, share 150 -> balance 0
+  // Charlie paid 0, share 150 -> balance -150
+  const bobStat = summaryB.stats.find((s) => s.name === 'Bob')!;
+  assert.equal(bobStat.totalPaid, 15000);
+  assert.equal(bobStat.totalBenefit, 15000);
+  assert.equal(bobStat.balance, 0);
+
+  const aliceStat = summaryB.stats.find((s) => s.name === 'Alice')!;
+  assert.equal(aliceStat.balance, 15000);
+
+  const charlieStat = summaryB.stats.find((s) => s.name === 'Charlie')!;
+  assert.equal(charlieStat.balance, -15000);
+});
+
 
 

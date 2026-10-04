@@ -6,6 +6,8 @@ import { getDb } from '@/data/db';
 import { getSetting, setSetting } from '@/data/repo';
 import { isPinEnabled } from './pin';
 
+import { syncManager } from '@/data/sync';
+
 const LOCK_AFTER_MS = 60_000; // lock again after 1 minute in the background
 
 interface AppCtx {
@@ -41,6 +43,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setPinEnabled(pin);
         setLocked(pin);
         setReady(true);
+        // Start background synchronization for all active groups
+        syncManager.syncAllGroups();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }

@@ -247,6 +247,17 @@ export async function createGroup(input: {
     .filter((m) => Boolean(m) && m.toLowerCase() !== myName.toLowerCase());
 
   const db = await getDb();
+  if (input.uid) {
+    const existing = await db.getFirstAsync<GroupRow>('SELECT * FROM groups WHERE uid = ?', [input.uid]);
+    if (existing) {
+      if (syncKey && (!existing.sync_key || existing.sync_key !== syncKey)) {
+        await db.runAsync('UPDATE groups SET sync_key = ?, updated_at = ? WHERE id = ?', [syncKey, now(), existing.id]);
+        existing.sync_key = syncKey;
+      }
+      return mapGroup(existing);
+    }
+  }
+
   let gid = 0;
   await db.withTransactionAsync(async () => {
     const ts = now();

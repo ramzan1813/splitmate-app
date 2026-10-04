@@ -56,7 +56,7 @@ export async function createSyncEvent<T>(groupUid: string, action: SyncAction, p
   return event;
 }
 
-import { exportGroupSnapshot, applyGroupSnapshot, mergeMembersByName, GroupSnapshotPayload } from './repo';
+import { exportGroupSnapshot, applyGroupSnapshot, mergeMembersByName, listGroups, GroupSnapshotPayload } from './repo';
 
 /** Payload schema for transaction sync events. */
 export interface SyncTxPayload {
@@ -300,10 +300,36 @@ class SyncManager {
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private isConnecting = new Map<string, boolean>();
 
-  public async connectGroup(groupUid: string, syncKey: string) {
-    if (!syncKey || this.sockets.has(groupUid) || this.isConnecting.get(groupUid)) return;
+  public async syncAllGroups() {
+    try {
+      const groups = await listGroups();
+      for (const g of groups) {
+        if (g.uid && g.syncKey) {
+          this.connectGroup(g.uid, g.syncKey);
+        }
+      }
+    } catch {
+      // ignore errors during background sync init
+    }
+  }
 
+  public async requestState(groupUid: string) {
+    const key = this.activeGroupKeys.get(groupUid);
+    if (key) {
+      await this.connectGroup(groupUid, key);
+      await createSyncEvent(groupUid, 'REQUEST_STATE', { requestedAt: Date.now() });
+    }
+  }
+
+  public async connectGroup(groupUid: string, syncKey: string) {
+    if (!syncKey) return;
     this.activeGroupKeys.set(groupUid, syncKey);
+
+    const existingSocket = this.sockets.get(groupUid);
+    if (existingSocket && (existingSocket.readyState === WebSocket.OPEN || existingSocket.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    if (this.isConnecting.get(groupUid)) return;
     this.isConnecting.set(groupUid, true);
 
     try {
@@ -311,7 +337,10 @@ class SyncManager {
       const roomHash = await sha256Hex(`splitmate_room_${groupUid}`);
       const wsUrl = `${identity.relayUrl}?room=${roomHash}`;
 
-      if (typeof WebSocket === 'undefined') return;
+      if (typeof WebSocket === 'undefined') {
+        this.isConnecting.set(groupUid, false);
+        return;
+      }
 
       const ws = new WebSocket(wsUrl);
 
@@ -328,7 +357,8 @@ class SyncManager {
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === 'SYNC_EVENT' && msg.payload) {
-            const decrypted = await decryptWithKey(msg.payload, syncKey);
+            const currentKey = this.activeGroupKeys.get(groupUid) || syncKey;
+            const decrypted = await decryptWithKey(msg.payload, currentKey);
             const event = JSON.parse(decrypted) as SyncEvent;
             await applyRemoteSyncEvent(event);
           }
