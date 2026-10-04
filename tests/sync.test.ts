@@ -832,7 +832,7 @@ test('permissions: Model 1 (admin_only) allows admin full control but blocks non
   assert.equal(txs[0]!.title, 'Conference Hall'); // Unchanged!
 });
 
-test('permissions: Model 2 (contributor) allows non-admin to add, but restricts edits and deletes to admin', async () => {
+test('permissions: Model 2 (contributor) allows non-admin to add and edit/delete own transactions, but restricts editing/deleting other members transactions', async () => {
   const db = createNodeDb();
   await migrate(db);
   setDb(db);
@@ -866,13 +866,54 @@ test('permissions: Model 2 (contributor) allows non-admin to add, but restricts 
   assert.equal(txs.length, 1);
   assert.equal(txs[0]!.title, 'Bob Lunch');
 
-  // 2. Bob tries to edit or delete -> blocked locally in repo
+  // 2. Bob CAN edit his OWN transaction
+  await repo.updateTransaction(g.id, txId, {
+    type: 'expense',
+    title: 'Bob Lunch (Updated by Bob)',
+    amount: 20,
+    paidBy: bob,
+    splits: [{ memberId: bob }],
+  });
+  txs = await repo.getTransactions(g.id);
+  assert.equal(txs[0]!.title, 'Bob Lunch (Updated by Bob)');
+
+  // 3. Admin (Alice) creates a transaction
+  const aliceTxPayload: SyncTxPayload = {
+    txUid: 'tx_alice_supplies',
+    type: 'expense',
+    title: 'Alice Project Supplies',
+    amount: 8000,
+    paidByName: 'Alice',
+    splitType: 'equal',
+    category: 'General',
+    note: '',
+    date: '2026-10-04',
+    authorId: 'usr_alice_admin',
+    authorName: 'Alice',
+    splits: [{ memberName: 'Bob', value: 1, share: 8000 }],
+    updatedTs: Date.now(),
+  };
+  await applyRemoteSyncEvent({
+    eventId: 'evt_alice_tx_1',
+    groupUid: g.uid,
+    authorId: 'usr_alice_admin',
+    authorName: 'Alice',
+    timestamp: Date.now(),
+    action: 'UPSERT_TX',
+    payload: aliceTxPayload,
+  });
+
+  txs = await repo.getTransactions(g.id);
+  const aliceTx = txs.find((t) => t.uid === 'tx_alice_supplies')!;
+  assert.ok(aliceTx);
+
+  // 4. Bob tries to edit Alice's transaction -> blocked!
   await assert.rejects(
     async () => {
-      await repo.updateTransaction(g.id, txId, {
+      await repo.updateTransaction(g.id, aliceTx.id, {
         type: 'expense',
-        title: 'Bob Modified Lunch',
-        amount: 20,
+        title: 'Bob Tampering Alice Supplies',
+        amount: 10,
         paidBy: bob,
         splits: [{ memberId: bob }],
       });
@@ -880,15 +921,16 @@ test('permissions: Model 2 (contributor) allows non-admin to add, but restricts 
     /permission to edit this transaction/
   );
 
+  // 5. Bob tries to delete Alice's transaction -> blocked!
   await assert.rejects(
     async () => {
-      await repo.deleteTransaction(g.id, txId);
+      await repo.deleteTransaction(g.id, aliceTx.id);
     },
     /permission to delete this transaction/
   );
 
-  // 3. Remote non-admin peer tries to edit via sync -> rejected
-  const remoteEdit: SyncEvent<SyncTxPayload> = {
+  // 6. Remote non-admin peer (Charlie) tries to edit Alice's transaction via sync -> rejected
+  const charlieEdit: SyncEvent<SyncTxPayload> = {
     eventId: 'evt_contrib_edit_rej',
     groupUid: g.uid,
     authorId: 'usr_charlie',
@@ -896,7 +938,7 @@ test('permissions: Model 2 (contributor) allows non-admin to add, but restricts 
     timestamp: Date.now() + 10,
     action: 'UPSERT_TX',
     payload: {
-      txUid: txs[0]!.uid!,
+      txUid: aliceTx.uid!,
       type: 'expense',
       title: 'Charlie Overwrite',
       amount: 5000,
@@ -909,11 +951,11 @@ test('permissions: Model 2 (contributor) allows non-admin to add, but restricts 
       updatedTs: Date.now() + 10,
     },
   };
-  await applyRemoteSyncEvent(remoteEdit);
+  await applyRemoteSyncEvent(charlieEdit);
   txs = await repo.getTransactions(g.id);
-  assert.equal(txs[0]!.title, 'Bob Lunch'); // Not overwritten
+  assert.equal(txs.find((t) => t.uid === 'tx_alice_supplies')!.title, 'Alice Project Supplies'); // Not overwritten
 
-  // 4. Group admin Alice edits the transaction via sync -> accepted
+  // 7. Group admin Alice edits the transaction via sync -> accepted
   const adminEdit: SyncEvent<SyncTxPayload> = {
     eventId: 'evt_contrib_edit_ok',
     groupUid: g.uid,
@@ -922,16 +964,16 @@ test('permissions: Model 2 (contributor) allows non-admin to add, but restricts 
     timestamp: Date.now() + 20,
     action: 'UPSERT_TX',
     payload: {
-      txUid: txs[0]!.uid!,
+      txUid: aliceTx.uid!,
       type: 'expense',
-      title: 'Bob Lunch (Approved by Admin)',
-      amount: 1500,
-      paidByName: 'Bob',
+      title: 'Alice Project Supplies (Approved by Admin)',
+      amount: 8500,
+      paidByName: 'Alice',
       splitType: 'equal',
-      category: 'Food',
+      category: 'General',
       note: 'Admin verified',
       date: '2026-10-04',
-      splits: [{ memberName: 'Bob', value: 1, share: 1500 }],
+      splits: [{ memberName: 'Bob', value: 1, share: 8500 }],
       updatedTs: Date.now() + 20,
       updatedById: 'usr_alice_admin',
       updatedByName: 'Alice',
@@ -939,8 +981,8 @@ test('permissions: Model 2 (contributor) allows non-admin to add, but restricts 
   };
   await applyRemoteSyncEvent(adminEdit);
   txs = await repo.getTransactions(g.id);
-  assert.equal(txs[0]!.title, 'Bob Lunch (Approved by Admin)');
-  assert.equal(txs[0]!.updatedByName, 'Alice');
+  assert.equal(txs.find((t) => t.uid === 'tx_alice_supplies')!.title, 'Alice Project Supplies (Approved by Admin)');
+  assert.equal(txs.find((t) => t.uid === 'tx_alice_supplies')!.updatedByName, 'Alice');
 });
 
 test('permissions: Model 3 (collaborative) allows edit with audit trail, and protects delete to author or creator', async () => {

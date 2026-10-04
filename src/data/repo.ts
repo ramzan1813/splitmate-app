@@ -94,8 +94,8 @@ export function getGroupPermissions(group: Group, currentUserId: string) {
     return {
       isCreator,
       canAdd: true,
-      canEditTx: (_tx?: { authorId?: string }) => isCreator,
-      canDeleteTx: (_tx?: { authorId?: string }) => isCreator,
+      canEditTx: (tx?: { authorId?: string }) => isCreator || (Boolean(tx?.authorId) && tx?.authorId === currentUserId),
+      canDeleteTx: (tx?: { authorId?: string }) => isCreator || (Boolean(tx?.authorId) && tx?.authorId === currentUserId),
     };
   }
 
@@ -292,8 +292,8 @@ export async function createGroup(input: {
   const currency = CURRENCIES.includes(String(input.currency)) ? String(input.currency) : 'USD';
   const permissionModel = input.permissionModel || 'collaborative';
   const identity = await getIdentity();
-  const creatorId = input.creatorId || identity.id;
-  const creatorName = input.creatorName || myName;
+  const creatorId = input.creatorId && input.creatorId.trim() !== '' ? input.creatorId : identity.id;
+  const creatorName = input.creatorName && input.creatorName.trim() !== '' ? input.creatorName : myName;
   const syncKey = input.syncKey || generateGroupKey();
   const groupUid = input.uid || newUid();
   const others = (input.members || [])
@@ -304,11 +304,31 @@ export async function createGroup(input: {
   if (input.uid) {
     const existing = await db.getFirstAsync<GroupRow>('SELECT * FROM groups WHERE uid = ?', [input.uid]);
     if (existing) {
+      const updates: string[] = [];
+      const params: any[] = [];
       if (syncKey && (!existing.sync_key || existing.sync_key !== syncKey)) {
-        await db.runAsync('UPDATE groups SET sync_key = ?, updated_at = ? WHERE id = ?', [syncKey, now(), existing.id]);
-        existing.sync_key = syncKey;
+        updates.push('sync_key = ?');
+        params.push(syncKey);
       }
-      return mapGroup(existing);
+      if (input.creatorId && (!existing.creator_id || existing.creator_id !== input.creatorId)) {
+        updates.push('creator_id = ?');
+        params.push(input.creatorId);
+      }
+      if (input.creatorName && (!existing.creator_name || existing.creator_name !== input.creatorName)) {
+        updates.push('creator_name = ?');
+        params.push(input.creatorName);
+      }
+      if (input.permissionModel && (!existing.permission_model || existing.permission_model !== input.permissionModel)) {
+        updates.push('permission_model = ?');
+        params.push(input.permissionModel);
+      }
+      if (updates.length > 0) {
+        updates.push('updated_at = ?');
+        params.push(now());
+        params.push(existing.id);
+        await db.runAsync(`UPDATE groups SET ${updates.join(', ')} WHERE id = ?`, params);
+      }
+      return getGroup(existing.id);
     }
   }
 

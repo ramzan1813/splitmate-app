@@ -259,8 +259,8 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
       // Permission Enforcement:
       // In admin_only: only creator can add or edit
       if (permModel === 'admin_only' && !isCreator) return;
-      // In contributor: only creator can edit existing transactions
-      if (permModel === 'contributor' && existingTx && !isCreator) return;
+      // In contributor: only creator can edit other members' transactions; contributors can edit their own
+      if (permModel === 'contributor' && existingTx && !isCreator && existingTx.author_id !== event.authorId) return;
 
       // Ensure members exist in group
       const members = await db.getAllAsync<{ id: number; name: string }>('SELECT id, name FROM members WHERE group_id = ?', [group.id]);
@@ -372,9 +372,10 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
         if (existingTx) {
           const isCreator = !group.creator_id || group.creator_id === event.authorId;
           const permModel = group.permission_model || 'collaborative';
-          // In admin_only & contributor: only creator can delete
-          // In collaborative: creator OR tx author can delete
-          const canDelete = isCreator || (permModel === 'collaborative' && Boolean(existingTx.author_id) && existingTx.author_id === event.authorId);
+          const isTxAuthor = Boolean(existingTx.author_id) && existingTx.author_id === event.authorId;
+          // In admin_only: only creator can delete
+          // In contributor & collaborative: creator OR tx author can delete
+          const canDelete = isCreator || (permModel !== 'admin_only' && isTxAuthor);
           if (canDelete) {
             await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [existingTx.id]);
             await db.runAsync('DELETE FROM transactions WHERE id = ?', [existingTx.id]);
@@ -431,20 +432,41 @@ export async function markNotificationsRead(groupUid?: string): Promise<void> {
   }
 }
 
-// ---------- Live WebSocket Sync Client ----------
+// ---------- Hybrid SQLite Queue & WebSocket Sync Client ----------
 
 class SyncManager {
   private sockets = new Map<string, WebSocket>();
   private activeGroupKeys = new Map<string, string>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private isConnecting = new Map<string, boolean>();
+  private lastSeenSeqs = new Map<string, number>();
+  private syncPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor() {
+    // Background polling every 12 seconds for offline resilience
+    if (typeof setInterval !== 'undefined') {
+      this.syncPollTimer = setInterval(() => {
+        this.syncAllGroups().catch(() => {});
+      }, 12000);
+      if (this.syncPollTimer && typeof (this.syncPollTimer as any).unref === 'function') {
+        (this.syncPollTimer as any).unref();
+      }
+    }
+  }
+
+  private getHttpBaseUrl(relayUrl: string): string {
+    return relayUrl.replace(/^ws(s)?:/i, 'http$1:').replace(/\/ws\/?$/i, '');
+  }
 
   public async syncAllGroups() {
     try {
       const groups = await listGroups();
       for (const g of groups) {
         if (g.uid && g.syncKey) {
-          this.connectGroup(g.uid, g.syncKey);
+          this.activeGroupKeys.set(g.uid, g.syncKey);
+          await this.pullGroup(g.uid).catch(() => {});
+          await this.flushPendingEvents(g.uid).catch(() => {});
+          this.connectGroup(g.uid, g.syncKey).catch(() => {});
         }
       }
     } catch {
@@ -456,7 +478,74 @@ class SyncManager {
     const key = this.activeGroupKeys.get(groupUid);
     if (key) {
       await this.connectGroup(groupUid, key);
+      try {
+        const identity = await getIdentity();
+        const roomHash = await sha256Hex(`splitmate_room_${groupUid}`);
+        const httpUrl = this.getHttpBaseUrl(identity.relayUrl);
+        await fetch(`${httpUrl}/sync/request-snapshot?room=${roomHash}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ peerId: identity.id, peerName: identity.name }),
+        });
+      } catch {
+        // Fallback to local broadcast
+      }
       await createSyncEvent(groupUid, 'REQUEST_STATE', { requestedAt: Date.now() });
+    }
+  }
+
+  /** Pull latest queued events from SQLite server for group */
+  public async pullGroup(groupUid: string): Promise<number> {
+    const syncKey = this.activeGroupKeys.get(groupUid);
+    if (!syncKey) return 0;
+
+    try {
+      const identity = await getIdentity();
+      const roomHash = await sha256Hex(`splitmate_room_${groupUid}`);
+      const httpUrl = this.getHttpBaseUrl(identity.relayUrl);
+      const lastSeq = this.lastSeenSeqs.get(groupUid) || 0;
+
+      const resp = await fetch(`${httpUrl}/sync/pull?room=${roomHash}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ peerId: identity.id, peerName: identity.name, lastSeq, limit: 100 }),
+      });
+
+      if (!resp.ok) return 0;
+      const data = (await resp.json()) as { ok: boolean; events?: any[]; latestSeq?: number };
+      if (!data.ok || !Array.isArray(data.events) || data.events.length === 0) return 0;
+
+      const ackedSeqs: number[] = [];
+      let maxSeq = lastSeq;
+
+      for (const item of data.events) {
+        if (item.seq) maxSeq = Math.max(maxSeq, item.seq);
+        if (item.payload) {
+          try {
+            const decrypted = await decryptWithKey(item.payload, syncKey);
+            const event = JSON.parse(decrypted) as SyncEvent;
+            await applyRemoteSyncEvent(event);
+            if (item.seq) ackedSeqs.push(item.seq);
+          } catch {
+            // ignore decryption / format errors
+          }
+        }
+      }
+
+      this.lastSeenSeqs.set(groupUid, maxSeq);
+
+      // Send ack to server SQLite
+      if (ackedSeqs.length > 0) {
+        fetch(`${httpUrl}/sync/ack?room=${roomHash}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ peerId: identity.id, ackedSeqs }),
+        }).catch(() => {});
+      }
+
+      return ackedSeqs.length;
+    } catch {
+      return 0;
     }
   }
 
@@ -476,6 +565,9 @@ class SyncManager {
       const roomHash = await sha256Hex(`splitmate_room_${groupUid}`);
       const wsUrl = `${identity.relayUrl}?room=${roomHash}`;
 
+      // Also pull HTTP queue first
+      await this.pullGroup(groupUid).catch(() => {});
+
       if (typeof WebSocket === 'undefined') {
         this.isConnecting.set(groupUid, false);
         return;
@@ -486,10 +578,15 @@ class SyncManager {
       ws.onopen = async () => {
         this.sockets.set(groupUid, ws);
         this.isConnecting.set(groupUid, false);
+
+        // Send INIT message with identity and watermark
+        const lastSeq = this.lastSeenSeqs.get(groupUid) || 0;
+        try {
+          ws.send(JSON.stringify({ type: 'INIT', peerId: identity.id, peerName: identity.name, lastSeq }));
+        } catch {}
+
         // Flush any unsynced local events
         await this.flushPendingEvents(groupUid);
-        // Request latest state snapshot from any online peer
-        await createSyncEvent(groupUid, 'REQUEST_STATE', { requestedAt: Date.now() });
       };
 
       ws.onmessage = async (e) => {
@@ -500,6 +597,13 @@ class SyncManager {
             const decrypted = await decryptWithKey(msg.payload, currentKey);
             const event = JSON.parse(decrypted) as SyncEvent;
             await applyRemoteSyncEvent(event);
+            if (msg.seq) {
+              const prev = this.lastSeenSeqs.get(groupUid) || 0;
+              this.lastSeenSeqs.set(groupUid, Math.max(prev, msg.seq));
+              try {
+                ws.send(JSON.stringify({ type: 'ACK', seq: msg.seq, peerId: identity.id }));
+              } catch {}
+            }
           }
         } catch {
           // Ignore parse/decryption errors
@@ -544,22 +648,67 @@ class SyncManager {
     const syncKey = this.activeGroupKeys.get(groupUid);
     if (!syncKey) return;
 
-    const ws = this.sockets.get(groupUid);
     try {
+      const identity = await getIdentity();
+      const roomHash = await sha256Hex(`splitmate_room_${groupUid}`);
       const serialized = JSON.stringify(event);
       const encrypted = await encryptWithKey(serialized, syncKey);
+
+      let pushedSuccessfully = false;
+
+      // 1. Send via WebSocket if open
+      const ws = this.sockets.get(groupUid);
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ id: event.eventId, payload: encrypted }));
-        // Mark locally as synced
+        try {
+          ws.send(JSON.stringify({
+            type: 'PUSH',
+            id: event.eventId,
+            action: event.action,
+            authorId: event.authorId,
+            authorName: event.authorName,
+            payload: encrypted,
+          }));
+          pushedSuccessfully = true;
+        } catch {
+          // fallback to HTTP
+        }
+      }
+
+      // 2. Also persist to SQLite DO server via HTTP REST push
+      const httpUrl = this.getHttpBaseUrl(identity.relayUrl);
+      const resp = await fetch(`${httpUrl}/sync/push?room=${roomHash}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          peerId: identity.id,
+          peerName: identity.name,
+          events: [
+            {
+              id: event.eventId,
+              action: event.action,
+              authorId: event.authorId,
+              authorName: event.authorName,
+              timestamp: event.timestamp,
+              payload: encrypted,
+            },
+          ],
+        }),
+      }).catch(() => null);
+
+      if (resp && resp.ok) {
+        pushedSuccessfully = true;
+      }
+
+      if (pushedSuccessfully) {
         const db = await getDb();
         await db.runAsync('UPDATE sync_events SET synced = 1 WHERE event_id = ?', [event.eventId]);
       }
     } catch {
-      // Will be flushed on reconnect
+      // Will be flushed on next periodic sync
     }
   }
 
-  private async flushPendingEvents(groupUid: string) {
+  public async flushPendingEvents(groupUid: string) {
     const syncKey = this.activeGroupKeys.get(groupUid);
     if (!syncKey) return;
 
@@ -569,17 +718,52 @@ class SyncManager {
       [groupUid]
     );
 
-    for (const row of unsynced) {
-      const event: SyncEvent = {
-        eventId: row.event_id,
-        groupUid,
-        authorId: row.author_id,
-        authorName: row.author_name,
-        timestamp: row.timestamp,
-        action: row.action,
-        payload: JSON.parse(row.payload),
-      };
-      await this.broadcastEvent(groupUid, event);
+    if (unsynced.length === 0) return;
+
+    try {
+      const identity = await getIdentity();
+      const roomHash = await sha256Hex(`splitmate_room_${groupUid}`);
+      const httpUrl = this.getHttpBaseUrl(identity.relayUrl);
+
+      const pushPayloads = [];
+      for (const row of unsynced) {
+        const event: SyncEvent = {
+          eventId: row.event_id,
+          groupUid,
+          authorId: row.author_id,
+          authorName: row.author_name,
+          timestamp: row.timestamp,
+          action: row.action,
+          payload: JSON.parse(row.payload),
+        };
+        const encrypted = await encryptWithKey(JSON.stringify(event), syncKey);
+        pushPayloads.push({
+          id: row.event_id,
+          action: row.action,
+          authorId: row.author_id,
+          authorName: row.author_name,
+          timestamp: row.timestamp,
+          payload: encrypted,
+        });
+      }
+
+      const resp = await fetch(`${httpUrl}/sync/push?room=${roomHash}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          peerId: identity.id,
+          peerName: identity.name,
+          events: pushPayloads,
+        }),
+      }).catch(() => null);
+
+      if (resp && resp.ok) {
+        const ids = unsynced.map((u) => u.event_id);
+        const placeholders = ids.map(() => '?').join(',');
+        await db.runAsync(`UPDATE sync_events SET synced = 1 WHERE event_id IN (${placeholders})`, ids);
+      }
+    } catch {
+      // ignore, will retry
     }
   }
 

@@ -2,6 +2,19 @@
 
 Release notes for each version. The release workflow copies the section matching the version in `app.json` into the GitHub Release.
 
+## 1.4.1 — 2026-10-04
+
+### New & Architecture
+- **Cloudflare Worker SQLite Queue Sync Engine (`RelayRoom`).** Upgraded the relay server from basic WebSocket forwarding to a stateful, zero-knowledge SQLite queue coordinator running on Cloudflare Durable Objects SQLite.
+- **Strict Peer Watermark Tracking & Auto Queue Pruning.** Monotonically sequenced event queue with automatic payload purging once all active peers in a group acknowledge receipt of changes, guaranteeing zero server payload retention.
+- **Hybrid Sync (HTTP REST + Real-Time WebSocket).** Added endpoints (`/sync/push`, `/sync/pull`, `/sync/ack`, `/sync/request-snapshot`, `/sync/peers`) alongside `/ws` for 100% reliable offline queueing, backpressure handling, and immediate convergence.
+- **Automated GitHub Action Cloud Builds.** Pushing a commit containing `[build]`, `[apk]`, or `[release]` automatically triggers cloud APK builds and release updates.
+
+### Fixed & Improved
+- **Group Invite Creator Preservation.** Invite links and QR codes now carry `creatorId`, `creatorName`, and permission model parameters so joining members are correctly bound to non-creator roles and cannot tamper with group settings or assume admin privileges.
+- **Contributor Role Permission Enforcement.** In Contributor Mode, members can add expenses and edit/delete **only their own transactions**. Only the group creator/admin can edit or delete everyone's transactions. Group settings modifications are strictly guarded to the group admin.
+- **Non-blocking Test Suite.** WebSocket cleanup and timer unreferencing to ensure clean, fast test suite runs.
+
 ## 1.4.0 — 2026-10-04
 
 ### New

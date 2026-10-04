@@ -16,6 +16,10 @@ export default function JoinScreen() {
     name?: string;
     cur?: string;
     members?: string;
+    creatorId?: string;
+    creatorName?: string;
+    perm?: string;
+    permissionModel?: string;
     invite?: string;
   }>();
   const { profileName } = useApp();
@@ -27,6 +31,9 @@ export default function JoinScreen() {
     name: string;
     currency: string;
     members: string[];
+    creatorId?: string;
+    creatorName?: string;
+    permissionModel?: any;
   } | null>(null);
   const [selectedMember, setSelectedMember] = useState<string>('');
   const [error, setError] = useState('');
@@ -41,6 +48,9 @@ export default function JoinScreen() {
         let rawKey = params.key;
         let rawName = params.name ? decodeURIComponent(params.name) : 'Shared Group';
         let rawCur = params.cur || 'USD';
+        let rawCreatorId = params.creatorId ? decodeURIComponent(params.creatorId) : '';
+        let rawCreatorName = params.creatorName ? decodeURIComponent(params.creatorName) : '';
+        let rawPerm = (params.perm || params.permissionModel || 'collaborative') as any;
         let rawMembers: string[] = [];
 
         if (params.members) {
@@ -60,6 +70,9 @@ export default function JoinScreen() {
               rawKey = parsed.key || parsed.syncKey || rawKey;
               rawName = parsed.name || rawName;
               rawCur = parsed.cur || parsed.currency || rawCur;
+              rawCreatorId = parsed.creatorId || rawCreatorId;
+              rawCreatorName = parsed.creatorName || rawCreatorName;
+              rawPerm = parsed.permissionModel || parsed.perm || rawPerm;
               if (Array.isArray(parsed.members)) {
                 rawMembers = parsed.members.map((m: any) => (typeof m === 'string' ? m : m.name)).filter(Boolean);
               }
@@ -74,6 +87,9 @@ export default function JoinScreen() {
             rawKey = search.get('key') || search.get('syncKey') || rawKey;
             rawName = search.get('name') ? decodeURIComponent(search.get('name')!) : rawName;
             rawCur = search.get('cur') || search.get('currency') || rawCur;
+            rawCreatorId = search.get('creatorId') ? decodeURIComponent(search.get('creatorId')!) : rawCreatorId;
+            rawCreatorName = search.get('creatorName') ? decodeURIComponent(search.get('creatorName')!) : rawCreatorName;
+            rawPerm = (search.get('perm') || search.get('permissionModel') || rawPerm) as any;
             if (search.get('members')) {
               rawMembers = decodeURIComponent(search.get('members')!)
                 .split(',')
@@ -113,6 +129,9 @@ export default function JoinScreen() {
           name: rawName,
           currency: rawCur,
           members: rawMembers,
+          creatorId: rawCreatorId,
+          creatorName: rawCreatorName,
+          permissionModel: rawPerm,
         });
       } catch (e) {
         setError(errorMessage(e));
@@ -136,6 +155,9 @@ export default function JoinScreen() {
         members: groupInfo.members,
         syncKey: groupInfo.key,
         uid: groupInfo.uid,
+        creatorId: groupInfo.creatorId,
+        creatorName: groupInfo.creatorName,
+        permissionModel: groupInfo.permissionModel,
       });
 
       // Connect to E2EE relay and broadcast JOIN_GROUP announcement + request state

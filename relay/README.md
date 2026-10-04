@@ -1,29 +1,36 @@
-# SplitMate E2EE Relay Server (Cloudflare Worker + Durable Objects)
+# SplitMate E2EE SQLite Sync & Relay Server (Cloudflare Worker + Durable Objects)
 
-A high-performance, zero-knowledge WebSocket relay server powered by **Cloudflare SQLite Durable Objects** that routes end-to-end encrypted (E2EE) sync messages between SplitMate group members in real time.
-
----
-
-## 🔒 Security & Privacy Architecture
-- **Zero Plaintext:** All payloads sent through the relay are encrypted on the user's phone using AES-GCM-256 with the group's private encryption key before transmission.
-- **Guaranteed Room Single-Instance Routing:** Uses Cloudflare SQLite Durable Objects (`RelayRoom`) so that all members of a group connect to the exact same room coordinator instance worldwide for zero-latency broadcasting and event replay.
-- **Zero Database Storage:** The server acts as an ephemeral relay and does not store unencrypted group data, transactions, personal names, or balances.
-- **Zero Account Data:** Rooms are identified only by SHA-256 room hashes derived from group IDs. The server never knows who is communicating or what they are splitting.
+A resilient, stateful, zero-knowledge sync and queue coordinator server powered by **Cloudflare SQLite Durable Objects** that synchronizes end-to-end encrypted (E2EE) expenses, payments, and full group history across SplitMate peers in real time and across offline sessions.
 
 ---
 
-## 🌐 Default Built-in Relay URL
+## 🔒 Security & Architecture Overview
 
-The mobile application is pre-configured with the default relay server:
-- **HTTPS Health Check:** `https://splitmate-relay.rn45819.workers.dev/health`
-- **Web Join Landing Page:** `https://splitmate-relay.rn45819.workers.dev/join`
-- **WebSocket Sync Endpoint:** `wss://splitmate-relay.rn45819.workers.dev/ws`
+- **Zero Plaintext:** All payloads sent through the relay are encrypted on-device with AES-GCM-256 using the group's private encryption key before transmission.
+- **SQLite Queue Engine on Durable Objects:** Each group room runs inside an isolated Cloudflare SQLite Durable Object (`RelayRoom`) identified by a SHA-256 room hash.
+- **Queue Pruning & Zero Payload Retention:** Changes are queued in SQLite with monotonic sequence numbers. As soon as all active peers acknowledge receipt of events up to sequence `N`, the server automatically purges the encrypted payloads from SQLite storage, retaining only state sequence metadata and sync counters.
+- **Offline Sync Resilience:** Peers create local changes offline in SQLite with `synced = 0`. When coming online, peers push pending changes (`POST /sync/push`) and pull missing changes in exact chronological sequence order (`POST /sync/pull`), guaranteeing conflict-free Last-Write-Wins (LWW) convergence.
+- **State Snapshot Coordination for New Members:** When a new peer joins or requests state hydration, the server identifies the active peer with the latest sync state and coordinates chunked `STATE_SNAPSHOT` replication to bring the new device up to date immediately.
+- **Hybrid Interface:** Supports both HTTP REST API endpoints and WebSocket connections (`/ws`) for instant real-time notifications.
 
 ---
 
-## 🚀 Method 1: Deploy Directly from Local Terminal (Recommended & Fastest)
+## 🌐 Endpoints
 
-You can deploy the worker directly to your Cloudflare account from your computer in 3 quick steps using `npx wrangler`:
+| Endpoint | Method | Description |
+|---|---|---|
+| `/health` or `/` | `GET` | Server health check and version info |
+| `/join` | `GET` | Responsive mobile web landing page with deep link |
+| `/sync/push?room=<hash>` | `POST` | Push encrypted sync event(s) to SQLite queue |
+| `/sync/pull?room=<hash>` | `POST` | Pull pending queued events since `lastSeq` |
+| `/sync/ack?room=<hash>` | `POST` | Acknowledge received sequence numbers |
+| `/sync/request-snapshot?room=<hash>` | `POST` | Request full replica snapshot from online peer |
+| `/sync/peers?room=<hash>` | `GET / POST` | Query room peers, sync watermarks, and online status |
+| `/ws?room=<hash>` | `GET (Upgrade)` | Real-time WebSocket connection for instant push/pull |
+
+---
+
+## 🚀 Deployment (Terminal / CLI)
 
 ### 1. Open Terminal in the `relay` Folder
 ```bash
@@ -31,77 +38,21 @@ cd relay
 ```
 
 ### 2. Log in to Cloudflare (Only Needed Once)
-Run the login command. It will open your default browser to authorize Wrangler with your free Cloudflare account:
 ```bash
 npx wrangler login
 ```
-*Follow the prompt in your browser to approve access.*
 
 ### 3. Deploy to Cloudflare
 ```bash
 npx wrangler deploy
 ```
 
-Wrangler will package, run SQLite migrations, and upload the worker to Cloudflare's global network in seconds with live observability logging enabled:
-```text
-Binding: env.ROOMS (RelayRoom) -> Durable Object
-Uploaded splitmate-relay
-Deployed splitmate-relay triggers (https://splitmate-relay.rn45819.workers.dev)
-Current Version ID: ...
-```
-
 ---
 
-## 🛠 Local Development & Live Debugging
+## 🛠 Local Development & Testing
 
-To run and debug the relay locally on your computer:
 ```bash
 cd relay
 npx wrangler dev
 ```
-Wrangler will start a local server at `http://localhost:8787` with live hot-reloading and console logging.
-
----
-
-## 🌐 Method 2: Deploy from GitHub via Cloudflare Dashboard (CI/CD)
-
-If you prefer Cloudflare to auto-build and deploy every time you push to GitHub:
-
-### Step 1: Connect Repository in Cloudflare Dashboard
-1. Log in to the [Cloudflare Dashboard](https://dash.cloudflare.com/).
-2. In the left sidebar, navigate to **Compute (Workers & Pages)**.
-3. Click **Create Application** → select the **Workers** tab.
-4. Click **Connect to Git** (or **Import from Git**).
-5. Select your repository (`splitmate-app`).
-
-### Step 2: Configure Build Settings
-
-| Field Name | Value to Enter |
-|---|---|
-| **Project Name** | `splitmate-relay` |
-| **Production Branch** | `main` *(or `feat/sync-relay`)* |
-| **Root Directory** | `relay` |
-| **Build Command** | `npx wrangler deploy --dry-run` *(or leave blank)* |
-| **Deploy Command** | `npx wrangler deploy` |
-
-Click **Save and Deploy**.
-
----
-
-## ✅ Verifying Your Deployment
-
-1. **Test Health Endpoint:**
-   Open in browser: `https://splitmate-relay.rn45819.workers.dev/health`
-   You should see:
-   ```json
-   {"status":"ok","name":"SplitMate E2EE Relay","version":"1.0.0"}
-   ```
-
-2. **Test Join Landing Page:**
-   Open in browser: `https://splitmate-relay.rn45819.workers.dev/join?name=Test%20Trip&cur=USD`
-   You will see the responsive web landing page that auto-opens the SplitMate mobile app.
-
-3. **In the SplitMate Mobile App:**
-   - Go to **Settings → E2EE Remote Sync Relay**.
-   - The default URL is `wss://splitmate-relay.rn45819.workers.dev/ws`.
-   - If you deploy to a custom subdomain or worker name, paste your WebSocket URL and tap **Save Relay URL**.
+Runs locally at `http://localhost:8787` with hot-reloading.

@@ -243,6 +243,8 @@ test('E2E LIVE RELAY P2P: Full group state hydration and real-time transaction s
   assert.equal(summaryA2.totals.totalExpenses, 2520000);
   assert.ok(summaryA2.transactions.some((t) => t.title === 'Chairlift Tickets'));
 
-  wsA.close();
-  wsB.close();
+  wsA.removeAllListeners();
+  wsB.removeAllListeners();
+  wsA.terminate();
+  wsB.terminate();
 });
