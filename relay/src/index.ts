@@ -43,7 +43,19 @@ export class RelayRoom {
     server.addEventListener('message', (event) => {
       try {
         const data = typeof event.data === 'string' ? JSON.parse(event.data) : null;
-        if (!data || !data.payload) return;
+        if (!data) return;
+
+        // Support lightweight ping/keepalive
+        if (data.type === 'PING') {
+          try {
+            server.send(JSON.stringify({ type: 'PONG', timestamp: Date.now() }));
+          } catch {
+            this.sessions.delete(server);
+          }
+          return;
+        }
+
+        if (!data.payload) return;
 
         // Store in ephemeral room history queue
         this.queue.push({ id: data.id || Math.random().toString(), payload: data.payload, timestamp: Date.now() });
@@ -66,6 +78,10 @@ export class RelayRoom {
     });
 
     server.addEventListener('close', () => {
+      this.sessions.delete(server);
+    });
+
+    server.addEventListener('error', () => {
       this.sessions.delete(server);
     });
 

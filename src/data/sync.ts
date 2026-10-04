@@ -56,7 +56,7 @@ export async function createSyncEvent<T>(groupUid: string, action: SyncAction, p
   return event;
 }
 
-import { exportGroupSnapshot, applyGroupSnapshot, mergeMembersByName, listGroups, GroupSnapshotPayload } from './repo';
+import { exportGroupSnapshot, exportGroupSnapshotBatches, applyGroupSnapshot, mergeMembersByName, listGroups, GroupSnapshotPayload } from './repo';
 
 /** Payload schema for transaction sync events. */
 export interface SyncTxPayload {
@@ -93,22 +93,29 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
   await db.withTransactionAsync(async () => {
     // 1. Process Event Action
     if (event.action === 'REQUEST_STATE') {
-      // Peer requested full group state: schedule sending current snapshot
+      // Peer requested full group state: schedule sending batched chunks immediately
       setTimeout(async () => {
         try {
-          const snapshot = await exportGroupSnapshot(group.id);
-          if (snapshot.transactions.length > 0 || snapshot.members.length > 0) {
-            await createSyncEvent(group.uid, 'STATE_SNAPSHOT', snapshot);
+          const batches = await exportGroupSnapshotBatches(group.id, 25);
+          for (let i = 0; i < batches.length; i++) {
+            const chunk = batches[i]!;
+            await createSyncEvent(group.uid, 'STATE_SNAPSHOT', chunk);
+            if (batches.length > 1 && i < batches.length - 1) {
+              await new Promise((r) => setTimeout(r, 20));
+            }
           }
         } catch {
           // ignore snapshot export errors
         }
-      }, 100);
+      }, 50);
     } else if (event.action === 'STATE_SNAPSHOT') {
       const payload = event.payload as GroupSnapshotPayload;
       if (payload && Array.isArray(payload.transactions)) {
         const res = await applyGroupSnapshot(group.id, payload);
-        const msg = `${event.authorName} synchronized full group history (${res.added} added, ${res.updated} updated)`;
+        const chunkInfo = payload.totalChunks && payload.totalChunks > 1
+          ? ` (chunk ${(payload.chunkIndex ?? 0) + 1}/${payload.totalChunks})`
+          : '';
+        const msg = `${event.authorName} synchronized group history${chunkInfo} (${res.added} added, ${res.updated} updated)`;
         await db.runAsync(
           'INSERT INTO sync_notifications (group_uid, author_name, title, message, read, created_at) VALUES (?, ?, ?, ?, 0, ?)',
           [group.uid, event.authorName, group.name, msg, nowIso]

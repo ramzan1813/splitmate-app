@@ -316,11 +316,14 @@ export async function mergeMembersByName(groupId: number, sourceName: string, ta
   }
 }
 
-export interface GroupSnapshotPayload {
+export interface GroupSnapshotChunkPayload {
   groupUid: string;
   name: string;
   description: string;
   currency: string;
+  chunkIndex?: number;
+  totalChunks?: number;
+  batchId?: string;
   members: string[];
   transactions: {
     txUid: string;
@@ -339,6 +342,8 @@ export interface GroupSnapshotPayload {
   }[];
 }
 
+export type GroupSnapshotPayload = GroupSnapshotChunkPayload;
+
 export async function exportGroupSnapshot(groupId: number): Promise<GroupSnapshotPayload> {
   const group = await getGroup(groupId);
   const members = await getMembers(groupId);
@@ -350,6 +355,8 @@ export async function exportGroupSnapshot(groupId: number): Promise<GroupSnapsho
     name: group.name,
     description: group.description,
     currency: group.currency,
+    chunkIndex: 0,
+    totalChunks: 1,
     members: members.map((m) => m.name),
     transactions: txs.map((t) => ({
       txUid: t.uid || `tx_${t.id}`,
@@ -371,6 +378,37 @@ export async function exportGroupSnapshot(groupId: number): Promise<GroupSnapsho
       })),
     })),
   };
+}
+
+export async function exportGroupSnapshotBatches(
+  groupId: number,
+  batchSize = 25
+): Promise<GroupSnapshotChunkPayload[]> {
+  const full = await exportGroupSnapshot(groupId);
+  if (full.transactions.length <= batchSize) {
+    return [{ ...full, chunkIndex: 0, totalChunks: 1, batchId: `batch_${Date.now().toString(16)}` }];
+  }
+
+  const batchId = `batch_${Date.now().toString(16)}`;
+  const totalChunks = Math.ceil(full.transactions.length / batchSize);
+  const chunks: GroupSnapshotChunkPayload[] = [];
+
+  for (let i = 0; i < totalChunks; i++) {
+    const slice = full.transactions.slice(i * batchSize, (i + 1) * batchSize);
+    chunks.push({
+      groupUid: full.groupUid,
+      name: full.name,
+      description: full.description,
+      currency: full.currency,
+      chunkIndex: i,
+      totalChunks,
+      batchId,
+      members: full.members,
+      transactions: slice,
+    });
+  }
+
+  return chunks;
 }
 
 export async function applyGroupSnapshot(groupId: number, snapshot: GroupSnapshotPayload): Promise<{ added: number; updated: number }> {

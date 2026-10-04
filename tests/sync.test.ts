@@ -627,5 +627,80 @@ test('sync: end-to-end REQUEST_STATE and STATE_SNAPSHOT handshake between peers'
   assert.equal(charlieStat.balance, -15000);
 });
 
+test('sync: lazy chunked batched state snapshot streaming for large groups', async () => {
+  const dbA = createNodeDb();
+  await migrate(dbA);
+  setDb(dbA);
+
+  const groupA = await repo.createGroup({
+    name: 'Big Event',
+    myName: 'Host',
+    members: ['Guest'],
+    uid: 'grp_big_event',
+    syncKey: 'key_big_event',
+  });
+
+  const membersA = await repo.getMembers(groupA.id);
+  const hostId = membersA.find((m) => m.name === 'Host')!.id;
+  const guestId = membersA.find((m) => m.name === 'Guest')!.id;
+
+  // Create 60 expenses
+  for (let i = 1; i <= 60; i++) {
+    await repo.createTransaction(groupA.id, {
+      type: 'expense',
+      title: `Expense #${i}`,
+      amount: 10 * i,
+      paidBy: hostId,
+      splitType: 'equal',
+      splits: [{ memberId: hostId }, { memberId: guestId }],
+      category: 'General',
+      date: '2026-10-04',
+    });
+  }
+
+  // Export in batches of 20
+  const batches = await repo.exportGroupSnapshotBatches(groupA.id, 20);
+  assert.equal(batches.length, 3);
+  assert.equal(batches[0]!.chunkIndex, 0);
+  assert.equal(batches[0]!.totalChunks, 3);
+  assert.equal(batches[0]!.transactions.length, 20);
+  assert.equal(batches[1]!.chunkIndex, 1);
+  assert.equal(batches[1]!.transactions.length, 20);
+  assert.equal(batches[2]!.chunkIndex, 2);
+  assert.equal(batches[2]!.transactions.length, 20);
+
+  // Setup Device B
+  const dbB = createNodeDb();
+  await migrate(dbB);
+  setDb(dbB);
+
+  const groupB = await repo.createGroup({
+    name: 'Big Event',
+    myName: 'Guest',
+    members: ['Host'],
+    uid: 'grp_big_event',
+    syncKey: 'key_big_event',
+  });
+
+  // Apply batch 0
+  await repo.applyGroupSnapshot(groupB.id, batches[0]!);
+  let txsB = await repo.getTransactions(groupB.id);
+  assert.equal(txsB.length, 20);
+
+  // Apply batch 1
+  await repo.applyGroupSnapshot(groupB.id, batches[1]!);
+  txsB = await repo.getTransactions(groupB.id);
+  assert.equal(txsB.length, 40);
+
+  // Apply batch 2
+  await repo.applyGroupSnapshot(groupB.id, batches[2]!);
+  txsB = await repo.getTransactions(groupB.id);
+  assert.equal(txsB.length, 60);
+
+  const summaryB = await repo.getGroupSummary(groupB.id);
+  assert.equal(summaryB.totals.expenseCount, 60);
+});
+
+
 
 
