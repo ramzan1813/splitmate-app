@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Button, Card, Row, Screen, SectionTitle } from '@/components/ui';
+import { Avatar, Button, Card, Row, Screen, SectionTitle } from '@/components/ui';
 import { createGroup, listGroups } from '@/data/repo';
+import { syncManager } from '@/data/sync';
 import { useApp } from '@/lib/app';
 import { colors } from '@/lib/theme';
 import { errorMessage, notify } from '@/lib/dialog';
@@ -14,6 +15,7 @@ export default function JoinScreen() {
     key?: string;
     name?: string;
     cur?: string;
+    members?: string;
     invite?: string;
   }>();
   const { profileName } = useApp();
@@ -24,7 +26,9 @@ export default function JoinScreen() {
     key: string;
     name: string;
     currency: string;
+    members: string[];
   } | null>(null);
+  const [selectedMember, setSelectedMember] = useState<string>('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -34,6 +38,14 @@ export default function JoinScreen() {
         let rawKey = params.key;
         let rawName = params.name ? decodeURIComponent(params.name) : 'Shared Group';
         let rawCur = params.cur || 'USD';
+        let rawMembers: string[] = [];
+
+        if (params.members) {
+          rawMembers = decodeURIComponent(params.members)
+            .split(',')
+            .map((m) => m.trim())
+            .filter(Boolean);
+        }
 
         // Check if raw invite string is present
         if (params.invite) {
@@ -45,6 +57,12 @@ export default function JoinScreen() {
           rawKey = search.get('key') || rawKey;
           rawName = search.get('name') ? decodeURIComponent(search.get('name')!) : rawName;
           rawCur = search.get('cur') || rawCur;
+          if (search.get('members')) {
+            rawMembers = decodeURIComponent(search.get('members')!)
+              .split(',')
+              .map((m) => m.trim())
+              .filter(Boolean);
+          }
         }
 
         if (!rawUid || !rawKey) {
@@ -62,11 +80,17 @@ export default function JoinScreen() {
           return;
         }
 
+        // Auto-match profile name if present among members
+        const myDefaultName = profileName || 'Me';
+        const match = rawMembers.find((m) => m.toLowerCase() === myDefaultName.toLowerCase());
+        setSelectedMember(match || myDefaultName);
+
         setGroupInfo({
           uid: rawUid,
           key: rawKey,
           name: rawName,
           currency: rawCur,
+          members: rawMembers,
         });
       } catch (e) {
         setError(errorMessage(e));
@@ -75,21 +99,26 @@ export default function JoinScreen() {
       }
     }
     init();
-  }, [params, router]);
+  }, [params, router, profileName]);
 
   const handleJoin = async () => {
     if (!groupInfo) return;
     try {
       setJoining(true);
+      const myChosenName = selectedMember.trim() || profileName || 'Me';
       const newGroup = await createGroup({
         name: groupInfo.name,
         currency: groupInfo.currency,
-        myName: profileName || 'Me',
+        myName: myChosenName,
+        members: groupInfo.members,
         syncKey: groupInfo.key,
         uid: groupInfo.uid,
       });
 
-      notify('Joined Group', `Connected to ${groupInfo.name} with E2EE sync.`);
+      // Connect to E2EE relay to immediately request state from online peers
+      syncManager.connectGroup(groupInfo.uid, groupInfo.key);
+
+      notify('Joined Group', `Connected to ${groupInfo.name} as ${myChosenName} with E2EE sync.`);
       router.replace(`/group/${newGroup.id}`);
     } catch (e) {
       notify("Couldn't join", errorMessage(e));
@@ -127,6 +156,9 @@ export default function JoinScreen() {
     );
   }
 
+  const myDefaultName = profileName || 'Me';
+  const hasMemberOptions = groupInfo.members && groupInfo.members.length > 0;
+
   return (
     <Screen style={{ maxWidth: 480, width: '100%', alignSelf: 'center', justifyContent: 'center' }}>
       <Card style={{ padding: 24, alignItems: 'center' }}>
@@ -138,7 +170,7 @@ export default function JoinScreen() {
           You were invited to join this group. All expenses and payments will be synced end-to-end encrypted in real time.
         </Text>
 
-        <View style={{ width: '100%', backgroundColor: colors.bg, borderRadius: 12, padding: 14, marginBottom: 20 }}>
+        <View style={{ width: '100%', backgroundColor: colors.bg, borderRadius: 12, padding: 14, marginBottom: 16 }}>
           <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
             <Text style={{ color: colors.muted, fontSize: 13 }}>Group Name</Text>
             <Text style={{ fontWeight: '700', fontSize: 14, color: colors.text }}>{groupInfo.name}</Text>
@@ -153,8 +185,77 @@ export default function JoinScreen() {
           </Row>
         </View>
 
+        {/* Member Identity Binding */}
+        <View style={{ width: '100%', marginBottom: 20 }}>
+          <Text style={{ fontWeight: '700', fontSize: 14, color: colors.text, marginBottom: 8 }}>
+            Who represents you in this group?
+          </Text>
+          <View style={{ gap: 8 }}>
+            {hasMemberOptions &&
+              groupInfo.members.map((m, idx) => {
+                const isSelected = selectedMember.toLowerCase() === m.toLowerCase();
+                return (
+                  <Pressable
+                    key={idx}
+                    onPress={() => setSelectedMember(m)}
+                    style={{
+                      padding: 12,
+                      borderRadius: 10,
+                      borderWidth: 1.5,
+                      borderColor: isSelected ? colors.primary : colors.border,
+                      backgroundColor: isSelected ? colors.primaryLight : colors.card,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Avatar name={m} index={idx} size={28} />
+                    <Text
+                      style={{
+                        marginLeft: 10,
+                        fontWeight: isSelected ? '700' : '500',
+                        color: isSelected ? colors.primaryDark : colors.text,
+                        flex: 1,
+                      }}
+                    >
+                      {m}
+                    </Text>
+                    {isSelected && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓</Text>}
+                  </Pressable>
+                );
+              })}
+
+            {/* Join as new user if not already matching */}
+            {!groupInfo.members.some((m) => m.toLowerCase() === myDefaultName.toLowerCase()) && (
+              <Pressable
+                onPress={() => setSelectedMember(myDefaultName)}
+                style={{
+                  padding: 12,
+                  borderRadius: 10,
+                  borderWidth: 1.5,
+                  borderColor: selectedMember.toLowerCase() === myDefaultName.toLowerCase() ? colors.primary : colors.border,
+                  backgroundColor: selectedMember.toLowerCase() === myDefaultName.toLowerCase() ? colors.primaryLight : colors.card,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ fontSize: 18, marginRight: 10 }}>👤</Text>
+                <Text
+                  style={{
+                    fontWeight: selectedMember.toLowerCase() === myDefaultName.toLowerCase() ? '700' : '500',
+                    color: selectedMember.toLowerCase() === myDefaultName.toLowerCase() ? colors.primaryDark : colors.text,
+                    flex: 1,
+                  }}
+                >
+                  Join as {myDefaultName} (New Member)
+                </Text>
+                {selectedMember.toLowerCase() === myDefaultName.toLowerCase() && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓</Text>}
+              </Pressable>
+            )}
+          </View>
+        </View>
+
         <Button
-          title={`Join ${groupInfo.name}`}
+          title={`Join as ${selectedMember || myDefaultName}`}
           onPress={handleJoin}
           loading={joining}
           style={{ width: '100%', marginBottom: 10 }}

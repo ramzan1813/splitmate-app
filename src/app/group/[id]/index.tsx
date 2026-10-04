@@ -58,7 +58,8 @@ export default function GroupScreen() {
 
   const inviteLink = useMemo(() => {
     if (!data?.group?.uid) return '';
-    const qs = `uid=${data.group.uid}&key=${data.group.syncKey || ''}&name=${encodeURIComponent(data.group.name)}&cur=${data.group.currency}`;
+    const memberNames = (data.members || []).map((m) => encodeURIComponent(m.name)).join(',');
+    const qs = `uid=${data.group.uid}&key=${data.group.syncKey || ''}&name=${encodeURIComponent(data.group.name)}&cur=${data.group.currency}&members=${memberNames}`;
     return `https://splitmate-relay.rn45819.workers.dev/join?${qs}`;
   }, [data]);
 

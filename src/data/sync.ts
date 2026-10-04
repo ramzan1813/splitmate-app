@@ -56,6 +56,8 @@ export async function createSyncEvent<T>(groupUid: string, action: SyncAction, p
   return event;
 }
 
+import { exportGroupSnapshot, applyGroupSnapshot, mergeMembersByName, GroupSnapshotPayload } from './repo';
+
 /** Payload schema for transaction sync events. */
 export interface SyncTxPayload {
   txUid: string;
@@ -90,7 +92,39 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
 
   await db.withTransactionAsync(async () => {
     // 1. Process Event Action
-    if (event.action === 'UPSERT_TX') {
+    if (event.action === 'REQUEST_STATE') {
+      // Peer requested full group state: schedule sending current snapshot
+      setTimeout(async () => {
+        try {
+          const snapshot = await exportGroupSnapshot(group.id);
+          if (snapshot.transactions.length > 0 || snapshot.members.length > 0) {
+            await createSyncEvent(group.uid, 'STATE_SNAPSHOT', snapshot);
+          }
+        } catch {
+          // ignore snapshot export errors
+        }
+      }, 100);
+    } else if (event.action === 'STATE_SNAPSHOT') {
+      const payload = event.payload as GroupSnapshotPayload;
+      if (payload && Array.isArray(payload.transactions)) {
+        const res = await applyGroupSnapshot(group.id, payload);
+        const msg = `${event.authorName} synchronized full group history (${res.added} added, ${res.updated} updated)`;
+        await db.runAsync(
+          'INSERT INTO sync_notifications (group_uid, author_name, title, message, read, created_at) VALUES (?, ?, ?, ?, 0, ?)',
+          [group.uid, event.authorName, group.name, msg, nowIso]
+        );
+      }
+    } else if (event.action === 'MERGE_MEMBERS') {
+      const payload = event.payload as { sourceMemberName: string; targetMemberName: string };
+      if (payload?.sourceMemberName && payload?.targetMemberName) {
+        await mergeMembersByName(group.id, payload.sourceMemberName, payload.targetMemberName);
+        const msg = `${event.authorName} merged member "${payload.sourceMemberName}" into "${payload.targetMemberName}"`;
+        await db.runAsync(
+          'INSERT INTO sync_notifications (group_uid, author_name, title, message, read, created_at) VALUES (?, ?, ?, ?, 0, ?)',
+          [group.uid, event.authorName, group.name, msg, nowIso]
+        );
+      }
+    } else if (event.action === 'UPSERT_TX') {
       const payload = event.payload as SyncTxPayload;
       if (!payload || !payload.txUid) return;
 
@@ -286,6 +320,8 @@ class SyncManager {
         this.isConnecting.set(groupUid, false);
         // Flush any unsynced local events
         await this.flushPendingEvents(groupUid);
+        // Request latest state snapshot from any online peer
+        await createSyncEvent(groupUid, 'REQUEST_STATE', { requestedAt: Date.now() });
       };
 
       ws.onmessage = async (e) => {

@@ -227,14 +227,25 @@ export async function getGroupSummary(id: number): Promise<GroupSummary> {
   };
 }
 
-export async function createGroup(input: { name: string; description?: string; currency?: string; myName: string; members?: string[]; syncKey?: string; uid?: string }) {
+export async function createGroup(input: {
+  name: string;
+  description?: string;
+  currency?: string;
+  myName: string;
+  members?: string[];
+  syncKey?: string;
+  uid?: string;
+}) {
   const name = clean(input.name, LIMITS.name);
   if (!name) throw new AppError('Group name is required');
   const myName = clean(input.myName, LIMITS.name) || 'Me';
   const currency = CURRENCIES.includes(String(input.currency)) ? String(input.currency) : 'USD';
   const syncKey = input.syncKey || generateGroupKey();
   const groupUid = input.uid || newUid();
-  const others = (input.members || []).map((m) => clean(m, LIMITS.name)).filter(Boolean);
+  const others = (input.members || [])
+    .map((m) => clean(m, LIMITS.name))
+    .filter((m) => Boolean(m) && m.toLowerCase() !== myName.toLowerCase());
+
   const db = await getDb();
   let gid = 0;
   await db.withTransactionAsync(async () => {
@@ -248,6 +259,226 @@ export async function createGroup(input: { name: string; description?: string; c
     for (const n of others) await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [gid, n, ts]);
   });
   return getGroup(gid);
+}
+
+export async function mergeMembers(groupId: number, sourceMemberId: number, targetMemberId: number) {
+  if (sourceMemberId === targetMemberId) throw new AppError('Cannot merge a member into themselves');
+  const db = await getDb();
+  await db.withTransactionAsync(async () => {
+    // 1. Reassign transactions where source was paid_by
+    await db.runAsync('UPDATE transactions SET paid_by = ? WHERE group_id = ? AND paid_by = ?', [targetMemberId, groupId, sourceMemberId]);
+
+    // 2. Reassign transaction splits
+    const sourceSplits = await db.getAllAsync<{ transaction_id: number; value: number; share: number }>(
+      'SELECT s.transaction_id, s.value, s.share FROM transaction_splits s JOIN transactions t ON t.id = s.transaction_id WHERE t.group_id = ? AND s.member_id = ?',
+      [groupId, sourceMemberId]
+    );
+
+    for (const s of sourceSplits) {
+      const existingTargetSplit = await db.getFirstAsync<{ value: number; share: number }>(
+        'SELECT value, share FROM transaction_splits WHERE transaction_id = ? AND member_id = ?',
+        [s.transaction_id, targetMemberId]
+      );
+      if (existingTargetSplit) {
+        await db.runAsync(
+          'UPDATE transaction_splits SET value = ?, share = ? WHERE transaction_id = ? AND member_id = ?',
+          [existingTargetSplit.value + s.value, existingTargetSplit.share + s.share, s.transaction_id, targetMemberId]
+        );
+        await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ? AND member_id = ?', [s.transaction_id, sourceMemberId]);
+      } else {
+        await db.runAsync('UPDATE transaction_splits SET member_id = ? WHERE transaction_id = ? AND member_id = ?', [targetMemberId, s.transaction_id, sourceMemberId]);
+      }
+    }
+
+    // 3. Delete source member
+    await db.runAsync('DELETE FROM members WHERE id = ? AND group_id = ?', [sourceMemberId, groupId]);
+    await touch(groupId);
+  });
+}
+
+export async function mergeMembersByName(groupId: number, sourceName: string, targetName: string) {
+  const members = await getMembers(groupId);
+  const source = members.find((m) => m.name.toLowerCase().trim() === sourceName.toLowerCase().trim());
+  const target = members.find((m) => m.name.toLowerCase().trim() === targetName.toLowerCase().trim());
+  if (source && target && source.id !== target.id) {
+    await mergeMembers(groupId, source.id, target.id);
+  }
+}
+
+export interface GroupSnapshotPayload {
+  groupUid: string;
+  name: string;
+  description: string;
+  currency: string;
+  members: string[];
+  transactions: {
+    txUid: string;
+    type: TxType;
+    title: string;
+    amount: number;
+    paidByName: string;
+    splitType: Transaction['splitType'];
+    category: string;
+    note: string;
+    date: string;
+    authorId?: string;
+    authorName?: string;
+    updatedTs: number;
+    splits: { memberName: string; value: number; share: number }[];
+  }[];
+}
+
+export async function exportGroupSnapshot(groupId: number): Promise<GroupSnapshotPayload> {
+  const group = await getGroup(groupId);
+  const members = await getMembers(groupId);
+  const txs = await getTransactions(groupId);
+  const memberMap = new Map(members.map((m) => [m.id, m.name]));
+
+  return {
+    groupUid: group.uid,
+    name: group.name,
+    description: group.description,
+    currency: group.currency,
+    members: members.map((m) => m.name),
+    transactions: txs.map((t) => ({
+      txUid: t.uid || `tx_${t.id}`,
+      type: t.type,
+      title: t.title,
+      amount: t.amount,
+      paidByName: memberMap.get(t.paidBy) || 'Unknown',
+      splitType: t.splitType,
+      category: t.category,
+      note: t.note,
+      date: t.date,
+      authorId: t.authorId,
+      authorName: t.authorName,
+      updatedTs: t.updatedTs || (t.createdAt ? new Date(t.createdAt).getTime() : Date.now()),
+      splits: t.splits.map((s) => ({
+        memberName: memberMap.get(s.memberId) || 'Unknown',
+        value: s.value,
+        share: s.share,
+      })),
+    })),
+  };
+}
+
+export async function applyGroupSnapshot(groupId: number, snapshot: GroupSnapshotPayload): Promise<{ added: number; updated: number }> {
+  const db = await getDb();
+  let added = 0;
+  let updated = 0;
+  const nowIso = now();
+
+  await db.withTransactionAsync(async () => {
+    // 1. Ensure all members in snapshot exist
+    const currentMembers = await getMembers(groupId);
+    const memberNameMap = new Map<string, number>(currentMembers.map((m) => [m.name.toLowerCase().trim(), m.id]));
+
+    for (const memName of snapshot.members) {
+      const cleanName = clean(memName, LIMITS.name);
+      if (cleanName && !memberNameMap.has(cleanName.toLowerCase().trim())) {
+        const r = await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [groupId, cleanName, nowIso]);
+        memberNameMap.set(cleanName.toLowerCase().trim(), r.lastInsertRowId);
+      }
+    }
+
+    // 2. Import / Merge transactions
+    for (const tx of snapshot.transactions) {
+      let payerId = memberNameMap.get(tx.paidByName.toLowerCase().trim());
+      if (!payerId) {
+        const r = await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [groupId, tx.paidByName, nowIso]);
+        payerId = r.lastInsertRowId;
+        memberNameMap.set(tx.paidByName.toLowerCase().trim(), payerId);
+      }
+
+      const existingTx = await db.getFirstAsync<{ id: number; updated_ts: number }>(
+        'SELECT id, updated_ts FROM transactions WHERE group_id = ? AND uid = ?',
+        [groupId, tx.txUid]
+      );
+
+      if (existingTx) {
+        // Last-Write-Wins: update only if snapshot is newer
+        if ((tx.updatedTs || 0) > (existingTx.updated_ts || 0)) {
+          await db.runAsync(
+            `UPDATE transactions SET type = ?, title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, author_id = ?, author_name = ?, updated_ts = ?, updated_at = ?
+             WHERE id = ?`,
+            [
+              tx.type,
+              tx.title,
+              tx.amount,
+              payerId,
+              tx.splitType,
+              tx.category,
+              tx.note,
+              tx.date,
+              tx.authorId || '',
+              tx.authorName || '',
+              tx.updatedTs,
+              nowIso,
+              existingTx.id,
+            ]
+          );
+          await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [existingTx.id]);
+          for (const s of tx.splits) {
+            let sMemberId = memberNameMap.get(s.memberName.toLowerCase().trim());
+            if (!sMemberId) {
+              const r = await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [groupId, s.memberName, nowIso]);
+              sMemberId = r.lastInsertRowId;
+              memberNameMap.set(s.memberName.toLowerCase().trim(), sMemberId);
+            }
+            await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [
+              existingTx.id,
+              sMemberId,
+              s.value,
+              s.share,
+            ]);
+          }
+          updated++;
+        }
+      } else {
+        // Insert new transaction
+        const ins = await db.runAsync(
+          `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, updated_ts, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            groupId,
+            tx.txUid,
+            tx.type,
+            tx.title,
+            tx.amount,
+            payerId,
+            tx.splitType,
+            tx.category,
+            tx.note,
+            tx.date,
+            tx.authorId || '',
+            tx.authorName || '',
+            tx.updatedTs || Date.now(),
+            nowIso,
+            nowIso,
+          ]
+        );
+        const newTxId = ins.lastInsertRowId;
+        for (const s of tx.splits) {
+          let sMemberId = memberNameMap.get(s.memberName.toLowerCase().trim());
+          if (!sMemberId) {
+            const r = await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [groupId, s.memberName, nowIso]);
+            sMemberId = r.lastInsertRowId;
+            memberNameMap.set(s.memberName.toLowerCase().trim(), sMemberId);
+          }
+          await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [
+            newTxId,
+            sMemberId,
+            s.value,
+            s.share,
+          ]);
+        }
+        added++;
+      }
+    }
+    await touch(groupId);
+  });
+
+  return { added, updated };
 }
 
 export async function setGroupSyncKey(id: number, syncKey: string) {

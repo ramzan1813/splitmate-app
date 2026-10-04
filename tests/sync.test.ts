@@ -327,5 +327,149 @@ test('notifications: unread counter, retrieval, and mark all read', async () => 
   assert.equal(afterRead[1]!.read, true);
 });
 
+test('sync: p2p state snapshot export and full group hydration on peer', async () => {
+  // Device A creates a full group with multiple members and expenses
+  const dbA = createNodeDb();
+  await migrate(dbA);
+  setDb(dbA);
+
+  const groupA = await repo.createGroup({
+    name: 'Dubai Holiday',
+    currency: 'AED',
+    myName: 'Ramzan',
+    members: ['Ikram', 'Sara'],
+  });
+
+  const membersA = await repo.getMembers(groupA.id);
+  const ramzanId = membersA.find((m) => m.name === 'Ramzan')!.id;
+  const ikramId = membersA.find((m) => m.name === 'Ikram')!.id;
+  const saraId = membersA.find((m) => m.name === 'Sara')!.id;
+
+  // Ramzan records a $300 expense split with Ikram and Sara
+  await repo.createTransaction(groupA.id, {
+    type: 'expense',
+    title: 'Desert Safari Tour',
+    amount: 300,
+    paidBy: ramzanId,
+    splitType: 'equal',
+    splits: [{ memberId: ramzanId }, { memberId: ikramId }, { memberId: saraId }],
+    category: 'Activities',
+    date: '2026-10-04',
+  });
+
+  // Export full snapshot from Device A
+  const snapshot = await repo.exportGroupSnapshot(groupA.id);
+  assert.equal(snapshot.name, 'Dubai Holiday');
+  assert.equal(snapshot.currency, 'AED');
+  assert.equal(snapshot.members.length, 3);
+  assert.equal(snapshot.transactions.length, 1);
+  assert.equal(snapshot.transactions[0]!.title, 'Desert Safari Tour');
+  assert.equal(snapshot.transactions[0]!.amount, 30000);
+
+  // Device B (Ikram joining on a new phone)
+  const dbB = createNodeDb();
+  await migrate(dbB);
+  setDb(dbB);
+
+  // Device B creates group shell with same UID & Sync Key, choosing "Ikram" as myName
+  const groupB = await repo.createGroup({
+    name: groupA.name,
+    currency: groupA.currency,
+    myName: 'Ikram',
+    syncKey: groupA.syncKey,
+    uid: groupA.uid,
+  });
+
+  // Device B applies snapshot received from peer
+  const result = await repo.applyGroupSnapshot(groupB.id, snapshot);
+  assert.equal(result.added, 1);
+
+  // Verify Device B state
+  const membersB = await repo.getMembers(groupB.id);
+  assert.equal(membersB.length, 3);
+  const ikramB = membersB.find((m) => m.name === 'Ikram')!;
+  assert.equal(ikramB.isMe, true); // Ikram is marked as (you) on Device B
+
+  const txsB = await repo.getTransactions(groupB.id);
+  assert.equal(txsB.length, 1);
+  assert.equal(txsB[0]!.title, 'Desert Safari Tour');
+  assert.equal(txsB[0]!.amount, 30000);
+
+  // Check balances on Device B: Ramzan paid $300, Ikram and Sara owe $100 each
+  const summaryB = await repo.getGroupSummary(groupB.id);
+  const ikramStat = summaryB.stats.find((s) => s.memberId === ikramB.id)!;
+  assert.equal(ikramStat.balance, -10000); // Ikram owes 100 AED
+});
+
+test('members: merge member reassigns all past transactions and splits', async () => {
+  const db = createNodeDb();
+  await migrate(db);
+  setDb(db);
+
+  // Group created with Ramzan, and two duplicate entries for Ikram: "Ikram" and "Ikram Khan"
+  const group = await repo.createGroup({
+    name: 'Flat Expenses',
+    currency: 'USD',
+    myName: 'Ramzan',
+    members: ['Ikram', 'Ikram Khan'],
+  });
+
+  const members = await repo.getMembers(group.id);
+  const ramzanId = members.find((m) => m.name === 'Ramzan')!.id;
+  const ikramId = members.find((m) => m.name === 'Ikram')!.id;
+  const ikramKhanId = members.find((m) => m.name === 'Ikram Khan')!.id;
+
+  // Expense 1: Paid by Ramzan, split with "Ikram Khan"
+  await repo.createTransaction(group.id, {
+    type: 'expense',
+    title: 'Groceries',
+    amount: 100,
+    paidBy: ramzanId,
+    splitType: 'equal',
+    splits: [{ memberId: ramzanId }, { memberId: ikramKhanId }],
+    category: 'Food',
+    date: '2026-10-04',
+  });
+
+  // Expense 2: Paid by "Ikram Khan", split with Ramzan
+  await repo.createTransaction(group.id, {
+    type: 'expense',
+    title: 'Electricity Bill',
+    amount: 60,
+    paidBy: ikramKhanId,
+    splitType: 'equal',
+    splits: [{ memberId: ramzanId }, { memberId: ikramKhanId }],
+    category: 'Utilities',
+    date: '2026-10-04',
+  });
+
+  // Merge "Ikram Khan" into "Ikram"
+  await repo.mergeMembers(group.id, ikramKhanId, ikramId);
+
+  // Check remaining members: "Ikram Khan" should be removed
+  const updatedMembers = await repo.getMembers(group.id);
+  assert.equal(updatedMembers.length, 2);
+  assert.ok(!updatedMembers.some((m) => m.name === 'Ikram Khan'));
+  assert.ok(updatedMembers.some((m) => m.name === 'Ikram'));
+
+  // Check transactions: Electricity Bill paidBy should now be "Ikram"
+  const updatedTxs = await repo.getTransactions(group.id);
+  const electricity = updatedTxs.find((t) => t.title === 'Electricity Bill')!;
+  assert.equal(electricity.paidBy, ikramId);
+
+  // Groceries split should now be with "Ikram"
+  const groceries = updatedTxs.find((t) => t.title === 'Groceries')!;
+  assert.ok(groceries.splits.some((s) => s.memberId === ikramId));
+
+  // Check overall balances:
+  // Ramzan paid 100 (benefit 50 + 30 = 80 -> balance +20)
+  // Ikram paid 60 (benefit 50 + 30 = 80 -> balance -20)
+  const summary = await repo.getGroupSummary(group.id);
+  const ikramStat = summary.stats.find((s) => s.memberId === ikramId)!;
+  assert.equal(ikramStat.totalPaid, 6000);
+  assert.equal(ikramStat.totalBenefit, 8000);
+  assert.equal(ikramStat.balance, -2000); // -$20.00
+});
+
 
 
