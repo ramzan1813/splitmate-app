@@ -6,6 +6,7 @@ import { PieChart } from '@/components/PieChart';
 import { TransactionCard } from '@/components/TransactionCard';
 import { QRCode } from '@/components/QRCode';
 import { QRScannerModal } from '@/components/QRScannerModal';
+import * as Clipboard from 'expo-clipboard';
 import { useGroup } from '@/lib/useGroup';
 import { money } from '@/lib/format';
 import { colors, colorFor } from '@/lib/theme';
@@ -23,6 +24,7 @@ export default function GroupScreen() {
   const [chartMode, setChartMode] = useState<'paid' | 'share' | 'category'>('share');
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useLayoutEffect(() => {
     nav.setOptions({
@@ -293,10 +295,13 @@ export default function GroupScreen() {
 
             <View style={{ marginTop: 16, width: '100%', gap: 8 }}>
               <Button
-                title="Copy Invite Link"
+                title={copied ? '✓ Copied to Clipboard!' : 'Copy Invite Link'}
                 variant="outline"
-                onPress={() => {
-                  notify('Invite Link Copied', inviteLink);
+                onPress={async () => {
+                  if (!inviteLink) return;
+                  await Clipboard.setStringAsync(inviteLink);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2500);
                 }}
               />
               <Button
