@@ -102,7 +102,17 @@ export interface TxInput {
   date?: string;
 }
 
-export type SyncAction = 'UPSERT_TX' | 'DELETE_TX' | 'UPDATE_GROUP' | 'JOIN_GROUP' | 'REQUEST_STATE' | 'STATE_SNAPSHOT' | 'MERGE_MEMBERS';
+export type SyncAction =
+  | 'UPSERT_TX'
+  | 'DELETE_TX'
+  | 'UPDATE_GROUP'
+  | 'JOIN_GROUP'
+  | 'REQUEST_STATE'
+  | 'STATE_SNAPSHOT'
+  | 'MERGE_MEMBERS'
+  | 'RENAME_MEMBER'
+  | 'ADD_MEMBER'
+  | 'DELETE_MEMBER';
 
 export interface SyncEvent<T = unknown> {
   eventId: string;

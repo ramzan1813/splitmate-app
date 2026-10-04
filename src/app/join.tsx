@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Avatar, Button, Card, Row, Screen, SectionTitle } from '@/components/ui';
 import { createGroup, listGroups } from '@/data/repo';
-import { syncManager } from '@/data/sync';
+import { createSyncEvent, syncManager } from '@/data/sync';
 import { useApp } from '@/lib/app';
 import { colors } from '@/lib/theme';
 import { errorMessage, notify } from '@/lib/dialog';
@@ -31,8 +31,11 @@ export default function JoinScreen() {
   const [selectedMember, setSelectedMember] = useState<string>('');
   const [error, setError] = useState('');
 
+  const hasHandled = React.useRef(false);
+
   useEffect(() => {
     async function init() {
+      if (hasHandled.current) return;
       try {
         let rawUid = params.uid;
         let rawKey = params.key;
@@ -90,7 +93,7 @@ export default function JoinScreen() {
         const existingGroups = await listGroups();
         const existing = existingGroups.find((g) => g.uid === rawUid);
         if (existing) {
-          notify('Group Already Joined', `Opening ${existing.name}. Synchronizing data...`);
+          hasHandled.current = true;
           if (existing.syncKey || rawKey) {
             await syncManager.connectGroup(existing.uid, existing.syncKey || rawKey);
             await syncManager.requestState(existing.uid);
@@ -121,8 +124,9 @@ export default function JoinScreen() {
   }, [params, router, profileName]);
 
   const handleJoin = async () => {
-    if (!groupInfo) return;
+    if (!groupInfo || hasHandled.current) return;
     try {
+      hasHandled.current = true;
       setJoining(true);
       const myChosenName = selectedMember.trim() || profileName || 'Me';
       const newGroup = await createGroup({
@@ -134,13 +138,14 @@ export default function JoinScreen() {
         uid: groupInfo.uid,
       });
 
-      // Connect to E2EE relay and immediately request full state snapshot from online peers
+      // Connect to E2EE relay and broadcast JOIN_GROUP announcement + request state
       await syncManager.connectGroup(groupInfo.uid, groupInfo.key);
+      await createSyncEvent(groupInfo.uid, 'JOIN_GROUP', { memberName: myChosenName });
       await syncManager.requestState(groupInfo.uid);
 
-      notify('Joined Group', `Connected to ${groupInfo.name} as ${myChosenName} with E2EE sync.`);
       router.replace(`/group/${newGroup.id}`);
     } catch (e) {
+      hasHandled.current = false;
       notify("Couldn't join", errorMessage(e));
     } finally {
       setJoining(false);

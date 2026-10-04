@@ -54,73 +54,87 @@ function GroupSettings({ id, data, reload }: { id: string; data: GroupSummary; r
       <Field label="Group name" value={name} onChangeText={setName} testID="settings-name" editable={isCreator} />
       <Field label="Description" value={description} onChangeText={setDescription} editable={isCreator} />
       
-      <SectionTitle>Currency</SectionTitle>
-      <CurrencyPicker value={currency} onChange={setCurrency} />
+      {isCreator ? (
+        <>
+          <SectionTitle>Currency</SectionTitle>
+          <CurrencyPicker value={currency} onChange={setCurrency} />
 
-      <SectionTitle>Access & Permissions {isCreator ? '(Admin)' : '(Read Only)'}</SectionTitle>
-      <View style={{ gap: 8, marginBottom: 16 }}>
-        <Pressable
-          onPress={() => isCreator && setPermissionModel('collaborative')}
-          style={{
-            padding: 12,
-            borderRadius: 12,
-            borderWidth: 1.5,
-            borderColor: permissionModel === 'collaborative' ? colors.primary : colors.border,
-            backgroundColor: permissionModel === 'collaborative' ? colors.primaryLight : colors.card,
-            opacity: isCreator ? 1 : 0.85,
-          }}
-        >
-          <Row style={{ justifyContent: 'space-between', marginBottom: 2 }}>
-            <Text style={{ fontWeight: '700', fontSize: 15, color: colors.text }}>🤝 Collaborative</Text>
-            {permissionModel === 'collaborative' && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓ Active</Text>}
-          </Row>
-          <Text style={{ color: colors.muted, fontSize: 13 }}>
-            Anyone can add & edit expenses. Deletes are restricted to the expense author or group admin.
+          <SectionTitle>Access & Permissions (Admin)</SectionTitle>
+          <View style={{ gap: 8, marginBottom: 16 }}>
+            <Pressable
+              onPress={() => setPermissionModel('collaborative')}
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                borderWidth: 1.5,
+                borderColor: permissionModel === 'collaborative' ? colors.primary : colors.border,
+                backgroundColor: permissionModel === 'collaborative' ? colors.primaryLight : colors.card,
+              }}
+            >
+              <Row style={{ justifyContent: 'space-between', marginBottom: 2 }}>
+                <Text style={{ fontWeight: '700', fontSize: 15, color: colors.text }}>🤝 Collaborative (Default)</Text>
+                {permissionModel === 'collaborative' && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓ Active</Text>}
+              </Row>
+              <Text style={{ color: colors.muted, fontSize: 13 }}>
+                Anyone can add & edit expenses. Deletes are restricted to the expense author or group admin.
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setPermissionModel('contributor')}
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                borderWidth: 1.5,
+                borderColor: permissionModel === 'contributor' ? colors.primary : colors.border,
+                backgroundColor: permissionModel === 'contributor' ? colors.primaryLight : colors.card,
+              }}
+            >
+              <Row style={{ justifyContent: 'space-between', marginBottom: 2 }}>
+                <Text style={{ fontWeight: '700', fontSize: 15, color: colors.text }}>✍️ Contributor Mode</Text>
+                {permissionModel === 'contributor' && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓ Active</Text>}
+              </Row>
+              <Text style={{ color: colors.muted, fontSize: 13 }}>
+                Members can add new expenses, but only the group creator/admin can edit or delete them.
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setPermissionModel('admin_only')}
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                borderWidth: 1.5,
+                borderColor: permissionModel === 'admin_only' ? colors.primary : colors.border,
+                backgroundColor: permissionModel === 'admin_only' ? colors.primaryLight : colors.card,
+              }}
+            >
+              <Row style={{ justifyContent: 'space-between', marginBottom: 2 }}>
+                <Text style={{ fontWeight: '700', fontSize: 15, color: colors.text }}>👑 Admin Only</Text>
+                {permissionModel === 'admin_only' && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓ Active</Text>}
+              </Row>
+              <Text style={{ color: colors.muted, fontSize: 13 }}>
+                Only the creator can add, edit, or delete expenses. Other peers have read-only view.
+              </Text>
+            </Pressable>
+          </View>
+
+          <Button title="Save settings" onPress={save} loading={saving} testID="settings-save" />
+        </>
+      ) : (
+        <Card style={{ marginTop: 12, backgroundColor: colors.bg }}>
+          <Text style={{ fontWeight: '700', fontSize: 14, color: colors.text, marginBottom: 4 }}>
+            🔒 Group Managed by Admin ({data.group.creatorName || 'Creator'})
           </Text>
-        </Pressable>
-
-        <Pressable
-          onPress={() => isCreator && setPermissionModel('contributor')}
-          style={{
-            padding: 12,
-            borderRadius: 12,
-            borderWidth: 1.5,
-            borderColor: permissionModel === 'contributor' ? colors.primary : colors.border,
-            backgroundColor: permissionModel === 'contributor' ? colors.primaryLight : colors.card,
-            opacity: isCreator ? 1 : 0.85,
-          }}
-        >
-          <Row style={{ justifyContent: 'space-between', marginBottom: 2 }}>
-            <Text style={{ fontWeight: '700', fontSize: 15, color: colors.text }}>✍️ Contributor Mode</Text>
-            {permissionModel === 'contributor' && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓ Active</Text>}
-          </Row>
-          <Text style={{ color: colors.muted, fontSize: 13 }}>
-            Members can add new expenses, but only the group creator/admin can edit or delete them.
+          <Text style={{ color: colors.muted, fontSize: 13, lineHeight: 18 }}>
+            Permission Mode:{' '}
+            <Text style={{ fontWeight: '700', color: colors.text }}>
+              {permissionModel === 'admin_only' ? '👑 Admin Only' : permissionModel === 'contributor' ? '✍️ Contributor Mode' : '🤝 Collaborative'}
+            </Text>
+            {'\n'}Currency: <Text style={{ fontWeight: '700', color: colors.text }}>{currency}</Text>
           </Text>
-        </Pressable>
-
-        <Pressable
-          onPress={() => isCreator && setPermissionModel('admin_only')}
-          style={{
-            padding: 12,
-            borderRadius: 12,
-            borderWidth: 1.5,
-            borderColor: permissionModel === 'admin_only' ? colors.primary : colors.border,
-            backgroundColor: permissionModel === 'admin_only' ? colors.primaryLight : colors.card,
-            opacity: isCreator ? 1 : 0.85,
-          }}
-        >
-          <Row style={{ justifyContent: 'space-between', marginBottom: 2 }}>
-            <Text style={{ fontWeight: '700', fontSize: 15, color: colors.text }}>👑 Admin Only</Text>
-            {permissionModel === 'admin_only' && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓ Active</Text>}
-          </Row>
-          <Text style={{ color: colors.muted, fontSize: 13 }}>
-            Only the creator can add, edit, or delete expenses. Other peers have read-only view.
-          </Text>
-        </Pressable>
-      </View>
-
-      {isCreator && <Button title="Save settings" onPress={save} loading={saving} testID="settings-save" />}
+        </Card>
+      )}
       
       <SectionTitle>Danger zone</SectionTitle>
       <Button title="Delete group" variant="danger" onPress={remove} testID="delete-group" />

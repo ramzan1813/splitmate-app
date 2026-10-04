@@ -1084,6 +1084,98 @@ test('permissions: group creator updates permission model and syncs change to pe
   assert.equal(peerSummary.canAdd, false); // Peer now has read-only access!
 });
 
+test('sync: member rename broadcasts and updates transactions across peers', async () => {
+  const dbA = createNodeDb();
+  await migrate(dbA);
+  setDb(dbA);
+
+  const groupA = await repo.createGroup({
+    name: 'Shared Flat',
+    myName: 'Fund Control',
+    members: ['Usman'],
+    uid: 'grp_rename_test',
+    syncKey: 'key_rename_test',
+  });
+
+  const membersA = await repo.getMembers(groupA.id);
+  const fc = membersA.find((m) => m.name === 'Fund Control')!;
+  const usman = membersA.find((m) => m.name === 'Usman')!;
+
+  // Fund Control records a transaction
+  await repo.createTransaction(groupA.id, {
+    type: 'expense',
+    title: 'Groceries',
+    amount: 50,
+    paidBy: fc.id,
+    splits: [{ memberId: fc.id }, { memberId: usman.id }],
+  });
+
+  // Fund Control renames to 'Fund Control 02'
+  await repo.renameMember(groupA.id, fc.id, 'Fund Control 02');
+
+  const updatedTxsA = await repo.getTransactions(groupA.id);
+  assert.equal(updatedTxsA[0]!.authorName, 'Fund Control 02');
+
+  // Peer receives RENAME_MEMBER sync event
+  const dbB = createNodeDb();
+  await migrate(dbB);
+  setDb(dbB);
+
+  const groupB = await repo.createGroup({
+    name: 'Shared Flat',
+    myName: 'Usman',
+    members: ['Fund Control'],
+    uid: 'grp_rename_test',
+    syncKey: 'key_rename_test',
+  });
+
+  // Apply the original transaction on Device B
+  const txPayload: SyncTxPayload = {
+    txUid: updatedTxsA[0]!.uid!,
+    type: 'expense',
+    title: 'Groceries',
+    amount: 5000,
+    paidByName: 'Fund Control',
+    splitType: 'equal',
+    category: 'General',
+    note: '',
+    date: '2026-10-04',
+    authorId: 'usr_fc',
+    authorName: 'Fund Control',
+    splits: [{ memberName: 'Fund Control', value: 1, share: 2500 }, { memberName: 'Usman', value: 1, share: 2500 }],
+    updatedTs: Date.now(),
+  };
+  await applyRemoteSyncEvent({
+    eventId: 'evt_tx_fc',
+    groupUid: groupA.uid,
+    authorId: 'usr_fc',
+    authorName: 'Fund Control',
+    timestamp: Date.now(),
+    action: 'UPSERT_TX',
+    payload: txPayload,
+  });
+
+  // Apply RENAME_MEMBER event
+  const renameEvent: SyncEvent = {
+    eventId: 'evt_rename_fc',
+    groupUid: groupA.uid,
+    authorId: 'usr_fc',
+    authorName: 'Fund Control 02',
+    timestamp: Date.now(),
+    action: 'RENAME_MEMBER',
+    payload: { oldName: 'Fund Control', newName: 'Fund Control 02' },
+  };
+  await applyRemoteSyncEvent(renameEvent);
+
+  const membersB = await repo.getMembers(groupB.id);
+  assert.ok(membersB.some((m) => m.name === 'Fund Control 02'));
+  assert.ok(!membersB.some((m) => m.name === 'Fund Control'));
+
+  const txsB = await repo.getTransactions(groupB.id);
+  assert.equal(txsB[0]!.authorName, 'Fund Control 02');
+});
+
+
 
 
 

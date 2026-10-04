@@ -16,15 +16,28 @@ export class RelayRoom {
   state: DurableObjectState;
   sessions: Set<WebSocket>;
   queue: Array<{ id: string; payload: string; timestamp: number }>;
-  static MAX_QUEUE_SIZE = 50;
+  initialized: boolean;
+  static MAX_QUEUE_SIZE = 100;
 
   constructor(state: DurableObjectState, _env: Env) {
     this.state = state;
     this.sessions = new Set();
     this.queue = [];
+    this.initialized = false;
+  }
+
+  async initQueue() {
+    if (!this.initialized) {
+      const stored = await this.state.storage.get<Array<{ id: string; payload: string; timestamp: number }>>('event_queue');
+      if (stored && Array.isArray(stored)) {
+        this.queue = stored;
+      }
+      this.initialized = true;
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
+    await this.initQueue();
     const webSocketPair = new WebSocketPair();
     const [client, server] = Object.values(webSocketPair);
 
@@ -57,9 +70,10 @@ export class RelayRoom {
 
         if (!data.payload) return;
 
-        // Store in ephemeral room history queue
+        // Store in ephemeral room history queue and persist in DO storage
         this.queue.push({ id: data.id || Math.random().toString(), payload: data.payload, timestamp: Date.now() });
         if (this.queue.length > RelayRoom.MAX_QUEUE_SIZE) this.queue.shift();
+        this.state.storage.put('event_queue', this.queue).catch(() => {});
 
         // Broadcast encrypted blob to all other connected peers in the room
         const messageStr = JSON.stringify({ type: 'SYNC_EVENT', payload: data.payload });

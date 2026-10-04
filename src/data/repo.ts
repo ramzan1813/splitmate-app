@@ -654,12 +654,17 @@ export async function deleteGroup(id: number) {
 
 // ---------- members ----------
 export async function addMember(groupId: number, rawName: string) {
-  await getGroup(groupId);
+  const group = await getGroup(groupId);
   const name = clean(rawName, LIMITS.name);
   if (!name) throw new AppError('Member name is required');
   const db = await getDb();
   const r = await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [groupId, name, now()]);
   await touch(groupId);
+
+  if (group.uid) {
+    await createSyncEvent(group.uid, 'ADD_MEMBER', { name });
+  }
+
   return r.lastInsertRowId;
 }
 
@@ -671,12 +676,25 @@ async function getMemberRow(groupId: number, memberId: number) {
 }
 
 export async function renameMember(groupId: number, memberId: number, rawName: string) {
-  await getMemberRow(groupId, memberId);
+  const group = await getGroup(groupId);
+  const oldRow = await getMemberRow(groupId, memberId);
+  const oldName = oldRow.name;
   const name = clean(rawName, LIMITS.name);
   if (!name) throw new AppError('Member name is required');
+  if (oldName.trim().toLowerCase() === name.trim().toLowerCase()) return;
+
   const db = await getDb();
-  await db.runAsync('UPDATE members SET name = ? WHERE id = ?', [name, memberId]);
-  await touch(groupId);
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('UPDATE members SET name = ? WHERE id = ?', [name, memberId]);
+    // Also update any transaction audit trail records that reference the old name
+    await db.runAsync('UPDATE transactions SET author_name = ? WHERE group_id = ? AND author_name = ?', [name, groupId, oldName]);
+    await db.runAsync('UPDATE transactions SET updated_by_name = ? WHERE group_id = ? AND updated_by_name = ?', [name, groupId, oldName]);
+    await touch(groupId);
+  });
+
+  if (group.uid) {
+    await createSyncEvent(group.uid, 'RENAME_MEMBER', { oldName, newName: name });
+  }
 }
 
 /** Marks which member is the phone's owner (or nobody when memberId is null). */
@@ -690,7 +708,8 @@ export async function setMe(groupId: number, memberId: number | null) {
 }
 
 export async function deleteMember(groupId: number, memberId: number) {
-  await getMemberRow(groupId, memberId);
+  const group = await getGroup(groupId);
+  const m = await getMemberRow(groupId, memberId);
   const db = await getDb();
   const used =
     (await db.getFirstAsync('SELECT 1 AS x FROM transactions WHERE paid_by = ? LIMIT 1', [memberId])) ||
@@ -700,6 +719,10 @@ export async function deleteMember(groupId: number, memberId: number) {
   if ((count?.c ?? 0) <= 1) throw new AppError('A group needs at least one member');
   await db.runAsync('DELETE FROM members WHERE id = ?', [memberId]);
   await touch(groupId);
+
+  if (group.uid) {
+    await createSyncEvent(group.uid, 'DELETE_MEMBER', { memberName: m.name });
+  }
 }
 
 // ---------- transactions ----------

@@ -115,6 +115,97 @@ export async function applyRemoteSyncEvent(event: SyncEvent): Promise<boolean> {
           // ignore snapshot export errors
         }
       }, 50);
+    } else if (event.action === 'JOIN_GROUP') {
+      const payload = event.payload as { memberName?: string; identityId?: string };
+      const newMemberName = (payload?.memberName || event.authorName || '').trim();
+      if (newMemberName) {
+        const existingMember = await db.getFirstAsync<{ id: number }>('SELECT id FROM members WHERE group_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?))', [
+          group.id,
+          newMemberName,
+        ]);
+        if (!existingMember) {
+          await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [group.id, newMemberName, nowIso]);
+        }
+        const msg = `${newMemberName} joined the group`;
+        await db.runAsync(
+          'INSERT INTO sync_notifications (group_uid, author_name, title, message, read, created_at) VALUES (?, ?, ?, ?, 0, ?)',
+          [group.uid, newMemberName, group.name, msg, nowIso]
+        );
+      }
+
+      // Automatically send full snapshot to newly joined peer so they immediately get all history
+      setTimeout(async () => {
+        try {
+          const batches = await exportGroupSnapshotBatches(group.id, 25);
+          for (let i = 0; i < batches.length; i++) {
+            const chunk = batches[i]!;
+            await createSyncEvent(group.uid, 'STATE_SNAPSHOT', chunk);
+            if (batches.length > 1 && i < batches.length - 1) {
+              await new Promise((r) => setTimeout(r, 20));
+            }
+          }
+        } catch {
+          // ignore snapshot export errors
+        }
+      }, 50);
+    } else if (event.action === 'RENAME_MEMBER') {
+      const payload = event.payload as { oldName: string; newName: string };
+      if (payload?.oldName && payload?.newName) {
+        await db.runAsync('UPDATE members SET name = ? WHERE group_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?))', [
+          payload.newName,
+          group.id,
+          payload.oldName,
+        ]);
+        await db.runAsync('UPDATE transactions SET author_name = ? WHERE group_id = ? AND LOWER(TRIM(author_name)) = LOWER(TRIM(?))', [
+          payload.newName,
+          group.id,
+          payload.oldName,
+        ]);
+        await db.runAsync('UPDATE transactions SET updated_by_name = ? WHERE group_id = ? AND LOWER(TRIM(updated_by_name)) = LOWER(TRIM(?))', [
+          payload.newName,
+          group.id,
+          payload.oldName,
+        ]);
+        const msg = `${event.authorName} renamed "${payload.oldName}" to "${payload.newName}"`;
+        await db.runAsync(
+          'INSERT INTO sync_notifications (group_uid, author_name, title, message, read, created_at) VALUES (?, ?, ?, ?, 0, ?)',
+          [group.uid, event.authorName, group.name, msg, nowIso]
+        );
+      }
+    } else if (event.action === 'ADD_MEMBER') {
+      const payload = event.payload as { name: string };
+      if (payload?.name) {
+        const cleanName = payload.name.trim();
+        const existing = await db.getFirstAsync<{ id: number }>('SELECT id FROM members WHERE group_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?))', [
+          group.id,
+          cleanName,
+        ]);
+        if (!existing) {
+          await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [group.id, cleanName, nowIso]);
+          const msg = `${event.authorName} added member "${cleanName}"`;
+          await db.runAsync(
+            'INSERT INTO sync_notifications (group_uid, author_name, title, message, read, created_at) VALUES (?, ?, ?, ?, 0, ?)',
+            [group.uid, event.authorName, group.name, msg, nowIso]
+          );
+        }
+      }
+    } else if (event.action === 'DELETE_MEMBER') {
+      const payload = event.payload as { memberName: string };
+      if (payload?.memberName) {
+        const mem = await db.getFirstAsync<{ id: number }>('SELECT id FROM members WHERE group_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?))', [
+          group.id,
+          payload.memberName.trim(),
+        ]);
+        if (mem) {
+          const used =
+            (await db.getFirstAsync('SELECT 1 AS x FROM transactions WHERE paid_by = ? LIMIT 1', [mem.id])) ||
+            (await db.getFirstAsync('SELECT 1 AS x FROM transaction_splits WHERE member_id = ? LIMIT 1', [mem.id]));
+          // If member is used in transactions, keep them as a dummy record for history
+          if (!used) {
+            await db.runAsync('DELETE FROM members WHERE id = ? AND group_id = ?', [mem.id, group.id]);
+          }
+        }
+      }
     } else if (event.action === 'STATE_SNAPSHOT') {
       const payload = event.payload as GroupSnapshotPayload;
       if (payload && Array.isArray(payload.transactions)) {
