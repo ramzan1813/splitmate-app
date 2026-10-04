@@ -71,7 +71,13 @@ export class RelayRoom {
             synced_seq INTEGER DEFAULT 0,
             is_online INTEGER DEFAULT 1,
             created_at INTEGER
-          );
+          )
+        `);
+      } catch (e) {
+        console.error('peers table init error:', e);
+      }
+      try {
+        this.sqlDb.exec(`
           CREATE TABLE IF NOT EXISTS events_queue (
             seq INTEGER PRIMARY KEY AUTOINCREMENT,
             event_id TEXT UNIQUE,
@@ -80,23 +86,35 @@ export class RelayRoom {
             action TEXT,
             payload TEXT,
             created_at INTEGER
-          );
+          )
+        `);
+      } catch (e) {
+        console.error('events_queue table init error:', e);
+      }
+      try {
+        this.sqlDb.exec(`
           CREATE TABLE IF NOT EXISTS deliveries (
             seq INTEGER,
             peer_id TEXT,
             delivered_at INTEGER,
             PRIMARY KEY (seq, peer_id)
-          );
+          )
+        `);
+      } catch (e) {
+        console.error('deliveries table init error:', e);
+      }
+      try {
+        this.sqlDb.exec(`
           CREATE TABLE IF NOT EXISTS sync_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             peer_id TEXT,
             action TEXT,
             synced_seq INTEGER,
             created_at INTEGER
-          );
+          )
         `);
       } catch (e) {
-        console.error('SQLite init error:', e);
+        console.error('sync_history table init error:', e);
       }
     } else {
       // Restore fallback state from DO storage
@@ -409,8 +427,9 @@ export class RelayRoom {
   // --- Request Handler (HTTP + WebSocket) ---
 
   async fetch(request: Request): Promise<Response> {
-    await this.initDb();
-    const url = new URL(request.url);
+    try {
+      await this.initDb();
+      const url = new URL(request.url);
 
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
@@ -430,8 +449,13 @@ export class RelayRoom {
 
     // 1. WebSocket Handler (/ws)
     if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
-      const webSocketPair = new WebSocketPair();
-      const [client, server] = Object.values(webSocketPair);
+      const pair = new WebSocketPair();
+      const client = (pair as any)[0] || Object.values(pair)[0];
+      const server = (pair as any)[1] || Object.values(pair)[1];
+
+      if (!server || !client) {
+        return new Response('WebSocket pair creation failed', { status: 500 });
+      }
 
       server.accept();
       this.sessions.set(server, {});
@@ -667,8 +691,23 @@ export class RelayRoom {
     }
 
     return new Response(JSON.stringify({ error: 'Endpoint not found in room' }), { status: 404, headers: corsHeaders });
+    } catch (err: any) {
+      return new Response(String(err?.stack || err?.message || err), { status: 500 });
+    }
   }
 }
+
+function createMockStorage(): any {
+  const store = new Map<string, any>();
+  return {
+    get: async (key: string) => store.get(key),
+    put: async (key: string, val: any) => store.set(key, val),
+    delete: async (key: string) => store.delete(key),
+    sql: null,
+  };
+}
+
+const localRooms = new Map<string, RelayRoom>();
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -760,10 +799,23 @@ export default {
         });
       }
 
-      // Guaranteed single-instance room coordination
-      const id = env.ROOMS.idFromName(room);
-      const stub = env.ROOMS.get(id);
-      return stub.fetch(request);
+      if (env?.ROOMS) {
+        try {
+          const id = env.ROOMS.idFromName(room);
+          const stub = env.ROOMS.get(id);
+          return await stub.fetch(request);
+        } catch (err: any) {
+          console.warn('Durable Object execution error, falling back to local room:', err?.message);
+        }
+      }
+
+      // Fallback local room handler if DO is unavailable or free-tier duration limit reached
+      let localRoom = localRooms.get(room);
+      if (!localRoom) {
+        localRoom = new RelayRoom({ storage: createMockStorage() } as any, env);
+        localRooms.set(room, localRoom);
+      }
+      return localRoom.fetch(request);
     }
 
     return new Response('Not Found', { status: 404 });
