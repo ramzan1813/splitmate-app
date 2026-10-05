@@ -1,17 +1,20 @@
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServerDb, ServerDB } from '../relay/src/db';
-import { handleSyncApiRequest } from '../relay/src/api';
+import { startTestServer, TestServer } from '../relay/test-support/testServer';
 import { PushMutationsResponse } from '../src/data/types';
 
-let db: ServerDB;
+let server: TestServer;
 
-beforeEach(() => {
-  db = createServerDb(':memory:');
+beforeEach(async () => {
+  server = await startTestServer();
+});
+
+afterEach(async () => {
+  await server.close();
 });
 
 // Helper for pushing single mutations to server
-function pushMutation(
+async function pushMutation(
   groupUid: string,
   actorId: string,
   actorName: string,
@@ -24,7 +27,7 @@ function pushMutation(
     payload: any;
   }
 ) {
-  const res = handleSyncApiRequest(db, {
+  const res = await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -44,13 +47,13 @@ function pushMutation(
 // 1. ADMIN_ONLY Permission Model Tests
 // ============================================================================
 
-test('server authorization: ADMIN_ONLY model full matrix', () => {
+test('server authorization: ADMIN_ONLY model full matrix', async () => {
   const groupUid = 'grp_admin_perm_test';
   const adminId = 'usr_alice_admin';
   const memberId = 'usr_bob_guest';
 
   // 1. Admin creates ADMIN_ONLY group -> ACCEPTED
-  const resGroup = pushMutation(groupUid, adminId, 'Alice', {
+  const resGroup = await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_a_grp',
     entityType: 'group',
     entityUid: groupUid,
@@ -61,7 +64,7 @@ test('server authorization: ADMIN_ONLY model full matrix', () => {
   assert.equal(resGroup.status, 'ACCEPTED');
 
   // 2. Admin adds members -> ACCEPTED
-  const resMem1 = pushMutation(groupUid, adminId, 'Alice', {
+  const resMem1 = await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_a_mem_alice',
     entityType: 'member',
     entityUid: 'mem_alice',
@@ -71,7 +74,7 @@ test('server authorization: ADMIN_ONLY model full matrix', () => {
   });
   assert.equal(resMem1.status, 'ACCEPTED');
 
-  const resMem2 = pushMutation(groupUid, adminId, 'Alice', {
+  const resMem2 = await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_a_mem_bob',
     entityType: 'member',
     entityUid: 'mem_bob',
@@ -82,29 +85,29 @@ test('server authorization: ADMIN_ONLY model full matrix', () => {
   assert.equal(resMem2.status, 'ACCEPTED');
 
   // 3. Admin creates, updates, and deletes transaction -> ALL ACCEPTED
-  const resTxCreate = pushMutation(groupUid, adminId, 'Alice', {
+  const resTxCreate = await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_a_tx_1',
     entityType: 'transaction',
     entityUid: 'tx_server_cost',
     operation: 'create',
     expectedVersion: 0,
-    payload: { title: 'Server Hosting', amount: 5000, paidByMemberUid: 'mem_alice', authorId: adminId },
+    payload: { title: 'Server Hosting', amount: 5000, paidByMemberUid: 'mem_alice', splits: [{ memberUid: 'mem_alice', value: 1, share: 5000 }], authorId: adminId },
   });
   assert.equal(resTxCreate.status, 'ACCEPTED');
 
-  const resTxUpdate = pushMutation(groupUid, adminId, 'Alice', {
+  const resTxUpdate = await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_a_tx_2',
     entityType: 'transaction',
     entityUid: 'tx_server_cost',
     operation: 'update',
     expectedVersion: 1,
-    payload: { amount: 6000 },
+    payload: { amount: 6000, splits: [{ memberUid: 'mem_alice', value: 1, share: 6000 }] },
   });
   assert.equal(resTxUpdate.status, 'ACCEPTED');
 
   // 4. Non-Admin (Bob) attempts any write operation -> ALL REJECTED (403 FORBIDDEN)
   // Bob tries to create transaction -> REJECTED
-  const resBobCreateTx = pushMutation(groupUid, memberId, 'Bob', {
+  const resBobCreateTx = await pushMutation(groupUid, memberId, 'Bob', {
     clientMutationId: 'mut_b_tx_unauth',
     entityType: 'transaction',
     entityUid: 'tx_bob_coffee',
@@ -116,7 +119,7 @@ test('server authorization: ADMIN_ONLY model full matrix', () => {
   assert.equal(resBobCreateTx.error, 'FORBIDDEN');
 
   // Bob tries to update admin transaction -> REJECTED
-  const resBobUpdateTx = pushMutation(groupUid, memberId, 'Bob', {
+  const resBobUpdateTx = await pushMutation(groupUid, memberId, 'Bob', {
     clientMutationId: 'mut_b_tx_upd_unauth',
     entityType: 'transaction',
     entityUid: 'tx_server_cost',
@@ -128,7 +131,7 @@ test('server authorization: ADMIN_ONLY model full matrix', () => {
   assert.equal(resBobUpdateTx.error, 'FORBIDDEN');
 
   // Bob tries to delete admin transaction -> REJECTED
-  const resBobDelTx = pushMutation(groupUid, memberId, 'Bob', {
+  const resBobDelTx = await pushMutation(groupUid, memberId, 'Bob', {
     clientMutationId: 'mut_b_tx_del_unauth',
     entityType: 'transaction',
     entityUid: 'tx_server_cost',
@@ -140,7 +143,7 @@ test('server authorization: ADMIN_ONLY model full matrix', () => {
   assert.equal(resBobDelTx.error, 'FORBIDDEN');
 
   // Bob tries to add member -> REJECTED
-  const resBobAddMem = pushMutation(groupUid, memberId, 'Bob', {
+  const resBobAddMem = await pushMutation(groupUid, memberId, 'Bob', {
     clientMutationId: 'mut_b_mem_unauth',
     entityType: 'member',
     entityUid: 'mem_charlie',
@@ -152,7 +155,7 @@ test('server authorization: ADMIN_ONLY model full matrix', () => {
   assert.equal(resBobAddMem.error, 'FORBIDDEN');
 
   // Bob tries to rename member -> REJECTED
-  const resBobRenameMem = pushMutation(groupUid, memberId, 'Bob', {
+  const resBobRenameMem = await pushMutation(groupUid, memberId, 'Bob', {
     clientMutationId: 'mut_b_rename_unauth',
     entityType: 'member',
     entityUid: 'mem_bob',
@@ -164,7 +167,7 @@ test('server authorization: ADMIN_ONLY model full matrix', () => {
   assert.equal(resBobRenameMem.error, 'FORBIDDEN');
 
   // Bob tries to modify group settings -> REJECTED
-  const resBobUpdGroup = pushMutation(groupUid, memberId, 'Bob', {
+  const resBobUpdGroup = await pushMutation(groupUid, memberId, 'Bob', {
     clientMutationId: 'mut_b_grp_upd_unauth',
     entityType: 'group',
     entityUid: groupUid,
@@ -176,7 +179,7 @@ test('server authorization: ADMIN_ONLY model full matrix', () => {
   assert.equal(resBobUpdGroup.error, 'FORBIDDEN');
 
   // Bob tries to delete group -> REJECTED
-  const resBobDelGroup = pushMutation(groupUid, memberId, 'Bob', {
+  const resBobDelGroup = await pushMutation(groupUid, memberId, 'Bob', {
     clientMutationId: 'mut_b_grp_del_unauth',
     entityType: 'group',
     entityUid: groupUid,
@@ -188,7 +191,7 @@ test('server authorization: ADMIN_ONLY model full matrix', () => {
   assert.equal(resBobDelGroup.error, 'FORBIDDEN');
 
   // Admin deletes transaction -> ACCEPTED
-  const resAdminDelTx = pushMutation(groupUid, adminId, 'Alice', {
+  const resAdminDelTx = await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_a_tx_del',
     entityType: 'transaction',
     entityUid: 'tx_server_cost',
@@ -203,14 +206,14 @@ test('server authorization: ADMIN_ONLY model full matrix', () => {
 // 2. CONTRIBUTOR Permission Model Tests
 // ============================================================================
 
-test('server authorization: CONTRIBUTOR model full matrix', () => {
+test('server authorization: CONTRIBUTOR model full matrix', async () => {
   const groupUid = 'grp_contrib_perm_test';
   const adminId = 'usr_alice_admin';
   const contributor1 = 'usr_bob_contrib';
   const contributor2 = 'usr_charlie_contrib';
 
   // 1. Create CONTRIBUTOR group
-  pushMutation(groupUid, adminId, 'Alice', {
+  await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_c_grp',
     entityType: 'group',
     entityUid: groupUid,
@@ -220,30 +223,30 @@ test('server authorization: CONTRIBUTOR model full matrix', () => {
   });
 
   // 2. Contributor 1 (Bob) creates a transaction -> ACCEPTED
-  const resBobCreate = pushMutation(groupUid, contributor1, 'Bob', {
+  const resBobCreate = await pushMutation(groupUid, contributor1, 'Bob', {
     clientMutationId: 'mut_bob_tx_create',
     entityType: 'transaction',
     entityUid: 'tx_bob_lunch',
     operation: 'create',
     expectedVersion: 0,
-    payload: { title: 'Lunch', amount: 2000, authorId: contributor1 },
+    payload: { title: 'Lunch', amount: 2000, paidByName: 'Payer', splits: [{ memberName: 'Payer', value: 1, share: 2000 }], authorId: contributor1 },
   });
   assert.equal(resBobCreate.status, 'ACCEPTED');
 
   // 3. Contributor 1 (Bob) updates HIS OWN transaction -> ACCEPTED
-  const resBobUpdateOwn = pushMutation(groupUid, contributor1, 'Bob', {
+  const resBobUpdateOwn = await pushMutation(groupUid, contributor1, 'Bob', {
     clientMutationId: 'mut_bob_tx_upd',
     entityType: 'transaction',
     entityUid: 'tx_bob_lunch',
     operation: 'update',
     expectedVersion: 1,
-    payload: { title: 'Lunch + Tip', amount: 2400 },
+    payload: { title: 'Lunch + Tip', amount: 2400, splits: [{ memberName: 'Payer', value: 1, share: 2400 }] },
   });
   assert.equal(resBobUpdateOwn.status, 'ACCEPTED');
   assert.equal(resBobUpdateOwn.serverVersion, 2);
 
   // 4. Contributor 2 (Charlie) tries to update Bob's transaction -> REJECTED (FORBIDDEN)
-  const resCharlieUpdateBob = pushMutation(groupUid, contributor2, 'Charlie', {
+  const resCharlieUpdateBob = await pushMutation(groupUid, contributor2, 'Charlie', {
     clientMutationId: 'mut_charlie_upd_bob',
     entityType: 'transaction',
     entityUid: 'tx_bob_lunch',
@@ -255,7 +258,7 @@ test('server authorization: CONTRIBUTOR model full matrix', () => {
   assert.equal(resCharlieUpdateBob.error, 'FORBIDDEN');
 
   // 5. Contributor 2 (Charlie) tries to delete Bob's transaction -> REJECTED (FORBIDDEN)
-  const resCharlieDeleteBob = pushMutation(groupUid, contributor2, 'Charlie', {
+  const resCharlieDeleteBob = await pushMutation(groupUid, contributor2, 'Charlie', {
     clientMutationId: 'mut_charlie_del_bob',
     entityType: 'transaction',
     entityUid: 'tx_bob_lunch',
@@ -267,7 +270,7 @@ test('server authorization: CONTRIBUTOR model full matrix', () => {
   assert.equal(resCharlieDeleteBob.error, 'FORBIDDEN');
 
   // 6. Contributor tries to update group settings or delete member -> REJECTED (FORBIDDEN)
-  const resBobUpdGroup = pushMutation(groupUid, contributor1, 'Bob', {
+  const resBobUpdGroup = await pushMutation(groupUid, contributor1, 'Bob', {
     clientMutationId: 'mut_bob_upd_grp',
     entityType: 'group',
     entityUid: groupUid,
@@ -278,7 +281,7 @@ test('server authorization: CONTRIBUTOR model full matrix', () => {
   assert.equal(resBobUpdGroup.status, 'REJECTED');
   assert.equal(resBobUpdGroup.error, 'FORBIDDEN');
 
-  const resBobDelMem = pushMutation(groupUid, contributor1, 'Bob', {
+  const resBobDelMem = await pushMutation(groupUid, contributor1, 'Bob', {
     clientMutationId: 'mut_bob_del_mem',
     entityType: 'member',
     entityUid: 'mem_charlie',
@@ -290,19 +293,19 @@ test('server authorization: CONTRIBUTOR model full matrix', () => {
   assert.equal(resBobDelMem.error, 'FORBIDDEN');
 
   // 7. Admin CAN update and delete any contributor's transaction -> ACCEPTED
-  const resAdminUpdBob = pushMutation(groupUid, adminId, 'Alice', {
+  const resAdminUpdBob = await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_admin_upd_bob',
     entityType: 'transaction',
     entityUid: 'tx_bob_lunch',
     operation: 'update',
     expectedVersion: 2,
-    payload: { title: 'Approved Lunch Expense', amount: 2400 },
+    payload: { title: 'Approved Lunch Expense', amount: 2400, splits: [{ memberName: 'Payer', value: 1, share: 2400 }] },
   });
   assert.equal(resAdminUpdBob.status, 'ACCEPTED');
   assert.equal(resAdminUpdBob.serverVersion, 3);
 
   // 8. Contributor 1 (Bob) deletes HIS OWN transaction -> ACCEPTED
-  const resBobDelOwn = pushMutation(groupUid, contributor1, 'Bob', {
+  const resBobDelOwn = await pushMutation(groupUid, contributor1, 'Bob', {
     clientMutationId: 'mut_bob_del_own',
     entityType: 'transaction',
     entityUid: 'tx_bob_lunch',
@@ -317,14 +320,14 @@ test('server authorization: CONTRIBUTOR model full matrix', () => {
 // 3. COLLABORATIVE Permission Model Tests
 // ============================================================================
 
-test('server authorization: COLLABORATIVE model full matrix', () => {
+test('server authorization: COLLABORATIVE model full matrix', async () => {
   const groupUid = 'grp_collab_perm_test';
   const adminId = 'usr_alice_admin';
   const memberA = 'usr_bob_collab';
   const memberB = 'usr_charlie_collab';
 
   // 1. Create COLLABORATIVE group
-  pushMutation(groupUid, adminId, 'Alice', {
+  await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_collab_grp',
     entityType: 'group',
     entityUid: groupUid,
@@ -334,30 +337,30 @@ test('server authorization: COLLABORATIVE model full matrix', () => {
   });
 
   // 2. Member A creates a transaction -> ACCEPTED
-  const resCreate = pushMutation(groupUid, memberA, 'Bob', {
+  const resCreate = await pushMutation(groupUid, memberA, 'Bob', {
     clientMutationId: 'mut_bob_create_tx',
     entityType: 'transaction',
     entityUid: 'tx_groceries',
     operation: 'create',
     expectedVersion: 0,
-    payload: { title: 'Groceries', amount: 8000, authorId: memberA },
+    payload: { title: 'Groceries', amount: 8000, paidByName: 'Payer', splits: [{ memberName: 'Payer', value: 1, share: 8000 }], authorId: memberA },
   });
   assert.equal(resCreate.status, 'ACCEPTED');
 
   // 3. Member B edits Member A's transaction in collaborative mode -> ACCEPTED (with audit record)
-  const resEdit = pushMutation(groupUid, memberB, 'Charlie', {
+  const resEdit = await pushMutation(groupUid, memberB, 'Charlie', {
     clientMutationId: 'mut_charlie_edit_tx',
     entityType: 'transaction',
     entityUid: 'tx_groceries',
     operation: 'update',
     expectedVersion: 1,
-    payload: { title: 'Groceries + Drinks', amount: 9500 },
+    payload: { title: 'Groceries + Drinks', amount: 9500, splits: [{ memberName: 'Payer', value: 1, share: 9500 }] },
   });
   assert.equal(resEdit.status, 'ACCEPTED');
   assert.equal(resEdit.serverVersion, 2);
 
   // 4. Member B (not author, not admin) tries to DELETE Member A's transaction -> REJECTED (Delete protection)
-  const resUnauthDel = pushMutation(groupUid, memberB, 'Charlie', {
+  const resUnauthDel = await pushMutation(groupUid, memberB, 'Charlie', {
     clientMutationId: 'mut_charlie_del_tx',
     entityType: 'transaction',
     entityUid: 'tx_groceries',
@@ -369,7 +372,7 @@ test('server authorization: COLLABORATIVE model full matrix', () => {
   assert.equal(resUnauthDel.error, 'FORBIDDEN');
 
   // 5. Member B tries to delete a member -> REJECTED (Creator only)
-  const resDelMem = pushMutation(groupUid, memberB, 'Charlie', {
+  const resDelMem = await pushMutation(groupUid, memberB, 'Charlie', {
     clientMutationId: 'mut_charlie_del_mem',
     entityType: 'member',
     entityUid: 'mem_bob',
@@ -381,7 +384,7 @@ test('server authorization: COLLABORATIVE model full matrix', () => {
   assert.equal(resDelMem.error, 'FORBIDDEN');
 
   // 6. Member A (Original Author) deletes HIS OWN transaction -> ACCEPTED
-  const resAuthorDel = pushMutation(groupUid, memberA, 'Bob', {
+  const resAuthorDel = await pushMutation(groupUid, memberA, 'Bob', {
     clientMutationId: 'mut_bob_del_tx',
     entityType: 'transaction',
     entityUid: 'tx_groceries',
@@ -393,17 +396,17 @@ test('server authorization: COLLABORATIVE model full matrix', () => {
   assert.equal(resAuthorDel.serverVersion, 3);
 
   // 7. Member A creates another transaction
-  pushMutation(groupUid, memberA, 'Bob', {
+  await pushMutation(groupUid, memberA, 'Bob', {
     clientMutationId: 'mut_bob_create_tx2',
     entityType: 'transaction',
     entityUid: 'tx_fuel',
     operation: 'create',
     expectedVersion: 0,
-    payload: { title: 'Fuel', amount: 5000, authorId: memberA },
+    payload: { title: 'Fuel', amount: 5000, paidByName: 'Payer', splits: [{ memberName: 'Payer', value: 1, share: 5000 }], authorId: memberA },
   });
 
   // 8. Admin deletes Member A's transaction -> ACCEPTED (Admin always has full authority)
-  const resAdminDel = pushMutation(groupUid, adminId, 'Alice', {
+  const resAdminDel = await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_admin_del_tx2',
     entityType: 'transaction',
     entityUid: 'tx_fuel',
@@ -419,9 +422,9 @@ test('server authorization: COLLABORATIVE model full matrix', () => {
 // 4. Non-Existent & Deleted Group Rejection Tests
 // ============================================================================
 
-test('server authorization: operations on non-existent or deleted groups are rejected', () => {
+test('server authorization: operations on non-existent or deleted groups are rejected', async () => {
   // 1. Non-existent group
-  const resNonExistent = pushMutation('grp_ghost_999', 'usr_alice', 'Alice', {
+  const resNonExistent = await pushMutation('grp_ghost_999', 'usr_alice', 'Alice', {
     clientMutationId: 'mut_ghost_1',
     entityType: 'transaction',
     entityUid: 'tx_ghost',
@@ -435,7 +438,7 @@ test('server authorization: operations on non-existent or deleted groups are rej
   // 2. Create group and soft delete it
   const groupUid = 'grp_deleted_test';
   const adminId = 'usr_alice';
-  pushMutation(groupUid, adminId, 'Alice', {
+  await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_del_grp_create',
     entityType: 'group',
     entityUid: groupUid,
@@ -444,7 +447,7 @@ test('server authorization: operations on non-existent or deleted groups are rej
     payload: { name: 'To Be Deleted', creatorId: adminId },
   });
 
-  pushMutation(groupUid, adminId, 'Alice', {
+  await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_del_grp_delete',
     entityType: 'group',
     entityUid: groupUid,
@@ -454,7 +457,7 @@ test('server authorization: operations on non-existent or deleted groups are rej
   });
 
   // 3. Mutation on deleted group is REJECTED
-  const resOnDeleted = pushMutation(groupUid, adminId, 'Alice', {
+  const resOnDeleted = await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_on_deleted_tx',
     entityType: 'transaction',
     entityUid: 'tx_after_del',

@@ -5,6 +5,8 @@ node_modules/
 .agents
 .wrangler/
 relay/.wrangler/
+relay/.dev.vars
+.dev.vars
 # Expo
 .expo/
 dist/

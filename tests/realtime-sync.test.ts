@@ -1,12 +1,12 @@
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createNodeDb } from './node-db';
 import { migrate, setDb, DB } from '../src/data/db';
 import * as repo from '../src/data/repo';
 import { getSyncState } from '../src/data/syncState';
-import { createServerDb, ServerDB } from '../relay/src/db';
-import { handleSyncApiRequest } from '../relay/src/api';
-import { RealtimeHub, serverRealtimeHub } from '../relay/src/realtimeHub';
+import { getDeviceId } from '../src/lib/identity';
+import { startTestServer, TestServer } from '../relay/test-support/testServer';
+import { ExpoPushHub } from '../relay/test-support/pushHub';
 import {
   SyncEngine,
   SyncTransport,
@@ -19,12 +19,12 @@ import {
   PushMutationsResponse,
 } from '../src/data/types';
 
-/** Test Sync Transport connecting client to server database */
+/** Test Sync Transport connecting the mobile SyncEngine to the Express backend over HTTP */
 class DirectServerSyncTransport implements SyncTransport {
-  constructor(private serverDb: ServerDB) {}
+  constructor(private server: TestServer) {}
 
   async push(request: PushMutationsRequest): Promise<PushMutationsResponse> {
-    const res = handleSyncApiRequest(this.serverDb, {
+    const res = await this.server.call({
       method: 'POST',
       path: '/sync/push',
       body: request,
@@ -36,7 +36,7 @@ class DirectServerSyncTransport implements SyncTransport {
   }
 
   async pull(groupUid: string, afterSequence: number, limit = 100): Promise<PullChangesResponse> {
-    const res = handleSyncApiRequest(this.serverDb, {
+    const res = await this.server.call({
       method: 'GET',
       path: `/sync/changes/${groupUid}`,
       query: { after: String(afterSequence), limit: String(limit) },
@@ -48,7 +48,7 @@ class DirectServerSyncTransport implements SyncTransport {
   }
 
   async bootstrap(groupUid: string): Promise<GroupBootstrapResponse> {
-    const res = handleSyncApiRequest(this.serverDb, {
+    const res = await this.server.call({
       method: 'GET',
       path: `/sync/bootstrap/${groupUid}`,
     });
@@ -59,14 +59,28 @@ class DirectServerSyncTransport implements SyncTransport {
   }
 }
 
-let serverDb: ServerDB;
-let realtimeHub: RealtimeHub;
+let server: TestServer;
+let realtimeHub: ExpoPushHub;
 
-beforeEach(() => {
-  serverDb = createServerDb(':memory:');
-  realtimeHub = serverRealtimeHub;
-  realtimeHub.clear();
+beforeEach(async () => {
+  // Notifications travel backend -> Expo push -> device; the hub plays Expo and the phone's push receiver.
+  realtimeHub = new ExpoPushHub();
+  server = await startTestServer({ respond: realtimeHub.respond });
 });
+
+afterEach(async () => {
+  await server.close();
+});
+
+/** What the app does once it has an Expo push token: register it for its groups. */
+async function registerPushToken(groupUid: string) {
+  const res = await server.call({
+    method: 'POST',
+    path: '/devices/register',
+    body: { deviceId: await getDeviceId(), expoPushToken: 'ExponentPushToken[test-device]', groupUids: [groupUid] },
+  });
+  assert.equal(res.status, 200);
+}
 
 test('phase 4: online device A creates transaction -> device B receives notification -> pulls change -> updates SQLite -> UI reflects change', async () => {
   // === Setup Device A (Alice) ===
@@ -74,7 +88,7 @@ test('phase 4: online device A creates transaction -> device B receives notifica
   await migrate(dbA);
   setDb(dbA);
 
-  const transportA = new DirectServerSyncTransport(serverDb);
+  const transportA = new DirectServerSyncTransport(server);
   const realtimeA = new MemoryRealtimeClient(realtimeHub);
   const engineA = new SyncEngine(transportA, realtimeA, dbA);
 
@@ -86,7 +100,7 @@ test('phase 4: online device A creates transaction -> device B receives notifica
   await migrate(dbB);
   setDb(dbB);
 
-  const transportB = new DirectServerSyncTransport(serverDb);
+  const transportB = new DirectServerSyncTransport(server);
   const realtimeB = new MemoryRealtimeClient(realtimeHub);
   const engineB = new SyncEngine(transportB, realtimeB, dbB);
 
@@ -103,6 +117,7 @@ test('phase 4: online device A creates transaction -> device B receives notifica
 
   // Device B is now subscribed to groupA.uid in realtime
   assert.equal(realtimeHub.getSubscriberCount(groupA.uid), 2);
+  await registerPushToken(groupA.uid);
 
   // Check initial sequence on Device B
   const stateB1 = await getSyncState(groupB.uid, dbB);
@@ -133,11 +148,12 @@ test('phase 4: online device A creates transaction -> device B receives notifica
   });
 
   // Alice pushes transaction to backend
-  // This automatically triggers serverRealtimeHub.publish(groupUid, { type: 'CHANGES_AVAILABLE' })
+  // The accepted push schedules a dispatch: backend -> Expo push { type: 'CHANGES_AVAILABLE' } -> Device B
   // Device B's MemoryRealtimeClient receives notification -> triggers engineB.handleRealtimeNotification -> pulls changes strictly after cursor
   await engineA.syncGroup(groupA.uid);
 
-  // Allow async realtime notification pull on Device B to settle
+  // Wait for the backend's background dispatch, then for Device B's notification-triggered pull
+  await server.settle();
   await new Promise((r) => setTimeout(r, 20));
 
   // Verify Device B received notification, pulled changes, updated SQLite, and notified UI
@@ -165,7 +181,7 @@ test('phase 4: realtime disconnect -> missed notification -> reconnect -> cursor
   await migrate(dbA);
   setDb(dbA);
 
-  const transportA = new DirectServerSyncTransport(serverDb);
+  const transportA = new DirectServerSyncTransport(server);
   const realtimeA = new MemoryRealtimeClient(realtimeHub);
   const engineA = new SyncEngine(transportA, realtimeA, dbA);
 
@@ -177,7 +193,7 @@ test('phase 4: realtime disconnect -> missed notification -> reconnect -> cursor
   await migrate(dbB);
   setDb(dbB);
 
-  const transportB = new DirectServerSyncTransport(serverDb);
+  const transportB = new DirectServerSyncTransport(server);
   const realtimeB = new MemoryRealtimeClient(realtimeHub);
   const engineB = new SyncEngine(transportB, realtimeB, dbB);
 

@@ -1,17 +1,22 @@
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServerDb, ServerDB } from '../relay/src/db';
-import { handleSyncApiRequest } from '../relay/src/api';
+import { startTestServer, TestServer } from '../relay/test-support/testServer';
 import { GroupBootstrapResponse, PullChangesResponse, PushMutationsResponse } from '../src/data/types';
 
-let db: ServerDB;
+let server: TestServer;
 
-beforeEach(() => {
-  db = createServerDb(':memory:');
+// Transactions must name a payer and splits that sum to the amount (minor units).
+
+beforeEach(async () => {
+  server = await startTestServer();
 });
 
-test('server sync api: create group, members, and transaction via POST /sync/push', () => {
-  const pushRes = handleSyncApiRequest(db, {
+afterEach(async () => {
+  await server.close();
+});
+
+test('server sync api: create group, members, and transaction via POST /sync/push', async () => {
+  const pushRes = await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -94,9 +99,9 @@ test('server sync api: create group, members, and transaction via POST /sync/pus
   assert.equal(data.results[3]!.serverSequence, 4);
 });
 
-test('server sync api: bootstrap GET /sync/bootstrap/:groupId returns consistent snapshot and cursor', () => {
+test('server sync api: bootstrap GET /sync/bootstrap/:groupId returns consistent snapshot and cursor', async () => {
   // 1. Seed group data
-  handleSyncApiRequest(db, {
+  await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -142,7 +147,7 @@ test('server sync api: bootstrap GET /sync/bootstrap/:groupId returns consistent
   });
 
   // 2. Fetch bootstrap
-  const res = handleSyncApiRequest(db, {
+  const res = await server.call({
     method: 'GET',
     path: '/sync/bootstrap/grp_bootstrap_test',
   });
@@ -158,9 +163,9 @@ test('server sync api: bootstrap GET /sync/bootstrap/:groupId returns consistent
   assert.equal(snap.transactions[0]!.amount, 5000);
 });
 
-test('server sync api: incremental pull GET /sync/changes/:groupId returns only subsequent delta changes', () => {
-  // 1. Create group and first transaction (Sequence 1 & 2)
-  handleSyncApiRequest(db, {
+test('server sync api: incremental pull GET /sync/changes/:groupId returns only subsequent delta changes', async () => {
+  // 1. Create group, payer member and first transaction (Sequence 1, 2 & 3)
+  await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -177,28 +182,36 @@ test('server sync api: incremental pull GET /sync/changes/:groupId returns only 
           payload: { name: 'Delta Group', currency: 'USD', creatorId: 'usr_alice' },
         },
         {
+          clientMutationId: 'mut_d_m',
+          entityType: 'member',
+          entityUid: 'mem_alice_d',
+          operation: 'create',
+          expectedVersion: 0,
+          payload: { name: 'Alice' },
+        },
+        {
           clientMutationId: 'mut_d_2',
           entityType: 'transaction',
           entityUid: 'tx_snack',
           operation: 'create',
           expectedVersion: 0,
-          payload: { type: 'expense', title: 'Snacks', amount: 800, date: '2026-10-05', splits: [] },
+          payload: { type: 'expense', title: 'Snacks', amount: 800, date: '2026-10-05', paidByMemberUid: 'mem_alice_d', splits: [{ memberUid: 'mem_alice_d', value: 1, share: 800 }] },
         },
       ],
     },
   });
 
-  // 2. Client has seen up to sequence 2
-  let pull1 = handleSyncApiRequest(db, {
+  // 2. Client has seen up to sequence 3
+  let pull1 = await server.call({
     method: 'GET',
     path: '/sync/changes/grp_delta_test',
-    query: { after: '2' },
+    query: { after: '3' },
   });
   assert.equal(pull1.status, 200);
   assert.equal((pull1.body as PullChangesResponse).changes.length, 0);
 
-  // 3. New mutation occurs (Sequence 3)
-  handleSyncApiRequest(db, {
+  // 3. New mutation occurs (Sequence 4)
+  await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -212,29 +225,29 @@ test('server sync api: incremental pull GET /sync/changes/:groupId returns only 
           entityUid: 'tx_drinks',
           operation: 'create',
           expectedVersion: 0,
-          payload: { type: 'expense', title: 'Drinks', amount: 1200, date: '2026-10-05', splits: [] },
+          payload: { type: 'expense', title: 'Drinks', amount: 1200, date: '2026-10-05', paidByMemberUid: 'mem_alice_d', splits: [{ memberUid: 'mem_alice_d', value: 1, share: 1200 }] },
         },
       ],
     },
   });
 
-  // 4. Client pulls with after=2 -> receives only sequence 3
-  let pull2 = handleSyncApiRequest(db, {
+  // 4. Client pulls with after=3 -> receives only sequence 4
+  let pull2 = await server.call({
     method: 'GET',
     path: '/sync/changes/grp_delta_test',
-    query: { after: '2' },
+    query: { after: '3' },
   });
   assert.equal(pull2.status, 200);
   const delta = pull2.body as PullChangesResponse;
   assert.equal(delta.changes.length, 1);
-  assert.equal(delta.changes[0]!.sequence, 3);
+  assert.equal(delta.changes[0]!.sequence, 4);
   assert.equal(delta.changes[0]!.entityUid, 'tx_drinks');
-  assert.equal(delta.latestServerSequence, 3);
+  assert.equal(delta.latestServerSequence, 4);
 });
 
-test('server sync api: update and delete mutations with entity version increment and tombstones', () => {
+test('server sync api: update and delete mutations with entity version increment and tombstones', async () => {
   // 1. Initial setup
-  handleSyncApiRequest(db, {
+  await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -251,19 +264,27 @@ test('server sync api: update and delete mutations with entity version increment
           payload: { name: 'Upd Del Group', creatorId: 'usr_alice' },
         },
         {
+          clientMutationId: 'mut_u_m',
+          entityType: 'member',
+          entityUid: 'mem_alice_u',
+          operation: 'create',
+          expectedVersion: 0,
+          payload: { name: 'Alice' },
+        },
+        {
           clientMutationId: 'mut_u_2',
           entityType: 'transaction',
           entityUid: 'tx_dinner',
           operation: 'create',
           expectedVersion: 0,
-          payload: { type: 'expense', title: 'Dinner', amount: 3000, date: '2026-10-05', splits: [] },
+          payload: { type: 'expense', title: 'Dinner', amount: 3000, date: '2026-10-05', paidByMemberUid: 'mem_alice_u', splits: [{ memberUid: 'mem_alice_u', value: 1, share: 3000 }] },
         },
       ],
     },
   });
 
   // 2. Update transaction: expectedVersion = 1 -> Accepted, resultingVersion = 2
-  const updateRes = handleSyncApiRequest(db, {
+  const updateRes = await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -277,7 +298,7 @@ test('server sync api: update and delete mutations with entity version increment
           entityUid: 'tx_dinner',
           operation: 'update',
           expectedVersion: 1,
-          payload: { title: 'Dinner at Italian Place', amount: 3500 },
+          payload: { title: 'Dinner at Italian Place', amount: 3500, splits: [{ memberUid: 'mem_alice_u', value: 1, share: 3500 }] },
         },
       ],
     },
@@ -288,7 +309,7 @@ test('server sync api: update and delete mutations with entity version increment
   assert.equal(updResult.serverVersion, 2);
 
   // 3. Delete transaction: expectedVersion = 2 -> Accepted, resultingVersion = 3 (Tombstone)
-  const delRes = handleSyncApiRequest(db, {
+  const delRes = await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -313,19 +334,19 @@ test('server sync api: update and delete mutations with entity version increment
   assert.equal(delResult.serverVersion, 3);
 
   // 4. Verify bootstrap excludes deleted transaction
-  const snap = (handleSyncApiRequest(db, { method: 'GET', path: '/sync/bootstrap/grp_upd_del' }).body as GroupBootstrapResponse);
+  const snap = ((await server.call({ method: 'GET', path: '/sync/bootstrap/grp_upd_del' })).body as GroupBootstrapResponse);
   assert.equal(snap.transactions.length, 0);
 
   // 5. Verify incremental pull includes delete tombstone
-  const pull = (handleSyncApiRequest(db, { method: 'GET', path: '/sync/changes/grp_upd_del', query: { after: '2' } }).body as PullChangesResponse);
+  const pull = ((await server.call({ method: 'GET', path: '/sync/changes/grp_upd_del', query: { after: '3' } })).body as PullChangesResponse);
   assert.equal(pull.changes.length, 2);
   assert.equal(pull.changes[0]!.operation, 'update');
   assert.equal(pull.changes[1]!.operation, 'delete');
 });
 
-test('server sync api: optimistic concurrency rejects stale update with VERSION_MISMATCH', () => {
+test('server sync api: optimistic concurrency rejects stale update with VERSION_MISMATCH', async () => {
   // 1. Create group and transaction (Version 1)
-  handleSyncApiRequest(db, {
+  await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -342,19 +363,27 @@ test('server sync api: optimistic concurrency rejects stale update with VERSION_
           payload: { name: 'Trip', creatorId: 'usr_alice' },
         },
         {
+          clientMutationId: 'mut_c_m',
+          entityType: 'member',
+          entityUid: 'mem_alice_c',
+          operation: 'create',
+          expectedVersion: 0,
+          payload: { name: 'Alice' },
+        },
+        {
           clientMutationId: 'mut_c_2',
           entityType: 'transaction',
           entityUid: 'tx_hotel',
           operation: 'create',
           expectedVersion: 0,
-          payload: { title: 'Hotel', amount: 10000, date: '2026-10-05', splits: [] },
+          payload: { title: 'Hotel', amount: 10000, date: '2026-10-05', paidByMemberUid: 'mem_alice_c', splits: [{ memberUid: 'mem_alice_c', value: 1, share: 10000 }] },
         },
       ],
     },
   });
 
   // 2. Alice updates transaction -> Server Version becomes 2
-  handleSyncApiRequest(db, {
+  await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -375,7 +404,7 @@ test('server sync api: optimistic concurrency rejects stale update with VERSION_
   });
 
   // 3. Bob (who was offline) tries to update with stale expectedVersion = 1 -> Rejected with CONFLICT
-  const staleRes = handleSyncApiRequest(db, {
+  const staleRes = await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -401,9 +430,9 @@ test('server sync api: optimistic concurrency rejects stale update with VERSION_
   assert.equal(result.serverVersion, 2, 'Response must provide current server version');
 });
 
-test('server sync api: duplicate mutation delivery is handled idempotently', () => {
+test('server sync api: duplicate mutation delivery is handled idempotently', async () => {
   // 1. Send first mutation
-  const push1 = handleSyncApiRequest(db, {
+  const push1 = await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -428,7 +457,7 @@ test('server sync api: duplicate mutation delivery is handled idempotently', () 
   assert.equal(res1.serverSequence, 1);
 
   // 2. Retry sending the exact same mutation with the same clientMutationId
-  const push2 = handleSyncApiRequest(db, {
+  const push2 = await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -453,13 +482,13 @@ test('server sync api: duplicate mutation delivery is handled idempotently', () 
   assert.equal(res2.serverSequence, 1, 'Sequence must not advance on duplicate retransmission');
 
   // Verify only 1 change log entry exists
-  const changes = (handleSyncApiRequest(db, { method: 'GET', path: '/sync/changes/grp_idempotent' }).body as PullChangesResponse);
+  const changes = ((await server.call({ method: 'GET', path: '/sync/changes/grp_idempotent' })).body as PullChangesResponse);
   assert.equal(changes.changes.length, 1);
 });
 
-test('server sync api: server-authoritative permissions for ADMIN_ONLY, CONTRIBUTOR, and COLLABORATIVE', () => {
+test('server sync api: server-authoritative permissions for ADMIN_ONLY, CONTRIBUTOR, and COLLABORATIVE', async () => {
   // === Test 1: ADMIN_ONLY group ===
-  handleSyncApiRequest(db, {
+  await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -480,7 +509,7 @@ test('server sync api: server-authoritative permissions for ADMIN_ONLY, CONTRIBU
   });
 
   // Non-admin user tries to add expense -> REJECTED
-  const unauthRes1 = handleSyncApiRequest(db, {
+  const unauthRes1 = await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -505,7 +534,7 @@ test('server sync api: server-authoritative permissions for ADMIN_ONLY, CONTRIBU
   assert.equal(result1.error, 'FORBIDDEN');
 
   // === Test 2: CONTRIBUTOR group ===
-  handleSyncApiRequest(db, {
+  await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -527,14 +556,14 @@ test('server sync api: server-authoritative permissions for ADMIN_ONLY, CONTRIBU
           entityUid: 'tx_admin_tx',
           operation: 'create',
           expectedVersion: 0,
-          payload: { title: 'Admin Tx', amount: 1000, authorId: 'usr_admin' },
+          payload: { title: 'Admin Tx', amount: 1000, paidByName: 'Admin', splits: [{ memberName: 'Admin', value: 1, share: 1000 }], authorId: 'usr_admin' },
         },
       ],
     },
   });
 
   // Non-admin contributor tries to edit admin's transaction -> REJECTED
-  const unauthRes2 = handleSyncApiRequest(db, {
+  const unauthRes2 = await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -559,7 +588,7 @@ test('server sync api: server-authoritative permissions for ADMIN_ONLY, CONTRIBU
   assert.equal(result2.error, 'FORBIDDEN');
 
   // === Test 3: COLLABORATIVE group (Delete protection) ===
-  handleSyncApiRequest(db, {
+  await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
@@ -581,14 +610,14 @@ test('server sync api: server-authoritative permissions for ADMIN_ONLY, CONTRIBU
           entityUid: 'tx_charlie_tx',
           operation: 'create',
           expectedVersion: 0,
-          payload: { title: 'Charlie Tx', amount: 2000, authorId: 'usr_charlie' },
+          payload: { title: 'Charlie Tx', amount: 2000, paidByName: 'Admin', splits: [{ memberName: 'Admin', value: 1, share: 2000 }], authorId: 'usr_charlie' },
         },
       ],
     },
   });
 
   // Bob (not author, not admin) tries to delete Charlie's transaction -> REJECTED
-  const unauthRes3 = handleSyncApiRequest(db, {
+  const unauthRes3 = await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {

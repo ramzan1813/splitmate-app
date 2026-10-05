@@ -1,9 +1,15 @@
-// Synchronization Data Types for SplitMate Server
+// Wire types for the SplitMate sync API. Shapes match src/data/types.ts in the mobile app.
 export type SyncEntityType = 'group' | 'member' | 'transaction';
 export type SyncOperation = 'create' | 'update' | 'delete';
-export type SyncStatus = 'idle' | 'syncing' | 'offline' | 'error' | 'conflict';
 export type PermissionModel = 'admin_only' | 'contributor' | 'collaborative';
 export type TxType = 'expense' | 'payment';
+// Client values (src/data/logic.ts) plus exact/percentage accepted from older payloads.
+export type SplitType = 'equal' | 'unequal' | 'percent' | 'shares' | 'exact' | 'percentage';
+
+export const ENTITY_TYPES: readonly SyncEntityType[] = ['group', 'member', 'transaction'];
+export const OPERATIONS: readonly SyncOperation[] = ['create', 'update', 'delete'];
+export const TX_TYPES: readonly TxType[] = ['expense', 'payment'];
+export const SPLIT_TYPES: readonly SplitType[] = ['equal', 'unequal', 'percent', 'shares', 'exact', 'percentage'];
 
 export interface Group {
   id: number;
@@ -51,7 +57,7 @@ export interface Transaction {
   paidBy: number;
   paidByMemberUid?: string;
   paidByName?: string;
-  splitType: 'equal' | 'exact' | 'percentage' | 'unequal';
+  splitType: SplitType;
   category: string;
   note: string;
   date: string;
@@ -67,7 +73,7 @@ export interface Transaction {
   splits: Split[];
 }
 
-export interface ServerChange<T = any> {
+export interface ServerChange<T = unknown> {
   sequence: number;
   changeId: string;
   groupUid: string;
@@ -81,19 +87,21 @@ export interface ServerChange<T = any> {
   createdAt: string;
 }
 
+export interface PushMutation {
+  clientMutationId: string;
+  entityType: SyncEntityType;
+  entityUid: string;
+  operation: SyncOperation;
+  expectedVersion: number;
+  payload: any;
+}
+
 export interface PushMutationsRequest {
   groupUid: string;
   deviceId: string;
   actorId?: string;
   actorName?: string;
-  mutations: Array<{
-    clientMutationId: string;
-    entityType: SyncEntityType;
-    entityUid: string;
-    operation: SyncOperation;
-    expectedVersion: number;
-    payload: any;
-  }>;
+  mutations: PushMutation[];
 }
 
 export interface PushMutationResult {
@@ -126,10 +134,10 @@ export interface GroupBootstrapResponse {
   transactions: Transaction[];
 }
 
-export interface RealtimeNotification {
+/** Body of every outbound notification (webhook POST body and Expo push `data`). */
+export interface ChangesAvailableEvent {
   type: 'CHANGES_AVAILABLE';
   groupUid: string;
-  latestSequence?: number;
-  actorId?: string;
+  latestSequence: number;
   timestamp: string;
 }

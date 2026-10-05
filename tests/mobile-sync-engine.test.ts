@@ -1,4 +1,4 @@
-import { test, beforeEach } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createNodeDb } from './node-db';
 import { migrate, setDb, getDb, DB } from '../src/data/db';
@@ -6,8 +6,7 @@ import * as repo from '../src/data/repo';
 import { getDeviceId } from '../src/lib/identity';
 import { getPendingOutboxMutations, getOutboxCount, getOutboxMutationsByStatus, enqueueOutboxMutation } from '../src/data/outbox';
 import { getSyncState } from '../src/data/syncState';
-import { createServerDb, ServerDB } from '../relay/src/db';
-import { handleSyncApiRequest } from '../relay/src/api';
+import { startTestServer, TestServer } from '../relay/test-support/testServer';
 import { SyncEngine, SyncTransport } from '../src/data/syncEngine';
 import {
   GroupBootstrapResponse,
@@ -16,12 +15,12 @@ import {
   PushMutationsResponse,
 } from '../src/data/types';
 
-/** Test Sync Transport directly connecting mobile SyncEngine to in-memory ServerDB */
+/** Test Sync Transport connecting the mobile SyncEngine to the Express backend over HTTP */
 class DirectServerSyncTransport implements SyncTransport {
-  constructor(private serverDb: ServerDB) {}
+  constructor(private server: TestServer) {}
 
   async push(request: PushMutationsRequest): Promise<PushMutationsResponse> {
-    const res = handleSyncApiRequest(this.serverDb, {
+    const res = await this.server.call({
       method: 'POST',
       path: '/sync/push',
       body: request,
@@ -33,7 +32,7 @@ class DirectServerSyncTransport implements SyncTransport {
   }
 
   async pull(groupUid: string, afterSequence: number, limit = 100): Promise<PullChangesResponse> {
-    const res = handleSyncApiRequest(this.serverDb, {
+    const res = await this.server.call({
       method: 'GET',
       path: `/sync/changes/${groupUid}`,
       query: { after: String(afterSequence), limit: String(limit) },
@@ -45,7 +44,7 @@ class DirectServerSyncTransport implements SyncTransport {
   }
 
   async bootstrap(groupUid: string): Promise<GroupBootstrapResponse> {
-    const res = handleSyncApiRequest(this.serverDb, {
+    const res = await this.server.call({
       method: 'GET',
       path: `/sync/bootstrap/${groupUid}`,
     });
@@ -56,20 +55,29 @@ class DirectServerSyncTransport implements SyncTransport {
   }
 }
 
-let serverDb: ServerDB;
+let server: TestServer;
 let clientDb: DB;
 let transport: DirectServerSyncTransport;
 let engine: SyncEngine;
 
 beforeEach(async () => {
-  serverDb = createServerDb(':memory:');
+  server = await startTestServer();
   clientDb = createNodeDb(':memory:');
   await migrate(clientDb);
   setDb(clientDb);
 
-  transport = new DirectServerSyncTransport(serverDb);
+  transport = new DirectServerSyncTransport(server);
   engine = new SyncEngine(transport);
 });
+
+afterEach(async () => {
+  await server.close();
+});
+
+/** Reads the backend Postgres (PGlite) directly to assert server-side state. */
+async function serverRows<T = any>(sql: string, params: unknown[] = []): Promise<T[]> {
+  return (await server.pglite.query<T>(sql, params as any[])).rows;
+}
 
 test('mobile sync engine: 1. offline create keeps local SQLite responsive with pending outbox records', async () => {
   // Mobile client is offline
@@ -106,9 +114,9 @@ test('mobile sync engine: 1. offline create keeps local SQLite responsive with p
   assert.ok(pending.length >= 3, 'Outbox must contain group, member, and transaction mutations');
 
   // Server has 0 records (offline isolation)
-  const serverGroups = serverDb.all('SELECT * FROM groups');
+  const serverGroups = (await serverRows('SELECT * FROM groups'));
   assert.equal(serverGroups.length, 0);
-  const serverTxs = serverDb.all('SELECT * FROM transactions');
+  const serverTxs = (await serverRows('SELECT * FROM transactions'));
   assert.equal(serverTxs.length, 0);
 });
 
@@ -146,10 +154,10 @@ test('mobile sync engine: 2. reconnect flushes outbox, pushes mutations, and adv
   assert.equal(countsAfter.total, 0);
 
   // 4. Verify server received and stored the data
-  const serverGroup = serverDb.get<{ name: string }>('SELECT name FROM groups WHERE uid = ?', [group.uid]);
+  const serverGroup = (await serverRows<{ name: string }>('SELECT name FROM groups WHERE uid = $1', [group.uid]))[0];
   assert.equal(serverGroup?.name, 'Road Trip');
 
-  const serverTxs = serverDb.all<{ title: string; amount: number }>('SELECT title, amount FROM transactions WHERE group_uid = ?', [group.uid]);
+  const serverTxs = (await serverRows<{ title: string; amount: number }>('SELECT title, amount FROM transactions WHERE group_uid = $1', [group.uid]));
   assert.equal(serverTxs.length, 1);
   assert.equal(serverTxs[0]!.title, 'Fuel');
   assert.equal(serverTxs[0]!.amount, 5000);
@@ -173,7 +181,7 @@ test('mobile sync engine: 3. duplicate push is handled idempotently without dupl
   assert.ok(result1.accepted > 0);
 
   // Count server changes
-  const initialChangesCount = serverDb.all('SELECT * FROM sync_changes WHERE group_uid = ?', [group.uid]).length;
+  const initialChangesCount = (await serverRows('SELECT * FROM sync_changes WHERE group_uid = $1', [group.uid])).length;
 
   // Re-enqueue the exact same clientMutationId to simulate duplicate delivery
   await enqueueOutboxMutation({
@@ -192,7 +200,7 @@ test('mobile sync engine: 3. duplicate push is handled idempotently without dupl
   assert.equal(result2.conflicts, 0);
 
   // Verify server change log did not duplicate
-  const changesAfter = serverDb.all('SELECT * FROM sync_changes WHERE group_uid = ?', [group.uid]).length;
+  const changesAfter = (await serverRows('SELECT * FROM sync_changes WHERE group_uid = $1', [group.uid])).length;
   assert.equal(changesAfter, initialChangesCount, 'Change log must not duplicate idempotent mutations');
 });
 
@@ -261,7 +269,7 @@ test('mobile sync engine: 5. app restart recovers pending outbox records and syn
   const pendingAfter = await getPendingOutboxMutations(group.uid);
   assert.equal(pendingAfter.length, 0);
 
-  const serverGroup = serverDb.get<{ name: string }>('SELECT name FROM groups WHERE uid = ?', [group.uid]);
+  const serverGroup = (await serverRows<{ name: string }>('SELECT name FROM groups WHERE uid = $1', [group.uid]))[0];
   assert.equal(serverGroup?.name, 'Cabin Weekend');
 });
 
@@ -278,7 +286,7 @@ test('mobile sync engine: 6. missed changes are pulled incrementally and applied
   engine.setOnline(false);
 
   // 3. Device B (peer on server) adds 2 new transactions directly to server
-  handleSyncApiRequest(serverDb, {
+  await server.call({
     method: 'POST',
     path: '/sync/push',
     body: {
