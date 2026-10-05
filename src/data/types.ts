@@ -12,6 +12,9 @@ export interface Group {
   creatorId: string;
   creatorName: string;
   syncKey?: string; // 256-bit AES encryption key for E2EE sync
+  serverVersion?: number;
+  isDeleted?: boolean;
+  deletedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -25,9 +28,13 @@ export interface GroupListItem extends Group {
 
 export interface Member {
   id: number;
+  uid?: string;
   name: string;
   isMe: boolean;
   memberUid?: string;
+  serverVersion?: number;
+  isDeleted?: boolean;
+  deletedAt?: string;
 }
 
 export interface Split {
@@ -53,6 +60,9 @@ export interface Transaction {
   updatedById?: string;
   updatedByName?: string;
   updatedTs?: number;
+  serverVersion?: number;
+  isDeleted?: boolean;
+  deletedAt?: string;
   splits: Split[];
   createdAt: string;
   updatedAt: string;
@@ -102,6 +112,98 @@ export interface TxInput {
   date?: string;
 }
 
+// ---------- Synchronization Foundation Types ----------
+
+export type SyncEntityType = 'group' | 'member' | 'transaction';
+export type SyncOperation = 'create' | 'update' | 'delete';
+export type SyncStatus = 'idle' | 'syncing' | 'offline' | 'error' | 'conflict';
+export type OutboxStatus = 'pending' | 'sending' | 'acknowledged' | 'failed' | 'conflict';
+
+export interface OutboxMutation<T = unknown> {
+  id?: number;
+  clientMutationId: string;
+  groupUid: string;
+  entityType: SyncEntityType;
+  entityUid: string;
+  operation: SyncOperation;
+  expectedVersion: number;
+  payload: T;
+  createdAt: string;
+  retryCount: number;
+  status: OutboxStatus;
+  errorMessage?: string;
+}
+
+export interface SyncState {
+  groupUid: string;
+  deviceId: string;
+  lastServerSequence: number;
+  lastSyncAt: string | null;
+  syncStatus: SyncStatus;
+  errorDetail?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ServerChange<T = unknown> {
+  changeId: string;
+  sequence: number;
+  groupUid: string;
+  entityType: SyncEntityType;
+  entityUid: string;
+  operation: SyncOperation;
+  actorId: string;
+  deviceId: string;
+  entityVersion: number;
+  payload: T;
+  createdAt: string;
+}
+
+export interface PushMutationsRequest {
+  groupUid: string;
+  deviceId: string;
+  actorId?: string;
+  actorName?: string;
+  mutations: Array<{
+    clientMutationId: string;
+    entityType: SyncEntityType;
+    entityUid: string;
+    operation: SyncOperation;
+    expectedVersion: number;
+    payload: unknown;
+  }>;
+}
+
+export interface PushMutationResult {
+  clientMutationId: string;
+  status: 'ACCEPTED' | 'CONFLICT' | 'REJECTED';
+  entityUid: string;
+  serverVersion?: number;
+  serverSequence?: number;
+  error?: string;
+  message?: string;
+}
+
+export interface PushMutationsResponse {
+  groupUid: string;
+  results: PushMutationResult[];
+}
+
+export interface PullChangesResponse {
+  groupUid: string;
+  latestServerSequence: number;
+  hasMore: boolean;
+  changes: ServerChange[];
+}
+
+export interface GroupBootstrapResponse {
+  groupUid: string;
+  serverSequence: number;
+  group: Group;
+  members: Member[];
+  transactions: Transaction[];
+}
+
 export type SyncAction =
   | 'UPSERT_TX'
   | 'DELETE_TX'
@@ -134,4 +236,13 @@ export interface SyncNotification {
   createdAt: string;
 }
 
+export interface RealtimeNotification {
+  type: 'CHANGES_AVAILABLE';
+  groupUid: string;
+  latestSequence?: number;
+  actorId?: string;
+  timestamp: string;
+}
+
 export class AppError extends Error {}
+

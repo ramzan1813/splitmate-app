@@ -2,7 +2,9 @@
 
 # dependencies
 node_modules/
-
+.agents
+.wrangler/
+relay/.wrangler/
 # Expo
 .expo/
 dist/

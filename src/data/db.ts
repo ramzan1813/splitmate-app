@@ -11,7 +11,7 @@ export interface DB {
   withTransactionAsync(task: () => Promise<void>): Promise<void>;
 }
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -100,6 +100,48 @@ const MIGRATIONS: Record<number, string> = {
     ALTER TABLE groups ADD COLUMN creator_name TEXT NOT NULL DEFAULT '';
     ALTER TABLE transactions ADD COLUMN updated_by_id TEXT NOT NULL DEFAULT '';
     ALTER TABLE transactions ADD COLUMN updated_by_name TEXT NOT NULL DEFAULT '';
+  `,
+  4: `
+    ALTER TABLE groups ADD COLUMN server_version INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE groups ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE groups ADD COLUMN deleted_at TEXT;
+
+    ALTER TABLE members ADD COLUMN uid TEXT NOT NULL DEFAULT '';
+    ALTER TABLE members ADD COLUMN server_version INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE members ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE members ADD COLUMN deleted_at TEXT;
+
+    ALTER TABLE transactions ADD COLUMN server_version INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE transactions ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE transactions ADD COLUMN deleted_at TEXT;
+
+    CREATE TABLE IF NOT EXISTS outbox_mutations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_mutation_id TEXT UNIQUE NOT NULL,
+      group_uid TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_uid TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      expected_version INTEGER NOT NULL DEFAULT 0,
+      payload TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      error_message TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_outbox_group_status ON outbox_mutations(group_uid, status);
+    CREATE INDEX IF NOT EXISTS idx_outbox_mutation_id ON outbox_mutations(client_mutation_id);
+
+    CREATE TABLE IF NOT EXISTS sync_state (
+      group_uid TEXT PRIMARY KEY NOT NULL,
+      device_id TEXT NOT NULL,
+      last_server_sequence INTEGER NOT NULL DEFAULT 0,
+      last_sync_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'idle',
+      error_detail TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `,
 };
 

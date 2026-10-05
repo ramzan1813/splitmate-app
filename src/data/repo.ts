@@ -7,6 +7,7 @@ import { CURRENCIES } from '../lib/currencies';
 import { generateGroupKey } from '../lib/crypto';
 import { getIdentity } from '../lib/identity';
 import { createSyncEvent, SyncTxPayload } from './sync';
+import { enqueueOutboxMutation } from './outbox';
 
 export { CURRENCIES };
 export const LIMITS = { name: 80, title: 120, note: 1000, description: 300, category: 40, maxAmount: 1_000_000_000 };
@@ -39,6 +40,9 @@ interface GroupRow {
   creator_id?: string;
   creator_name?: string;
   sync_key?: string;
+  server_version?: number;
+  is_deleted?: number;
+  deleted_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -52,8 +56,33 @@ const mapGroup = (g: GroupRow): Group => ({
   creatorId: g.creator_id || '',
   creatorName: g.creator_name || '',
   syncKey: g.sync_key || '',
+  serverVersion: g.server_version ?? 1,
+  isDeleted: Boolean(g.is_deleted),
+  deletedAt: g.deleted_at ?? undefined,
   createdAt: g.created_at,
   updatedAt: g.updated_at,
+});
+
+interface MemberRow {
+  id: number;
+  group_id: number;
+  name: string;
+  is_me: number;
+  uid?: string;
+  server_version?: number;
+  is_deleted?: number;
+  deleted_at?: string | null;
+  created_at: string;
+}
+const mapMember = (m: MemberRow): Member => ({
+  id: m.id,
+  name: m.name,
+  isMe: Boolean(m.is_me),
+  uid: m.uid || `mem_${m.id}`,
+  memberUid: m.uid || `mem_${m.id}`,
+  serverVersion: m.server_version ?? 1,
+  isDeleted: Boolean(m.is_deleted),
+  deletedAt: m.deleted_at ?? undefined,
 });
 
 interface TxRow {
@@ -73,6 +102,9 @@ interface TxRow {
   updated_by_id?: string;
   updated_by_name?: string;
   updated_ts?: number;
+  server_version?: number;
+  is_deleted?: number;
+  deleted_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -162,7 +194,7 @@ export async function removeCustomCategory(name: string) {
 // ---------- groups ----------
 export async function getGroup(id: number): Promise<Group> {
   const db = await getDb();
-  const g = await db.getFirstAsync<GroupRow>('SELECT * FROM groups WHERE id = ?', [id]);
+  const g = await db.getFirstAsync<GroupRow>('SELECT * FROM groups WHERE id = ? AND is_deleted = 0', [id]);
   if (!g) throw new AppError('Group not found');
   if (!g.sync_key) {
     const newKey = generateGroupKey();
@@ -174,16 +206,16 @@ export async function getGroup(id: number): Promise<Group> {
 
 export async function getMembers(groupId: number): Promise<Member[]> {
   const db = await getDb();
-  const rows = await db.getAllAsync<{ id: number; name: string; is_me: number }>(
-    'SELECT id, name, is_me FROM members WHERE group_id = ? ORDER BY id',
+  const rows = await db.getAllAsync<MemberRow>(
+    'SELECT * FROM members WHERE group_id = ? AND is_deleted = 0 ORDER BY id',
     [groupId]
   );
-  return rows.map((r) => ({ id: r.id, name: r.name, isMe: !!r.is_me }));
+  return rows.map(mapMember);
 }
 
 export async function getTransactions(groupId?: number): Promise<Transaction[]> {
   const db = await getDb();
-  const where = groupId ? 'WHERE t.group_id = ?' : '';
+  const where = groupId ? 'WHERE t.group_id = ? AND t.is_deleted = 0' : 'WHERE t.is_deleted = 0';
   const params: Param[] = groupId ? [groupId] : [];
   const rows = await db.getAllAsync<TxRow>(`SELECT t.* FROM transactions t ${where} ORDER BY t.date DESC, t.id DESC`, params);
   const splits = await db.getAllAsync<{ transaction_id: number; member_id: number; value: number; share: number }>(
@@ -212,6 +244,9 @@ export async function getTransactions(groupId?: number): Promise<Transaction[]> 
     updatedById: t.updated_by_id,
     updatedByName: t.updated_by_name,
     updatedTs: t.updated_ts,
+    serverVersion: t.server_version ?? 1,
+    isDeleted: Boolean(t.is_deleted),
+    deletedAt: t.deleted_at ?? undefined,
     createdAt: t.created_at,
     updatedAt: t.updated_at,
     splits: byTx.get(t.id) || [],
@@ -220,7 +255,7 @@ export async function getTransactions(groupId?: number): Promise<Transaction[]> 
 
 export async function listGroups(): Promise<GroupListItem[]> {
   const db = await getDb();
-  const groups = (await db.getAllAsync<GroupRow>('SELECT * FROM groups ORDER BY updated_at DESC, id DESC', [])).map(mapGroup);
+  const groups = (await db.getAllAsync<GroupRow>('SELECT * FROM groups WHERE is_deleted = 0 ORDER BY updated_at DESC, id DESC', [])).map(mapGroup);
   const out: GroupListItem[] = [];
   for (const g of groups) {
     const members = await getMembers(g.id);
@@ -322,6 +357,9 @@ export async function createGroup(input: {
         updates.push('permission_model = ?');
         params.push(input.permissionModel);
       }
+      if (existing.is_deleted) {
+        updates.push('is_deleted = 0, deleted_at = NULL');
+      }
       if (updates.length > 0) {
         updates.push('updated_at = ?');
         params.push(now());
@@ -336,12 +374,66 @@ export async function createGroup(input: {
   await db.withTransactionAsync(async () => {
     const ts = now();
     const r = await db.runAsync(
-      'INSERT INTO groups (uid, name, description, currency, permission_model, creator_id, creator_name, sync_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO groups (uid, name, description, currency, permission_model, creator_id, creator_name, sync_key, server_version, is_deleted, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)',
       [groupUid, name, clean(input.description, LIMITS.description), currency, permissionModel, creatorId, creatorName, syncKey, ts, ts]
     );
     gid = r.lastInsertRowId;
-    await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 1, ?)', [gid, myName, ts]);
-    for (const n of others) await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [gid, n, ts]);
+    const myMemberUid = `mem_${newUid()}`;
+    await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, 1, 1, 0, ?)', [gid, myMemberUid, myName, ts]);
+
+    // Enqueue group create mutation into local outbox
+    await enqueueOutboxMutation(
+      {
+        clientMutationId: `mut_${newUid()}`,
+        groupUid,
+        entityType: 'group',
+        entityUid: groupUid,
+        operation: 'create',
+        expectedVersion: 0,
+        payload: {
+          uid: groupUid,
+          name,
+          description: clean(input.description, LIMITS.description),
+          currency,
+          permissionModel,
+          creatorId,
+          creatorName,
+          syncKey,
+        },
+      },
+      db
+    );
+
+    // Enqueue initial creator member mutation
+    await enqueueOutboxMutation(
+      {
+        clientMutationId: `mut_${newUid()}`,
+        groupUid,
+        entityType: 'member',
+        entityUid: myMemberUid,
+        operation: 'create',
+        expectedVersion: 0,
+        payload: { uid: myMemberUid, name: myName, isMe: true },
+      },
+      db
+    );
+
+    for (const n of others) {
+      const otherUid = `mem_${newUid()}`;
+      await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, 0, 1, 0, ?)', [gid, otherUid, n, ts]);
+      await enqueueOutboxMutation(
+        {
+          clientMutationId: `mut_${newUid()}`,
+          groupUid,
+          entityType: 'member',
+          entityUid: otherUid,
+          operation: 'create',
+          expectedVersion: 0,
+          payload: { uid: otherUid, name: n, isMe: false },
+        },
+        db
+      );
+    }
   });
   return getGroup(gid);
 }
@@ -652,10 +744,26 @@ export async function updateGroup(
 
   const db = await getDb();
   const ts = now();
-  await db.runAsync(
-    'UPDATE groups SET name = ?, description = ?, currency = ?, permission_model = ?, updated_at = ? WHERE id = ?',
-    [name, description, currency, permissionModel, ts, id]
-  );
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      'UPDATE groups SET name = ?, description = ?, currency = ?, permission_model = ?, server_version = server_version + 1, updated_at = ? WHERE id = ?',
+      [name, description, currency, permissionModel, ts, id]
+    );
+
+    // Enqueue group update mutation into outbox
+    await enqueueOutboxMutation(
+      {
+        clientMutationId: `mut_${newUid()}`,
+        groupUid: g.uid,
+        entityType: 'group',
+        entityUid: g.uid,
+        operation: 'update',
+        expectedVersion: g.serverVersion ?? 1,
+        payload: { name, description, currency, permissionModel },
+      },
+      db
+    );
+  });
 
   // Broadcast settings change event
   await createSyncEvent(g.uid, 'UPDATE_GROUP', { name, description, currency, permissionModel });
@@ -664,11 +772,27 @@ export async function updateGroup(
 
 export async function deleteGroup(id: number) {
   const db = await getDb();
+  const g = await db.getFirstAsync<GroupRow>('SELECT * FROM groups WHERE id = ?', [id]);
+  if (!g) return;
+
+  const ts = now();
   await db.withTransactionAsync(async () => {
-    await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id IN (SELECT id FROM transactions WHERE group_id = ?)', [id]);
-    await db.runAsync('DELETE FROM transactions WHERE group_id = ?', [id]);
-    await db.runAsync('DELETE FROM members WHERE group_id = ?', [id]);
-    await db.runAsync('DELETE FROM groups WHERE id = ?', [id]);
+    await db.runAsync('UPDATE groups SET is_deleted = 1, deleted_at = ?, updated_at = ? WHERE id = ?', [ts, ts, id]);
+    await db.runAsync('UPDATE members SET is_deleted = 1, deleted_at = ? WHERE group_id = ?', [ts, id]);
+    await db.runAsync('UPDATE transactions SET is_deleted = 1, deleted_at = ?, updated_at = ? WHERE group_id = ?', [ts, ts, id]);
+
+    await enqueueOutboxMutation(
+      {
+        clientMutationId: `mut_${newUid()}`,
+        groupUid: g.uid,
+        entityType: 'group',
+        entityUid: g.uid,
+        operation: 'delete',
+        expectedVersion: g.server_version ?? 1,
+        payload: { groupUid: g.uid },
+      },
+      db
+    );
   });
 }
 
@@ -678,19 +802,39 @@ export async function addMember(groupId: number, rawName: string) {
   const name = clean(rawName, LIMITS.name);
   if (!name) throw new AppError('Member name is required');
   const db = await getDb();
-  const r = await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [groupId, name, now()]);
-  await touch(groupId);
+  const ts = now();
+  const memberUid = `mem_${newUid()}`;
+  let memberId = 0;
+
+  await db.withTransactionAsync(async () => {
+    const r = await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, 0, 1, 0, ?)', [groupId, memberUid, name, ts]);
+    memberId = r.lastInsertRowId;
+    await touch(groupId);
+
+    await enqueueOutboxMutation(
+      {
+        clientMutationId: `mut_${newUid()}`,
+        groupUid: group.uid,
+        entityType: 'member',
+        entityUid: memberUid,
+        operation: 'create',
+        expectedVersion: 0,
+        payload: { uid: memberUid, name },
+      },
+      db
+    );
+  });
 
   if (group.uid) {
     await createSyncEvent(group.uid, 'ADD_MEMBER', { name });
   }
 
-  return r.lastInsertRowId;
+  return memberId;
 }
 
 async function getMemberRow(groupId: number, memberId: number) {
   const db = await getDb();
-  const m = await db.getFirstAsync<{ id: number; name: string; is_me: number }>('SELECT * FROM members WHERE id = ? AND group_id = ?', [memberId, groupId]);
+  const m = await db.getFirstAsync<MemberRow>('SELECT * FROM members WHERE id = ? AND group_id = ? AND is_deleted = 0', [memberId, groupId]);
   if (!m) throw new AppError('Member not found');
   return m;
 }
@@ -705,11 +849,24 @@ export async function renameMember(groupId: number, memberId: number, rawName: s
 
   const db = await getDb();
   await db.withTransactionAsync(async () => {
-    await db.runAsync('UPDATE members SET name = ? WHERE id = ?', [name, memberId]);
+    await db.runAsync('UPDATE members SET name = ?, server_version = server_version + 1 WHERE id = ?', [name, memberId]);
     // Also update any transaction audit trail records that reference the old name
     await db.runAsync('UPDATE transactions SET author_name = ? WHERE group_id = ? AND author_name = ?', [name, groupId, oldName]);
     await db.runAsync('UPDATE transactions SET updated_by_name = ? WHERE group_id = ? AND updated_by_name = ?', [name, groupId, oldName]);
     await touch(groupId);
+
+    await enqueueOutboxMutation(
+      {
+        clientMutationId: `mut_${newUid()}`,
+        groupUid: group.uid,
+        entityType: 'member',
+        entityUid: oldRow.uid || `mem_${memberId}`,
+        operation: 'update',
+        expectedVersion: oldRow.server_version ?? 1,
+        payload: { oldName, newName: name },
+      },
+      db
+    );
   });
 
   if (group.uid) {
@@ -732,13 +889,30 @@ export async function deleteMember(groupId: number, memberId: number) {
   const m = await getMemberRow(groupId, memberId);
   const db = await getDb();
   const used =
-    (await db.getFirstAsync('SELECT 1 AS x FROM transactions WHERE paid_by = ? LIMIT 1', [memberId])) ||
-    (await db.getFirstAsync('SELECT 1 AS x FROM transaction_splits WHERE member_id = ? LIMIT 1', [memberId]));
+    (await db.getFirstAsync('SELECT 1 AS x FROM transactions WHERE paid_by = ? AND is_deleted = 0 LIMIT 1', [memberId])) ||
+    (await db.getFirstAsync('SELECT 1 AS x FROM transaction_splits ts JOIN transactions t ON t.id = ts.transaction_id WHERE ts.member_id = ? AND t.is_deleted = 0 LIMIT 1', [memberId]));
   if (used) throw new AppError('This member has transactions. Delete or edit those transactions first.');
-  const count = await db.getFirstAsync<{ c: number }>('SELECT COUNT(*) AS c FROM members WHERE group_id = ?', [groupId]);
+  const count = await db.getFirstAsync<{ c: number }>('SELECT COUNT(*) AS c FROM members WHERE group_id = ? AND is_deleted = 0', [groupId]);
   if ((count?.c ?? 0) <= 1) throw new AppError('A group needs at least one member');
-  await db.runAsync('DELETE FROM members WHERE id = ?', [memberId]);
-  await touch(groupId);
+
+  const ts = now();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('UPDATE members SET is_deleted = 1, deleted_at = ? WHERE id = ?', [ts, memberId]);
+    await touch(groupId);
+
+    await enqueueOutboxMutation(
+      {
+        clientMutationId: `mut_${newUid()}`,
+        groupUid: group.uid,
+        entityType: 'member',
+        entityUid: m.uid || `mem_${memberId}`,
+        operation: 'delete',
+        expectedVersion: m.server_version ?? 1,
+        payload: { memberName: m.name },
+      },
+      db
+    );
+  });
 
   if (group.uid) {
     await createSyncEvent(group.uid, 'DELETE_MEMBER', { memberName: m.name });
@@ -792,21 +966,6 @@ export async function createTransaction(groupId: number, body: TxInput) {
   let id = 0;
   const txUid = `tx_${newUid()}`;
   const updatedTs = Date.now();
-  await db.withTransactionAsync(async () => {
-    const ts = now();
-    const r = await db.runAsync(
-      `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, updated_ts, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [groupId, txUid, t.type, t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, identity.id, myDisplayName, updatedTs, ts, ts]
-    );
-    id = r.lastInsertRowId;
-    for (const s of t.shares) {
-      await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [id, s.memberId, s.value, s.share]);
-    }
-  });
-  await touch(groupId);
-
-  // Broadcast sync event
   const payload: SyncTxPayload = {
     txUid,
     type: t.type as TxType,
@@ -822,6 +981,35 @@ export async function createTransaction(groupId: number, body: TxInput) {
     splits: t.shares.map((s) => ({ memberName: memberMap.get(s.memberId) || 'Unknown', value: s.value, share: s.share })),
     updatedTs,
   };
+
+  await db.withTransactionAsync(async () => {
+    const ts = now();
+    const r = await db.runAsync(
+      `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, updated_ts, server_version, is_deleted, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
+      [groupId, txUid, t.type, t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, identity.id, myDisplayName, updatedTs, ts, ts]
+    );
+    id = r.lastInsertRowId;
+    for (const s of t.shares) {
+      await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [id, s.memberId, s.value, s.share]);
+    }
+
+    await enqueueOutboxMutation(
+      {
+        clientMutationId: `mut_${newUid()}`,
+        groupUid: group.uid,
+        entityType: 'transaction',
+        entityUid: txUid,
+        operation: 'create',
+        expectedVersion: 0,
+        payload,
+      },
+      db
+    );
+  });
+  await touch(groupId);
+
+  // Broadcast sync event
   await createSyncEvent(group.uid, 'UPSERT_TX', payload);
 
   return id;
@@ -831,7 +1019,7 @@ export async function updateTransaction(groupId: number, txId: number, body: TxI
   const group = await getGroup(groupId);
   const identity = await getIdentity();
   const db = await getDb();
-  const existing = await db.getFirstAsync<TxRow>('SELECT * FROM transactions WHERE id = ? AND group_id = ?', [txId, groupId]);
+  const existing = await db.getFirstAsync<TxRow>('SELECT * FROM transactions WHERE id = ? AND group_id = ? AND is_deleted = 0', [txId, groupId]);
   if (!existing) throw new AppError('Transaction not found');
   const perms = getGroupPermissions(group, identity.id);
   if (!perms.canEditTx({ authorId: existing.author_id })) {
@@ -845,18 +1033,6 @@ export async function updateTransaction(groupId: number, txId: number, body: TxI
   const t = await validateTx(groupId, { ...body, type: existing.type });
   const txUid = existing.uid || `tx_${txId}`;
   const updatedTs = Date.now();
-  await db.withTransactionAsync(async () => {
-    await db.runAsync(
-      'UPDATE transactions SET title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, updated_by_id = ?, updated_by_name = ?, updated_ts = ?, updated_at = ? WHERE id = ?',
-      [t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, identity.id, myDisplayName, updatedTs, now(), txId]
-    );
-    await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [txId]);
-    for (const s of t.shares) {
-      await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [txId, s.memberId, s.value, s.share]);
-    }
-  });
-  await touch(groupId);
-
   const payload: SyncTxPayload = {
     txUid,
     type: t.type as TxType,
@@ -874,6 +1050,32 @@ export async function updateTransaction(groupId: number, txId: number, body: TxI
     splits: t.shares.map((s) => ({ memberName: memberMap.get(s.memberId) || 'Unknown', value: s.value, share: s.share })),
     updatedTs,
   };
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      'UPDATE transactions SET title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, updated_by_id = ?, updated_by_name = ?, updated_ts = ?, server_version = server_version + 1, updated_at = ? WHERE id = ?',
+      [t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, identity.id, myDisplayName, updatedTs, now(), txId]
+    );
+    await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [txId]);
+    for (const s of t.shares) {
+      await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [txId, s.memberId, s.value, s.share]);
+    }
+
+    await enqueueOutboxMutation(
+      {
+        clientMutationId: `mut_${newUid()}`,
+        groupUid: group.uid,
+        entityType: 'transaction',
+        entityUid: txUid,
+        operation: 'update',
+        expectedVersion: existing.server_version ?? 1,
+        payload,
+      },
+      db
+    );
+  });
+  await touch(groupId);
+
   await createSyncEvent(group.uid, 'UPSERT_TX', payload);
 }
 
@@ -881,17 +1083,32 @@ export async function deleteTransaction(groupId: number, txId: number) {
   const group = await getGroup(groupId);
   const identity = await getIdentity();
   const db = await getDb();
-  const existing = await db.getFirstAsync<TxRow>('SELECT uid, author_id FROM transactions WHERE id = ? AND group_id = ?', [txId, groupId]);
+  const existing = await db.getFirstAsync<TxRow>('SELECT uid, author_id, server_version FROM transactions WHERE id = ? AND group_id = ? AND is_deleted = 0', [txId, groupId]);
   if (!existing) throw new AppError('Transaction not found');
   const perms = getGroupPermissions(group, identity.id);
   if (!perms.canDeleteTx({ authorId: existing.author_id })) {
     throw new AppError('You do not have permission to delete this transaction.');
   }
 
-  const r = await db.runAsync('DELETE FROM transactions WHERE id = ? AND group_id = ?', [txId, groupId]);
-  if (!r.changes) throw new AppError('Transaction not found');
-  await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [txId]);
-  await touch(groupId);
+  const ts = now();
+  await db.withTransactionAsync(async () => {
+    const r = await db.runAsync('UPDATE transactions SET is_deleted = 1, deleted_at = ?, updated_at = ? WHERE id = ? AND group_id = ?', [ts, ts, txId, groupId]);
+    if (!r.changes) throw new AppError('Transaction not found');
+    await touch(groupId);
+
+    await enqueueOutboxMutation(
+      {
+        clientMutationId: `mut_${newUid()}`,
+        groupUid: group.uid,
+        entityType: 'transaction',
+        entityUid: existing.uid || `tx_${txId}`,
+        operation: 'delete',
+        expectedVersion: existing.server_version ?? 1,
+        payload: { txUid: existing.uid || `tx_${txId}`, authorId: existing.author_id },
+      },
+      db
+    );
+  });
 
   if (existing?.uid) {
     await createSyncEvent(group.uid, 'DELETE_TX', { txUid: existing.uid, authorId: existing.author_id });
@@ -902,6 +1119,10 @@ export async function deleteTransaction(groupId: number, txId: number) {
 export async function eraseAllData() {
   const db = await getDb();
   await db.withTransactionAsync(async () => {
+    await db.runAsync('DELETE FROM outbox_mutations', []);
+    await db.runAsync('DELETE FROM sync_state', []);
+    await db.runAsync('DELETE FROM sync_notifications', []);
+    await db.runAsync('DELETE FROM sync_events', []);
     await db.runAsync('DELETE FROM transaction_splits', []);
     await db.runAsync('DELETE FROM transactions', []);
     await db.runAsync('DELETE FROM members', []);
@@ -909,3 +1130,4 @@ export async function eraseAllData() {
     await db.runAsync('DELETE FROM settings', []);
   });
 }
+

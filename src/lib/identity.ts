@@ -47,3 +47,15 @@ export async function updateRelayUrl(url: string): Promise<void> {
 export async function setAccountName(name: string): Promise<void> {
   await setSetting('profile.name', name.trim().slice(0, 80));
 }
+
+/** Returns a stable, persistent device ID for this client installation. */
+export async function getDeviceId(): Promise<string> {
+  let deviceId = await getSetting('sync.device_id');
+  if (!deviceId) {
+    const rnd = generateRandomHex(16);
+    deviceId = `dev_${rnd}`;
+    await setSetting('sync.device_id', deviceId);
+  }
+  return deviceId;
+}
+

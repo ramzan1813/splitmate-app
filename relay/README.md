@@ -1,17 +1,20 @@
-# SplitMate E2EE SQLite Sync & Relay Server (Cloudflare Worker + Durable Objects)
+# SplitMate Offline-First Synchronization Relay (Cloudflare Workers + Durable Objects SQLite)
 
-A resilient, stateful, zero-knowledge sync and queue coordinator server powered by **Cloudflare SQLite Durable Objects** that synchronizes end-to-end encrypted (E2EE) expenses, payments, and full group history across SplitMate peers in real time and across offline sessions.
+A stateful, server-authoritative synchronization coordinator and real-time notification engine powered by **Cloudflare SQLite Durable Objects** (`state.storage.sql`). It coordinates offline-first transactions, outbox mutations, optimistic concurrency, and monotonic change logs across SplitMate clients.
 
 ---
 
-## 🔒 Security & Architecture Overview
+## 🔒 Architecture & Core Principles
 
-- **Zero Plaintext:** All payloads sent through the relay are encrypted on-device with AES-GCM-256 using the group's private encryption key before transmission.
-- **SQLite Queue Engine on Durable Objects:** Each group room runs inside an isolated Cloudflare SQLite Durable Object (`RelayRoom`) identified by a SHA-256 room hash.
-- **Queue Pruning & Zero Payload Retention:** Changes are queued in SQLite with monotonic sequence numbers. As soon as all active peers acknowledge receipt of events up to sequence `N`, the server automatically purges the encrypted payloads from SQLite storage, retaining only state sequence metadata and sync counters.
-- **Offline Sync Resilience:** Peers create local changes offline in SQLite with `synced = 0`. When coming online, peers push pending changes (`POST /sync/push`) and pull missing changes in exact chronological sequence order (`POST /sync/pull`), guaranteeing conflict-free Last-Write-Wins (LWW) convergence.
-- **State Snapshot Coordination for New Members:** When a new peer joins or requests state hydration, the server identifies the active peer with the latest sync state and coordinates chunked `STATE_SNAPSHOT` replication to bring the new device up to date immediately.
-- **Hybrid Interface:** Supports both HTTP REST API endpoints and WebSocket connections (`/ws`) for instant real-time notifications.
+- **Offline-First & Local SQLite Authority**: The mobile app reads and writes directly to local SQLite. Network latency or outages never block the user interface.
+- **Outbox & Monotonic Server Sequence**: Mutations are stored locally in an `outbox` table and flushed atomically to `POST /sync/push`. The server assigns each accepted mutation a strictly increasing `server_sequence` number in the `sync_changes` log.
+- **Optimistic Concurrency & Conflict Detection**: Updates and deletions check `expectedVersion`. If a concurrent change occurred, the server rejects the stale update with `VERSION_MISMATCH` rather than blindly overwriting data.
+- **Server-Authoritative Authorization**:
+  - **`ADMIN_ONLY`**: Only group admin can modify group settings or add/edit/delete members and transactions.
+  - **`CONTRIBUTOR`**: Non-admin members can add expenses and edit/delete their own transactions, but cannot delete or edit other members' transactions.
+  - **`COLLABORATIVE`**: Any member can add and edit transactions with audit trails; deletions are restricted to the author or admin.
+- **Tombstones & Non-Destructive Soft Deletes**: Deleted records are marked with `is_deleted = 1` and propagated to peers so deletions sync cleanly across all devices.
+- **Lightweight Realtime Notifications**: WebSockets (`/ws`) deliver `CHANGES_AVAILABLE` signals containing the latest sequence number. Clients pull delta changes (`GET /sync/changes/:groupId?after=<seq>`) and advance their local cursor.
 
 ---
 
@@ -19,32 +22,50 @@ A resilient, stateful, zero-knowledge sync and queue coordinator server powered 
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/health` or `/` | `GET` | Server health check and version info |
-| `/join` | `GET` | Responsive mobile web landing page with deep link |
-| `/sync/push?room=<hash>` | `POST` | Push encrypted sync event(s) to SQLite queue |
-| `/sync/pull?room=<hash>` | `POST` | Pull pending queued events since `lastSeq` |
-| `/sync/ack?room=<hash>` | `POST` | Acknowledge received sequence numbers |
-| `/sync/request-snapshot?room=<hash>` | `POST` | Request full replica snapshot from online peer |
-| `/sync/peers?room=<hash>` | `GET / POST` | Query room peers, sync watermarks, and online status |
-| `/ws?room=<hash>` | `GET (Upgrade)` | Real-time WebSocket connection for instant push/pull |
+| `/health` or `/` | `GET` | Service status, health check, and architecture metadata |
+| `/sync/bootstrap/:groupId` | `GET` | Initial full group snapshot with current `serverSequence` watermark |
+| `/sync/changes/:groupId?after=<seq>` | `GET` | Incremental delta changes strictly after the given sequence cursor |
+| `/sync/push` | `POST` | Batch push outbox mutations with idempotency, optimistic concurrency, and permissions |
+| `/ws` | `GET (Upgrade)` | WebSocket channel broadcasting realtime `CHANGES_AVAILABLE` notifications |
+| `/join` | `GET` | Universal web invite page with direct deep links into the app |
 
 ---
 
-## 🚀 Deployment (Terminal / CLI)
+## 📂 Source Code Layout (`relay/src/`)
 
-### 1. Open Terminal in the `relay` Folder
+```
+relay/
+├── wrangler.toml              # Cloudflare Worker config with Durable Object SQLite bindings
+├── package.json               # Relay scripts & worker types
+├── tsconfig.json              # TypeScript compilation config
+└── src/
+    ├── index.ts               # Worker router & RelayRoom Durable Object
+    ├── api.ts                 # REST API router (/sync/bootstrap, /sync/changes, /sync/push)
+    ├── db.ts                  # Cloudflare DO SQLite & In-memory adapter with automatic migrations
+    ├── syncService.ts         # Mutation processing, monotonic change logging, idempotency
+    ├── permissions.ts         # Server-authoritative permission engine (ADMIN_ONLY, CONTRIBUTOR, COLLABORATIVE)
+    ├── realtimeHub.ts         # Pub/Sub lightweight notification broker
+    └── types.ts               # Shared server DTOs and type definitions
+```
+
+---
+
+## 🚀 Deployment (Cloudflare Workers)
+
+### 1. Change to the Relay directory
 ```bash
 cd relay
 ```
 
-### 2. Log in to Cloudflare (Only Needed Once)
+### 2. Log in to Cloudflare (one-time setup)
 ```bash
 npx wrangler login
 ```
 
-### 3. Deploy to Cloudflare
+### 3. Deploy
 ```bash
-npx wrangler deploy
+npm run deploy
+# or: npx wrangler deploy
 ```
 
 ---
@@ -53,6 +74,7 @@ npx wrangler deploy
 
 ```bash
 cd relay
-npx wrangler dev
+npm run dev
+# or: npx wrangler dev
 ```
 Runs locally at `http://localhost:8787` with hot-reloading.

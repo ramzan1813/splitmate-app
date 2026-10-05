@@ -1,6 +1,6 @@
 {
   "name": "splitmate-app",
-  "version": "1.4.1",
+  "version": "2.0.0",
   "main": "expo-router/entry",
   "dependencies": {
     "decode-uri-component": "file:./vendor/decode-uri-component",
