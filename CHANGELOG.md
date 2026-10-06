@@ -2,9 +2,14 @@
 
 Release notes for each version. The release workflow copies the section matching the version in `app.json` into the GitHub Release.
 
-## Unreleased
+## 2.1.0 — 2026-10-07
 
-Run the server migrations `002`–`004` before releasing this app version (see [relay/README.md](relay/README.md)).
+Server operators: run the database migrations `002`–`005` (`npm --prefix relay run migrate`) before or right after deploying this version's server; until then the server answers sync requests with errors. Phones on 2.0.0 keep syncing with the new server.
+
+### Faster sync
+- **Fewer sync timeouts.** The sync server now runs next to its database instead of next to each user, so a sync no longer pays a long round trip for every database step.
+- **Opening a group stays fast as the server grows.** Loading a group's expense splits no longer slows down with the size of the whole database (about 80× faster on the development server).
+- **Database indexes** for deleting groups, adding members, cleaning up old sync records and sending notifications.
 
 ### New
 - **Swipe between tabs.** In a group, swipe left or right to move between Expenses, Balances, Settle up and Chart. Tapping the tab bar still works.

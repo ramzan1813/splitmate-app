@@ -125,6 +125,11 @@ npx wrangler secret put DATABASE_URL       # Postgres connection string (used wh
 npx wrangler secret put ADMIN_API_KEY      # long random string
 npx wrangler secret put EXPO_ACCESS_TOKEN  # only if Expo push security is enabled
 ```
+[wrangler.toml](wrangler.toml) pins the Worker next to the database (`[placement] region = "aws:us-east-2"`).
+A sync request runs many sequential queries, so this matters more than anything else for latency: from a
+user far away each round trip costs ~250 ms, next to the database a few ms. Change the region if the
+database moves.
+
 Optional: put [Hyperdrive](https://developers.cloudflare.com/hyperdrive/) in front of Postgres to pool
 connections (`npx wrangler hyperdrive create splitmate-db --connection-string="..."`), then uncomment the
 `[[hyperdrive]]` block in [wrangler.toml](wrangler.toml). The Worker prefers `HYPERDRIVE` when it is bound.
@@ -175,7 +180,8 @@ relay/
 │   ├── 001_init.sql
 │   ├── 002_transaction_created_ts.sql  # transaction creation time
 │   ├── 003_erase_deleted_groups.sql    # erase data of groups deleted before deletes erased
-│   └── 004_is_display.sql              # is_display on every table, sync_users, visible_* views
+│   ├── 004_is_display.sql              # is_display on every table, sync_users, visible_* views
+│   └── 005_performance_indexes.sql     # foreign-key, member-name, ledger and dispatcher indexes
 ├── scripts/migrate.ts        # applies migrations once each (schema_migrations table)
 ├── src/
 │   ├── index.ts              # Worker entry: Express via httpServerHandler + cron dispatcher

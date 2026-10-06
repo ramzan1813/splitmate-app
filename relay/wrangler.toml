@@ -5,6 +5,12 @@ compatibility_date = "2026-09-01"
 # the Node HTTP server bridge used by httpServerHandler.
 compatibility_flags = ["nodejs_compat"]
 
+# Run the Worker next to the database (Neon, AWS us-east-2), not next to each user. Every sync request
+# makes many sequential queries; this cuts each round trip from ~250 ms (Asia -> Ohio) to a few ms.
+# Change the region if the database moves.
+[placement]
+region = "aws:us-east-2"
+
 # Retries pending webhook / Expo push notifications every minute.
 [triggers]
 crons = ["* * * * *"]

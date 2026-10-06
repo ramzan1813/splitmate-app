@@ -92,6 +92,11 @@ to whichever server the app uses).
 The Worker is connected to this repo through Cloudflare's Git integration and deploys on push. Database
 migrations are not run by that deploy: after adding a file under `relay/migrations/`, run
 `npm --prefix relay run migrate` with the production `DATABASE_URL`, then check `GET /health/db`.
+Until the migrations run, the new server code fails every sync with HTTP 500 (for example
+`relation "visible_groups" does not exist`), so run them as part of every release that adds one.
+
+The Worker runs next to the database (`[placement] region` in [relay/wrangler.toml](relay/wrangler.toml)); keep
+that region in step with the database's region.
 
 ## Building the Android APK
 

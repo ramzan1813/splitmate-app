@@ -103,9 +103,12 @@ export async function getGroupBootstrap(db: Database, groupUid: string): Promise
       'SELECT * FROM visible_transactions WHERE group_uid = $1 AND is_deleted = false ORDER BY date DESC, id DESC',
       [groupUid]
     );
+    // Base splits joined to this group's visible transactions: a visible transaction has only visible
+    // splits (see visible_transactions), and filtering by group first keeps this independent of the
+    // size of the whole database (visible_splits would evaluate every transaction's visibility).
     const splits = await tx.query(
       `SELECT s.transaction_uid, s.member_uid, s.value, s.share
-         FROM visible_splits s
+         FROM transaction_splits s
          JOIN visible_transactions t ON t.tx_uid = s.transaction_uid
         WHERE t.group_uid = $1 AND t.is_deleted = false
         ORDER BY s.member_uid`,
