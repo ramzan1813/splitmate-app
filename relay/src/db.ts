@@ -26,6 +26,20 @@ const types = {
   },
 };
 
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', 'host.docker.internal']);
+
+/**
+ * Hosted Postgres (Neon, Supabase) rejects plaintext connections, and a URL copied from a
+ * dashboard often omits sslmode. Require verified TLS for any non-local host unless the URL
+ * already chooses an sslmode (set sslmode=disable explicitly for a plaintext Docker service).
+ */
+export function withDefaultTls(connectionString: string): string {
+  const url = new URL(connectionString);
+  if (url.searchParams.has('sslmode') || LOCAL_HOSTS.has(url.hostname)) return connectionString;
+  url.searchParams.set('sslmode', 'verify-full');
+  return url.toString();
+}
+
 export function pgDatabaseFactory(connectionString: string): OpenDatabase {
   return async () => {
     const client = new pg.Client({ connectionString, types });

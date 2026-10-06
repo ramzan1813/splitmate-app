@@ -1,6 +1,7 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { startTestServer, TestServer } from '../relay/test-support/testServer';
+import { withDefaultTls } from '../relay/src/db';
 
 const GROUP = 'grp_integrity';
 let server: TestServer;
@@ -166,4 +167,13 @@ test('join page: invite parameters are HTML-escaped', async () => {
   assert.equal(res.status, 200);
   assert.ok(!String(res.body).includes('<script>alert(1)</script>'));
   assert.ok(String(res.body).includes('&lt;script&gt;'));
+});
+
+test('database url: hosted Postgres defaults to verified TLS; local hosts and explicit sslmode are untouched', () => {
+  const tls = (u: string) => new URL(withDefaultTls(u)).searchParams.get('sslmode');
+  assert.equal(tls('postgresql://u:p@ep-x-pooler.us-east-2.aws.neon.tech/dev'), 'verify-full');
+  assert.equal(tls('postgresql://u:p@ep-x.neon.tech/dev?sslmode=require'), 'require');
+  assert.equal(tls('postgresql://u:p@db.example.com/db?sslmode=disable'), 'disable');
+  assert.equal(withDefaultTls('postgresql://u:p@127.0.0.1:54329/splitmate'), 'postgresql://u:p@127.0.0.1:54329/splitmate');
+  assert.equal(withDefaultTls('postgresql://u:p@localhost/splitmate'), 'postgresql://u:p@localhost/splitmate');
 });

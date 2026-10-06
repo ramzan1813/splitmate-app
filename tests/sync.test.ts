@@ -204,7 +204,7 @@ test('sync: delete transaction event deletes row on peer and enforces permission
 });
 
 test('identity: generates and persists on-device user account identity', async () => {
-  const { getIdentity, setAccountName, updateRelayUrl } = await import('../src/lib/identity');
+  const { getIdentity, setAccountName, updateRelayUrl, DEFAULT_RELAY_URL } = await import('../src/lib/identity');
 
   const identity1 = await getIdentity();
   assert.ok(identity1.id.startsWith('usr_'));
@@ -227,7 +227,7 @@ test('identity: generates and persists on-device user account identity', async (
   // Clearing relay url falls back to default
   await updateRelayUrl('');
   const fallbackIdentity = await getIdentity();
-  assert.equal(fallbackIdentity.relayUrl, 'wss://splitmate-relay.rn45819.workers.dev/ws');
+  assert.equal(fallbackIdentity.relayUrl, DEFAULT_RELAY_URL);
 });
 
 test('sync: ignores outdated sync events (Last-Write-Wins conflict resolution)', async () => {

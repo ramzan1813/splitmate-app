@@ -72,8 +72,10 @@ cd relay
 npm install
 ```
 
-### 2. Create the schema in Supabase
-Use the **direct** or **session** connection string (Supabase → Project Settings → Database):
+### 2. Create the schema
+Works with any Postgres (Neon, Supabase, local). Use a **direct** or **session** connection string.
+Non-local hosts get `sslmode=verify-full` automatically unless the URL sets `sslmode`
+(use `sslmode=disable` for a plaintext Postgres container reached by service name):
 ```bash
 DATABASE_URL="postgresql://postgres:<password>@db.<project>.supabase.co:5432/postgres" npm run migrate
 ```
@@ -83,7 +85,8 @@ these tables. The Worker connects as the table owner and is unaffected.
 
 ### 3. Configure the Worker
 ```bash
-npx wrangler secret put DATABASE_URL       # Supabase connection string (used when Hyperdrive is not bound)
+# Each command prompts for the value. Pass only the NAME, never "NAME=value".
+npx wrangler secret put DATABASE_URL       # Postgres connection string (used when Hyperdrive is not bound)
 npx wrangler secret put ADMIN_API_KEY      # long random string
 npx wrangler secret put EXPO_ACCESS_TOKEN  # only if Expo push security is enabled
 ```
@@ -94,8 +97,26 @@ Recommended: put [Hyperdrive](https://developers.cloudflare.com/hyperdrive/) in 
 For local dev, put the same keys in `relay/.dev.vars` (git-ignored), then run `npm run dev`.
 
 ### 4. Deploy
+Pushing to `main` with changes under `relay/` runs [.github/workflows/deploy-relay.yml](../.github/workflows/deploy-relay.yml):
+tests → `npm run migrate` → `wrangler deploy` → `/health/db` check. It can also be run by hand from the
+Actions tab. It needs the GitHub secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` and `DATABASE_URL`.
+
+Manual deploy from a machine logged in with `wrangler login`:
 ```bash
+npm run migrate   # with DATABASE_URL set
 npm run deploy
+```
+Roll back with `npx wrangler rollback`.
+
+The v2 relay's `RelayRoom` Durable Objects still hold that version's data. [src/legacyRelayRoom.ts](src/legacyRelayRoom.ts)
+keeps the class exported so the data is not erased; remove it only together with a deliberate delete-class migration.
+
+### Local Docker stack
+From the repo root, with `relay/.dev.vars` filled in:
+```bash
+docker compose up --build -d                      # relay on :8787, web app on :8081
+docker compose --profile migrate run --rm --build migrate
+docker compose down
 ```
 
 ## Development
@@ -121,6 +142,7 @@ relay/
 │   ├── notifications.ts      # webhook signing + Expo push dispatcher with retries
 │   ├── db.ts                 # per-request pg connection + transactions
 │   ├── joinPage.ts           # invite landing page
+│   ├── legacyRelayRoom.ts    # keeps the v2 Durable Object class (and its data) alive
 │   └── types.ts              # wire types shared with the app
 └── test-support/             # PGlite test server + fake Expo hub
 ```

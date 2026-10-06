@@ -1,9 +1,11 @@
-// Applies relay/migrations/*.sql to Supabase Postgres in filename order, once each.
+// Applies relay/migrations/*.sql to Postgres (Neon, Supabase, local) in filename order, once each.
 // Usage: DATABASE_URL="postgresql://..." npm run migrate
-// Use the Supabase *direct* or *session* connection string here (not the transaction pooler).
+// Use a direct or session connection string (not a transaction pooler). Non-local hosts get
+// verified TLS unless the URL sets sslmode (see withDefaultTls).
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import pg from 'pg';
+import { withDefaultTls } from '../src/db.ts';
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -14,7 +16,7 @@ if (!url) {
 const dir = join(import.meta.dirname, '..', 'migrations');
 const files = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
 
-const client = new pg.Client({ connectionString: url });
+const client = new pg.Client({ connectionString: withDefaultTls(url) });
 await client.connect();
 try {
   await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (

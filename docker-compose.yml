@@ -1,0 +1,43 @@
+# Local test stack: SplitMate relay (wrangler dev) + web frontend (nginx).
+#   docker compose up --build
+#   Frontend: http://localhost:8081    Relay: http://localhost:8787/health
+#
+# The relay reads its bindings (DATABASE_URL, ADMIN_API_KEY, ...) from relay/.dev.vars,
+# mounted read-only. That file is gitignored and never copied into an image.
+#
+# Apply migrations to the database in relay/.dev.vars (run on demand, not on `up`):
+#   docker compose --profile migrate run --rm migrate
+services:
+  relay:
+    build: ./relay
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./relay/.dev.vars:/app/.dev.vars:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        # Opened by the browser on the host, hence localhost rather than the service name.
+        EXPO_PUBLIC_RELAY_URL: http://localhost:8787
+    ports:
+      - "8081:80"
+    depends_on:
+      relay:
+        condition: service_healthy
+
+  migrate:
+    build: ./relay
+    profiles: ["migrate"]
+    env_file:
+      - path: ./relay/.dev.vars
+        format: raw
+    command: ["npm", "run", "migrate"]

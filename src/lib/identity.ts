@@ -11,7 +11,8 @@ export interface UserIdentity {
   relayUrl: string;
 }
 
-export const DEFAULT_RELAY_URL = 'wss://splitmate-relay.rn45819.workers.dev/ws';
+// EXPO_PUBLIC_RELAY_URL is inlined at build time (e.g. the local Docker relay); production builds leave it unset.
+export const DEFAULT_RELAY_URL = process.env.EXPO_PUBLIC_RELAY_URL || 'wss://splitmate-relay.rn45819.workers.dev/ws';
 
 export async function getIdentity(): Promise<UserIdentity> {
   let id = await getSetting('profile.id');

@@ -3,9 +3,11 @@
 import { httpServerHandler } from 'cloudflare:node';
 import { env, waitUntil } from 'cloudflare:workers';
 import { createApp, AppConfig } from './app';
-import { pgDatabaseFactory } from './db';
+import { pgDatabaseFactory, withDefaultTls } from './db';
 import { dispatchNotifications } from './notifications';
 import { HttpError } from './syncService';
+
+export { RelayRoom } from './legacyRelayRoom';
 
 export interface Env {
   /** Optional Hyperdrive binding in front of Supabase (recommended for production). */
@@ -18,9 +20,10 @@ export interface Env {
 }
 
 function connectionString(e: Env): string {
-  const cs = e.HYPERDRIVE?.connectionString || e.DATABASE_URL;
-  if (!cs) throw new HttpError(503, 'DATABASE_NOT_CONFIGURED', 'Bind HYPERDRIVE or set the DATABASE_URL secret');
-  return cs;
+  // Hyperdrive terminates TLS to the origin itself, so only the direct URL gets the TLS default.
+  if (e.HYPERDRIVE?.connectionString) return e.HYPERDRIVE.connectionString;
+  if (!e.DATABASE_URL) throw new HttpError(503, 'DATABASE_NOT_CONFIGURED', 'Bind HYPERDRIVE or set the DATABASE_URL secret');
+  return withDefaultTls(e.DATABASE_URL);
 }
 
 function readConfig(e: Env): AppConfig {
