@@ -50,12 +50,14 @@ jobs:
 
       - name: Check release trigger type
         id: check
+        # Passed as environment variables, never pasted into the script: a commit message with quotes or
+        # backticks would otherwise break the script or run as shell commands (script injection).
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+          REF: ${{ github.ref }}
+          EVENT: ${{ github.event_name }}
+          RELEASE_INPUT: ${{ github.event.inputs.create_release }}
         run: |
-          MSG="${{ github.event.head_commit.message }}"
-          REF="${{ github.ref }}"
-          EVENT="${{ github.event_name }}"
-          RELEASE_INPUT="${{ github.event.inputs.create_release }}"
-          
           IS_REL="false"
           if [[ "$REF" == refs/tags/v* ]]; then
             IS_REL="true"
