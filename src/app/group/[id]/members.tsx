@@ -25,6 +25,9 @@ export default function Members() {
 
   if (!data) return <Loading />;
   const cur = data.group.currency;
+  // "Me" is chosen when creating or joining the group. Only a group with nobody marked as me
+  // (an older group, or "me" removed on another phone) offers a one-time choice here.
+  const canChooseMe = data.myMemberId === null;
 
   const run = async (fn: () => Promise<unknown>, title = 'Could not save') => {
     try {
@@ -47,6 +50,11 @@ export default function Members() {
     if (!(await confirm('Remove member', `Remove ${m.name} from the group?`, 'Remove', true))) return;
     setEditing(null);
     run(() => deleteMember(gid, m.id), 'Could not remove');
+  };
+
+  const chooseMe = async (m: Member) => {
+    const ok = await confirm('This is me', `Mark ${m.name} as you in this group? You can’t change this later.`, 'This is me');
+    if (ok) run(() => setMe(gid, m.id));
   };
 
   const handleMerge = async (target: Member) => {
@@ -129,6 +137,15 @@ export default function Members() {
         <Button small title="Share group file" onPress={share} loading={sharing} style={{ alignSelf: 'flex-start', marginTop: 10 }} testID="share-group-file" />
       </Card>
 
+      {canChooseMe && (
+        <Card style={{ backgroundColor: colors.primaryLight }} testID="choose-me-hint">
+          <Text style={{ fontWeight: '700', color: colors.primaryDark }}>Which member are you?</Text>
+          <Text style={{ color: colors.primaryDark, marginTop: 4, fontSize: 13 }}>
+            Tap “This is me” on your name. You can only choose once.
+          </Text>
+        </Card>
+      )}
+
       <SectionTitle>{data.members.length} members</SectionTitle>
       {data.members.map((m) => {
         const st = data.stats.find((s) => s.memberId === m.id);
@@ -153,7 +170,7 @@ export default function Members() {
                 <Field label="Name" value={editName} onChangeText={setEditName} testID={`edit-name-${m.id}`} />
                 <Row style={{ gap: 10, flexWrap: 'wrap' }}>
                   <Button small title="Save name" onPress={() => run(async () => { await renameMember(gid, m.id, editName); setEditing(null); })} />
-                  <Button small variant="danger" title="Remove" onPress={() => remove(m)} />
+                  {!m.isMe && <Button small variant="danger" title="Remove" onPress={() => remove(m)} />}
                   <Button small variant="ghost" title="Cancel" onPress={() => setEditing(null)} />
                 </Row>
               </View>
@@ -170,15 +187,17 @@ export default function Members() {
                   }}
                   testID={`edit-member-${m.id}`}
                 />
-                <Button
-                  small
-                  variant="ghost"
-                  title={m.isMe ? 'Not me' : 'This is me'}
-                  style={{ paddingHorizontal: 0 }}
-                  onPress={() => run(() => setMe(gid, m.isMe ? null : m.id))}
-                  testID={`set-me-${m.id}`}
-                />
-                {data.members.length > 1 && (
+                {canChooseMe && (
+                  <Button
+                    small
+                    variant="ghost"
+                    title="This is me"
+                    style={{ paddingHorizontal: 0 }}
+                    onPress={() => chooseMe(m)}
+                    testID={`set-me-${m.id}`}
+                  />
+                )}
+                {data.members.length > 1 && !m.isMe && (
                   <Button
                     small
                     variant="ghost"

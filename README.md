@@ -12,7 +12,7 @@ Built with Expo SDK 57 (React Native 0.86, TypeScript, Expo Router).
 
 | Area | What you get |
 |---|---|
-| **Groups & members** | 160+ currencies, invite by QR code or link, pick which member is you. |
+| **Groups & members** | 160+ currencies, invite by QR code or link. You pick which member you are when you create or join a group, and it stays fixed after that. |
 | **Expenses & splits** | Split equally, unequally, by percentage or by shares, with live validation. Categories, dates, notes, and who added or last edited each entry. |
 | **Payments & settle up** | One-to-one payments and minimal-transfer settle-up suggestions. |
 | **Insights & reports** | Spending trends, category and per-person breakdowns, printable/PDF reports and Excel (.xlsx) export, all generated on the phone. |

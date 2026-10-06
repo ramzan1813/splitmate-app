@@ -414,6 +414,7 @@ export async function mergeMembers(groupId: number, sourceMemberId: number, targ
   if (sourceMemberId === targetMemberId) throw new AppError('Cannot merge a member into themselves');
   const group = await getGroup(groupId);
   const source = await getMemberRow(groupId, sourceMemberId);
+  if (source.is_me) throw new AppError('You can’t merge yourself into another member.');
   await getMemberRow(groupId, targetMemberId);
   const db = await getDb();
   await db.withTransactionAsync(async () => {
@@ -630,19 +631,26 @@ export async function renameMember(groupId: number, memberId: number, rawName: s
   signalLocalChange(group.uid);
 }
 
-/** Marks which member is the phone's owner (or nobody when memberId is null). */
-export async function setMe(groupId: number, memberId: number | null) {
-  if (memberId !== null) await getMemberRow(groupId, memberId);
+/**
+ * Records which member is this phone's owner. Chosen once, when creating or joining a group;
+ * it can only be set while nobody in the group is marked as "me" (e.g. an older group).
+ */
+export async function setMe(groupId: number, memberId: number) {
+  await getMemberRow(groupId, memberId);
   const db = await getDb();
+  const current = await db.getFirstAsync<{ id: number }>('SELECT id FROM members WHERE group_id = ? AND is_me = 1 AND is_deleted = 0', [groupId]);
+  if (current?.id === memberId) return;
+  if (current) throw new AppError('You have already chosen who you are in this group. This can’t be changed.');
   await db.withTransactionAsync(async () => {
     await db.runAsync('UPDATE members SET is_me = 0 WHERE group_id = ?', [groupId]);
-    if (memberId !== null) await db.runAsync('UPDATE members SET is_me = 1 WHERE id = ?', [memberId]);
+    await db.runAsync('UPDATE members SET is_me = 1 WHERE id = ?', [memberId]);
   });
 }
 
 export async function deleteMember(groupId: number, memberId: number) {
   const group = await getGroup(groupId);
   const m = await getMemberRow(groupId, memberId);
+  if (m.is_me) throw new AppError('You can’t remove yourself from the group.');
   const db = await getDb();
   const used =
     (await db.getFirstAsync('SELECT 1 AS x FROM transactions WHERE paid_by = ? AND is_deleted = 0 LIMIT 1', [memberId])) ||

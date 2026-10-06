@@ -1,7 +1,7 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createNodeDb } from './node-db';
-import { migrate, setDb } from '../src/data/db';
+import { getDb, migrate, setDb } from '../src/data/db';
 import * as repo from '../src/data/repo';
 import { computeShares, distribute, memberStats, suggestSettlements } from '../src/data/logic';
 import { exportAll, exportGroup, findExisting, importFile, parseExport } from '../src/data/backup';
@@ -87,10 +87,25 @@ test('edit/delete transaction and members', async () => {
   await repo.renameMember(g.id, z, 'Zain A');
   await repo.deleteMember(g.id, z);
   await assert.rejects(repo.deleteMember(g.id, s), /transactions/);
-  await repo.setMe(g.id, b);
-  assert.equal((await repo.getGroupSummary(g.id)).myMemberId, b);
+  // "Me" is fixed once chosen (the creator here): it can't be switched, removed or merged away
+  await assert.rejects(repo.setMe(g.id, b), /already chosen/);
+  await assert.rejects(repo.deleteMember(g.id, o), /remove yourself/);
+  await assert.rejects(repo.mergeMembers(g.id, o, b), /merge yourself/);
+  assert.equal((await repo.getGroupSummary(g.id)).myMemberId, o);
+  await repo.setMe(g.id, o); // choosing the same member again is a no-op
   await repo.deleteGroup(g.id);
   assert.equal((await repo.listGroups()).length, 0);
+});
+
+test('members: an older group with no "me" lets you choose once', async () => {
+  const { g, o, b } = await seed();
+  const db = await getDb();
+  await db.runAsync('UPDATE members SET is_me = 0 WHERE group_id = ?', [g.id]);
+  assert.equal((await repo.getGroupSummary(g.id)).myMemberId, null);
+
+  await repo.setMe(g.id, b);
+  assert.equal((await repo.getGroupSummary(g.id)).myMemberId, b);
+  await assert.rejects(repo.setMe(g.id, o), /already chosen/);
 });
 
 test('export -> import round trip, duplicates and "me"', async () => {
