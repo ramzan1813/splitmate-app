@@ -11,7 +11,7 @@ export interface DB {
   withTransactionAsync(task: () => Promise<void>): Promise<void>;
 }
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 8;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -153,6 +153,17 @@ const MIGRATIONS: Record<number, string> = {
     DROP INDEX IF EXISTS idx_sync_events_group;
     DROP INDEX IF EXISTS idx_sync_events_synced;
     DROP TABLE IF EXISTS sync_events;
+  `,
+  // When each transaction was created (epoch ms, creating phone's clock); set once, synced, never edited.
+  // Backfill matches the server's: a never-edited transaction's updated_ts is still its creation time.
+  7: `
+    ALTER TABLE transactions ADD COLUMN created_ts INTEGER;
+    UPDATE transactions SET created_ts = updated_ts WHERE updated_by_id = '' AND updated_ts > 0;
+  `,
+  // A group being removed from this phone: 'leave' (member; local only) or 'delete' (admin; erased
+  // on the server). It is hidden at once and erased locally after its queued changes are sent.
+  8: `
+    ALTER TABLE groups ADD COLUMN removal TEXT;
   `,
 };
 

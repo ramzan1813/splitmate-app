@@ -21,12 +21,14 @@ import {
   markOutboxMutationConflict,
   markOutboxMutationFailed,
   markOutboxMutationInFlight,
+  getUnresolvedOutboxMutations,
   removeOutboxMutation,
   requeueOutboxMutations,
   resetInFlightOutboxMutations,
 } from './outbox';
 import {
   getSyncState,
+  hasServerHistory,
   hasUploadMarker,
   initSyncState,
   resetAllSyncBindings,
@@ -44,7 +46,7 @@ import {
   RealtimeNotification,
   ServerChange,
 } from './types';
-import { addMember, buildTxSyncPayload, newUid, setMe } from './repo';
+import { addMember, buildTxSyncPayload, newUid, purgeGroupLocal, setMe, unhideGroup } from './repo';
 import { recordSyncNotification } from './sync';
 
 // ---------- Transport ----------
@@ -70,6 +72,8 @@ export class SyncNetworkError extends Error {
 }
 
 const isNotFound = (err: unknown) => err instanceof SyncHttpError && err.status === 404;
+/** The sync server itself (not a proxy or a wrong URL) says the group does not exist. */
+const isGroupNotFound = (err: unknown) => err instanceof SyncHttpError && err.status === 404 && err.code === 'GROUP_NOT_FOUND';
 
 export interface SyncTransport {
   push(request: PushMutationsRequest): Promise<PushMutationsResponse>;
@@ -348,6 +352,9 @@ export class SyncEngine {
   private async runCycle(groupUid: string): Promise<SyncResult> {
     const db = await this.getEngineDb();
     const deviceId = await getDeviceId();
+    const group = await db.getFirstAsync<{ name: string; removal: string | null }>('SELECT name, removal FROM groups WHERE uid = ?', [groupUid]);
+    // Not on this phone (left, deleted, or never joined) and nothing to send: never pull it back in.
+    if (!group && (await getOutboxCount(groupUid, db)).total === 0) return { ...ZERO };
     if (!(await getSyncState(groupUid, db))) await initSyncState(groupUid, deviceId, db);
 
     if (!this.onlineStatus) {
@@ -358,11 +365,22 @@ export class SyncEngine {
     await setSyncStatus(groupUid, 'syncing', null, db);
     try {
       await this.ensureServerBinding(db);
+      if (group?.removal === 'leave' || group?.removal === 'delete') return await this.finishRemoval(groupUid, group.removal, deviceId, db);
       await this.ensureUploaded(groupUid, db);
       this.realtimeClient?.subscribeGroup(groupUid);
 
       const push = await this.pushPendingMutations(groupUid, deviceId);
-      const pulled = await this.pullRemoteChanges(groupUid);
+      let pulled: number;
+      try {
+        pulled = await this.pullRemoteChanges(groupUid);
+      } catch (err) {
+        // The server had this group and now has no record of it: its admin deleted it.
+        if (isGroupNotFound(err) && (await hasServerHistory(groupUid, db))) {
+          await this.removeDeletedGroup(groupUid, group?.name ?? '', db);
+          return { pushed: push.accepted, pulled: 0, conflicts: push.conflicts };
+        }
+        throw err;
+      }
 
       const counts = await getOutboxCount(groupUid, db);
       await setSyncStatus(groupUid, counts.conflict + counts.failed > 0 ? 'conflict' : 'idle', null, db);
@@ -373,6 +391,52 @@ export class SyncEngine {
       await setSyncStatus(groupUid, err instanceof SyncNetworkError ? 'offline' : 'error', message, db);
       throw err;
     }
+  }
+
+  /**
+   * A group hidden by leave/delete: send what is queued, then erase it from this phone.
+   * leave: this phone's unsent changes are pushed first (they belong to the group everyone else keeps).
+   * delete: the admin's delete is pushed; if the server refuses it, the group comes back with a notice.
+   */
+  private async finishRemoval(groupUid: string, removal: 'leave' | 'delete', deviceId: string, db: DB): Promise<SyncResult> {
+    const push = await this.pushPendingMutations(groupUid, deviceId);
+    if (removal === 'delete') {
+      const refused = (await getUnresolvedOutboxMutations(groupUid, db)).find((m) => m.entityType === 'group' && m.operation === 'delete');
+      if (refused) {
+        await db.withTransactionAsync(async () => {
+          await unhideGroup(db, groupUid);
+          await removeOutboxMutation(refused.clientMutationId, db);
+          await recordSyncNotification(db, { groupUid, authorName: '', title: "Group wasn't deleted", message: refused.errorMessage || 'The server refused the delete.' });
+        });
+        this.emit(this.listeners, groupUid);
+        return { pushed: push.accepted, pulled: 0, conflicts: push.conflicts };
+      }
+    }
+    const counts = await getOutboxCount(groupUid, db);
+    if (counts.pending + counts.sending === 0) {
+      await purgeGroupLocal(groupUid, db);
+      this.realtimeClient?.unsubscribeGroup(groupUid);
+      this.emit(this.listeners, groupUid);
+    }
+    return { pushed: push.accepted, pulled: 0, conflicts: push.conflicts };
+  }
+
+  /**
+   * The admin deleted the group: erase this phone's copy and say so. Changes this phone had not yet
+   * sent can no longer be saved anywhere; the notice states how many were lost.
+   */
+  private async removeDeletedGroup(groupUid: string, name: string, db: DB) {
+    const counts = await getOutboxCount(groupUid, db);
+    await purgeGroupLocal(groupUid, db);
+    const lost = counts.total > 0 ? ` ${counts.total} change${counts.total === 1 ? '' : 's'} from this phone had not synced and could not be saved.` : '';
+    await recordSyncNotification(db, {
+      groupUid,
+      authorName: '',
+      title: 'Group deleted',
+      message: `The admin deleted "${name || 'a group'}". It has been removed from this phone.${lost}`,
+    });
+    this.realtimeClient?.unsubscribeGroup(groupUid);
+    this.emit(this.listeners, groupUid);
   }
 
   /** Cursors and upload markers belong to one server; switching servers re-syncs from scratch. */
@@ -814,6 +878,7 @@ export class SyncEngine {
       p.updatedTs || 0,
       change.entityVersion,
     ];
+    const createdTs = Number.isSafeInteger(p.createdTs) && p.createdTs > 0 ? (p.createdTs as number) : null;
     let txId: number;
     if (existingTx) {
       txId = existingTx.id;
@@ -824,13 +889,15 @@ export class SyncEngine {
          WHERE id = ?`,
         [...values, nowIso, txId]
       );
+      // The server's stored creation time is authoritative; older servers don't send it.
+      if ('createdTs' in p) await db.runAsync('UPDATE transactions SET created_ts = ? WHERE id = ?', [createdTs, txId]);
       await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [txId]);
     } else {
       const ins = await db.runAsync(
         `INSERT INTO transactions (type, title, amount, paid_by, split_type, category, note, date, author_id, author_name,
-                                   updated_by_id, updated_by_name, updated_ts, server_version, group_id, uid, is_deleted, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-        [...values, groupRow.id, change.entityUid, at, nowIso]
+                                   updated_by_id, updated_by_name, updated_ts, server_version, group_id, uid, created_ts, is_deleted, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [...values, groupRow.id, change.entityUid, createdTs, at, nowIso]
       );
       txId = ins.lastInsertRowId;
     }
@@ -916,8 +983,8 @@ export class SyncEngine {
     for (const t of snap.transactions) {
       const r = await db.runAsync(
         `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name,
-                                   updated_by_id, updated_by_name, updated_ts, server_version, is_deleted, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+                                   updated_by_id, updated_by_name, updated_ts, created_ts, server_version, is_deleted, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
         [
           groupId,
           t.uid,
@@ -934,6 +1001,7 @@ export class SyncEngine {
           t.updatedById ?? '',
           t.updatedByName ?? '',
           t.updatedTs ?? 0,
+          t.createdTs ?? null,
           t.serverVersion,
           t.createdAt || nowIso,
           t.updatedAt || nowIso,

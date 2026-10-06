@@ -35,6 +35,8 @@ export interface ExportedGroup {
     note: string;
     date: string;
     createdAt: string;
+    /** Creation time in epoch ms; absent in files exported before it existed. */
+    createdTs?: number | null;
     splits: { member: number; value: number; share: number }[];
   }[];
 }
@@ -70,6 +72,7 @@ async function exportOne(groupId: number): Promise<ExportedGroup> {
       note: t.note,
       date: t.date,
       createdAt: t.createdAt,
+      createdTs: t.createdTs ?? null,
       splits: t.splits.map((s) => ({ member: s.memberId, value: t.splitType === 'unequal' ? fromCents(s.value) : s.value, share: fromCents(s.share) })),
     })),
   };
@@ -188,6 +191,7 @@ export function parseExport(text: string): ExportFile {
         note: str(t.note, LIMITS.note, 'note'),
         date,
         createdAt: str(t.createdAt, 40, 'createdAt') || new Date().toISOString(),
+        createdTs: Number.isSafeInteger(t.createdTs) && Number(t.createdTs) > 0 ? Number(t.createdTs) : null,
         splits,
       };
     });
@@ -273,9 +277,9 @@ export async function importFile(file: ExportFile, opts: ImportOptions): Promise
       }
       for (const t of g.transactions) {
         const tr = await db.runAsync(
-          `INSERT INTO transactions (group_id, type, title, amount, paid_by, split_type, category, note, date, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [gid, t.type, t.title, t.amount, idMap.get(t.paidBy)!, t.splitType, t.category, t.note, t.date, t.createdAt, ts]
+          `INSERT INTO transactions (group_id, type, title, amount, paid_by, split_type, category, note, date, created_ts, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [gid, t.type, t.title, t.amount, idMap.get(t.paidBy)!, t.splitType, t.category, t.note, t.date, t.createdTs ?? null, t.createdAt, ts]
         );
         for (const s of t.splits) {
           await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [

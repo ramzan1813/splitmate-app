@@ -38,6 +38,28 @@ export function prettyDate(iso: string) {
   return `${d} ${MONTHS[m - 1]} ${y}`;
 }
 
+/** Local clock time of an epoch-ms timestamp, e.g. "3:42 PM". */
+export function prettyTime(ts: number) {
+  const d = new Date(ts);
+  const h = d.getHours();
+  // No-break space keeps "3:42 PM" together when the line wraps.
+  return `${h % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+}
+
+/**
+ * A transaction's date plus the time it was created, e.g. "25 Aug 2026 · 3:42 PM".
+ * When it was added on a different day than its date: "25 Aug 2026 · added 6 Oct 2026, 3:42 PM".
+ * Without a known creation time, just the date.
+ */
+export function txWhen(date: string, createdTs?: number | null) {
+  if (!createdTs) return prettyDate(date);
+  const c = new Date(createdTs);
+  const p = (n: number) => String(n).padStart(2, '0');
+  const createdDay = `${c.getFullYear()}-${p(c.getMonth() + 1)}-${p(c.getDate())}`;
+  const time = prettyTime(createdTs);
+  return createdDay === date ? `${prettyDate(date)} · ${time}` : `${prettyDate(date)} · added ${prettyDate(createdDay)}, ${time}`;
+}
+
 export function initials(name: string) {
   return (
     name

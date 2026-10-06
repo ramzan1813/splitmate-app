@@ -1,5 +1,6 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { startTestServer, TestServer } from '../relay/test-support/testServer';
 import { GroupBootstrapResponse, PullChangesResponse, PushMutationsResponse } from '../src/data/types';
 
@@ -640,4 +641,83 @@ test('server sync api: server-authoritative permissions for ADMIN_ONLY, CONTRIBU
   const result3 = (unauthRes3.body as PushMutationsResponse).results[0]!;
   assert.equal(result3.status, 'REJECTED');
   assert.equal(result3.error, 'FORBIDDEN');
+});
+
+test('server sync api: transaction creation time is stored once, kept on updates, and sent to every phone', async () => {
+  const push = async (mutations: unknown[]) =>
+    (await server.call({ method: 'POST', path: '/sync/push', body: { groupUid: 'grp_time', deviceId: 'dev_a', actorId: 'usr_a', actorName: 'Ann', mutations } }))
+      .body as PushMutationsResponse;
+  const tx = (uid: string, extra: Record<string, unknown> = {}) => ({
+    clientMutationId: `mut_${uid}`,
+    entityType: 'transaction',
+    entityUid: uid,
+    operation: 'create',
+    expectedVersion: 0,
+    payload: {
+      type: 'expense',
+      title: uid,
+      amount: 1000,
+      paidByMemberUid: 'mem_ann',
+      date: '2026-10-06',
+      splits: [{ memberUid: 'mem_ann', value: 1, share: 1000 }],
+      ...extra,
+    },
+  });
+  const created = Date.UTC(2026, 9, 6, 9, 30);
+
+  const res = await push([
+    { clientMutationId: 'mut_g', entityType: 'group', entityUid: 'grp_time', operation: 'create', expectedVersion: 0, payload: { name: 'Time', currency: 'USD', creatorId: 'usr_a', creatorName: 'Ann' } },
+    { clientMutationId: 'mut_m', entityType: 'member', entityUid: 'mem_ann', operation: 'create', expectedVersion: 0, payload: { name: 'Ann' } },
+    tx('tx_timed', { createdTs: created }),
+    tx('tx_old_app'),
+    tx('tx_bad', { createdTs: 'yesterday' }),
+  ]);
+  assert.deepEqual(res.results.map((r) => r.status), ['ACCEPTED', 'ACCEPTED', 'ACCEPTED', 'ACCEPTED', 'REJECTED'], 'an invalid time is refused, not replaced');
+
+  // An edit can't move the creation time, and the update change still carries the stored one.
+  const upd = await push([
+    {
+      clientMutationId: 'mut_upd',
+      entityType: 'transaction',
+      entityUid: 'tx_timed',
+      operation: 'update',
+      expectedVersion: 1,
+      payload: { title: 'Renamed', createdTs: created + 999_999 },
+    },
+  ]);
+  assert.equal(upd.results[0]!.status, 'ACCEPTED');
+
+  const snap = (await server.call({ method: 'GET', path: '/sync/bootstrap/grp_time' })).body as GroupBootstrapResponse;
+  const byUid = Object.fromEntries(snap.transactions.map((t) => [t.uid, t.createdTs]));
+  assert.deepEqual(byUid, { tx_timed: created, tx_old_app: null }, 'apps that send no time get "unknown", never an invented one');
+
+  const changes = ((await server.call({ method: 'GET', path: '/sync/changes/grp_time', query: { after: '0' } })).body as PullChangesResponse).changes;
+  const txChanges = changes.filter((c) => c.entityUid === 'tx_timed').map((c) => [c.operation, (c.payload as { createdTs: unknown }).createdTs]);
+  assert.deepEqual(txChanges, [['create', created], ['update', created]]);
+});
+
+test('server sync api: upgrading the database derives creation times for existing transactions like phones do', async () => {
+  const q = async (sql: string, params: unknown[] = []) => (await server.pglite.query<any>(sql, params as any[])).rows;
+  await server.call({
+    method: 'POST',
+    path: '/sync/push',
+    body: {
+      groupUid: 'grp_mig', deviceId: 'dev_a', actorId: 'usr_a', actorName: 'Ann',
+      mutations: [
+        { clientMutationId: 'm_g', entityType: 'group', entityUid: 'grp_mig', operation: 'create', expectedVersion: 0, payload: { name: 'Mig', currency: 'USD', creatorId: 'usr_a', creatorName: 'Ann' } },
+        { clientMutationId: 'm_m', entityType: 'member', entityUid: 'mem_ann', operation: 'create', expectedVersion: 0, payload: { name: 'Ann' } },
+        ...['tx_untouched', 'tx_edited'].map((uid) => ({
+          clientMutationId: `m_${uid}`, entityType: 'transaction', entityUid: uid, operation: 'create', expectedVersion: 0,
+          payload: { type: 'expense', title: uid, amount: 500, paidByMemberUid: 'mem_ann', updatedTs: 1_780_000_000_000, splits: [{ memberUid: 'mem_ann', value: 1, share: 500 }] },
+        })),
+        { clientMutationId: 'm_edit', entityType: 'transaction', entityUid: 'tx_edited', operation: 'update', expectedVersion: 1, payload: { title: 'Edited' } },
+      ],
+    },
+  });
+  // Rows written before the column existed.
+  await q('UPDATE transactions SET created_ts = NULL');
+  await server.pglite.exec(readFileSync('relay/migrations/002_transaction_created_ts.sql', 'utf8'));
+  const rows = Object.fromEntries((await q("SELECT tx_uid, created_ts FROM transactions WHERE group_uid = 'grp_mig'")).map((r) => [r.tx_uid, r.created_ts]));
+  assert.equal(Number(rows.tx_untouched), 1_780_000_000_000, 'never edited: the creating phone’s timestamp');
+  assert.equal(rows.tx_edited, null, 'edited: unknown, matching the phones’ rule');
 });

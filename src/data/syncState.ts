@@ -41,6 +41,13 @@ export async function setUploadMarker(groupUid: string, dbInstance?: DB): Promis
 }
 
 /** Forgets every group's server cursor and upload marker (used when the server URL changes). */
+/** True once this phone has received the group's history from the server (it existed there). */
+export async function hasServerHistory(groupUid: string, dbInstance?: DB): Promise<boolean> {
+  const db = dbInstance ?? (await getDb());
+  const row = await db.getFirstAsync<{ s: number }>('SELECT last_server_sequence AS s FROM sync_state WHERE group_uid = ?', [groupUid]);
+  return (row?.s ?? 0) > 0;
+}
+
 export async function resetAllSyncBindings(dbInstance?: DB): Promise<void> {
   const db = dbInstance ?? (await getDb());
   await db.runAsync(`DELETE FROM settings WHERE key LIKE 'sync.uploaded.%'`, []);

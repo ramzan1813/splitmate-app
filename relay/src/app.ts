@@ -174,7 +174,7 @@ export function createApp(deps: AppDeps) {
         for (const groupUid of groups) {
           await tx.query(
             `INSERT INTO device_group_subscriptions (group_uid, device_id, delivered_sequence)
-             SELECT uid, $2, last_sequence FROM groups WHERE uid = $1 AND is_deleted = false
+             SELECT uid, $2, last_sequence FROM visible_groups WHERE uid = $1 AND is_deleted = false
              ON CONFLICT (group_uid, device_id) DO NOTHING`,
             [groupUid, deviceId]
           );
@@ -182,7 +182,7 @@ export function createApp(deps: AppDeps) {
       });
 
       const subs = await db.query<{ group_uid: string }>(
-        'SELECT group_uid FROM device_group_subscriptions WHERE device_id = $1 ORDER BY group_uid',
+        'SELECT group_uid FROM visible_device_group_subscriptions WHERE device_id = $1 ORDER BY group_uid',
         [deviceId]
       );
       res.json({ deviceId, pushEnabled: expoPushToken != null, groupUids: subs.map((s) => s.group_uid) });
@@ -207,7 +207,7 @@ export function createApp(deps: AppDeps) {
       const secret = generateWebhookSecret();
       const rows = await db.query(
         `INSERT INTO webhook_subscriptions (group_uid, url, secret, delivered_sequence)
-         SELECT uid, $2, $3, last_sequence FROM groups WHERE uid = $1 AND is_deleted = false
+         SELECT uid, $2, $3, last_sequence FROM visible_groups WHERE uid = $1 AND is_deleted = false
          RETURNING id, group_uid, url, is_active, delivered_sequence, created_at`,
         [req.params.groupUid, url, secret]
       );
@@ -221,7 +221,7 @@ export function createApp(deps: AppDeps) {
     '/groups/:groupUid/webhooks',
     requireAdmin,
     withDb(async (req, res, db) => {
-      const rows = await db.query('SELECT * FROM webhook_subscriptions WHERE group_uid = $1 ORDER BY created_at', [req.params.groupUid]);
+      const rows = await db.query('SELECT * FROM visible_webhook_subscriptions WHERE group_uid = $1 ORDER BY created_at', [req.params.groupUid]);
       res.json({ webhooks: rows.map(webhookView) });
     })
   );

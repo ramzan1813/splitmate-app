@@ -225,3 +225,53 @@ test('client sync: a write made while a sync is running is pushed by the same ca
   assert.equal((await getOutboxCount(group.uid)).total, 0);
   assert.equal((await serverRows('SELECT 1 FROM transactions WHERE group_uid = $1', [group.uid])).length, 1);
 });
+
+test('client sync: every phone shows the same creation time and order, including offline adds and edits', async () => {
+  const tick = () => new Promise((r) => setTimeout(r, 5)); // distinct millisecond timestamps
+  const a = use(await device());
+  const group = await repo.createGroup({ name: 'Times', myName: 'Alice', members: ['Bob'] });
+  const [alice, bob] = await repo.getMembers(group.id);
+  const splits = [{ memberId: alice!.id }, { memberId: bob!.id }];
+  const add = (gid: number, title: string, paidBy: number, s = splits) =>
+    repo.createTransaction(gid, { type: 'expense', title, amount: 10, paidBy, splitType: 'equal', splits: s, date: '2026-10-06' });
+  await add(group.id, 'Breakfast', alice!.id);
+  await tick();
+  await add(group.id, 'Lunch', alice!.id);
+  await a.engine.syncGroup(group.uid);
+
+  const b = use(await device());
+  const bGroupId = await b.engine.joinGroup(await b.engine.fetchGroupSnapshot(group.uid), 'Bob');
+  const bMembers = await repo.getMembers(bGroupId);
+  // Bob adds one while offline; it reaches the server much later.
+  b.url = 'http://127.0.0.1:9';
+  await tick();
+  await add(bGroupId, 'Dinner', bMembers[1]!.id, bMembers.map((m) => ({ memberId: m.id })));
+  await assert.rejects(b.engine.syncGroup(group.uid), SyncNetworkError);
+  b.url = server.baseUrl;
+  await tick();
+  await b.engine.syncGroup(group.uid);
+
+  // Bob edits Alice's breakfast: the creation time must not move.
+  const bBreakfast = (await repo.getTransactions(bGroupId)).find((t) => t.title === 'Breakfast')!;
+  await repo.updateTransaction(bGroupId, bBreakfast.id, { type: 'expense', title: 'Brunch', amount: 10, paidBy: bMembers[0]!.id, splitType: 'equal', splits: bMembers.map((m) => ({ memberId: m.id })) });
+  await b.engine.syncGroup(group.uid);
+  const bView = (await repo.getTransactions(bGroupId)).map((t) => [t.uid, t.title, t.createdTs]);
+
+  use(a);
+  await a.engine.syncGroup(group.uid);
+  const aView = (await repo.getTransactions(group.id)).map((t) => [t.uid, t.title, t.createdTs]);
+
+  assert.deepEqual(aView.map((r) => r[1]), ['Dinner', 'Lunch', 'Brunch'], 'same day: newest first');
+  assert.ok(aView.every((r) => typeof r[2] === 'number' && r[2] > 0), 'every transaction has a real creation time');
+  assert.deepEqual(aView, bView, 'both phones agree on every time and on the order');
+  assert.equal(aView[2]![2], bBreakfast.createdTs, 'editing kept the original creation time');
+  for (const [uid, , ts] of aView) {
+    const [row] = await serverRows<{ created_ts: number }>('SELECT created_ts FROM transactions WHERE tx_uid = $1', [uid]);
+    assert.equal(row!.created_ts, ts, 'the server stores the creating phone’s time');
+  }
+
+  // Re-downloading the group from the server keeps the times.
+  use(b);
+  await b.engine.acceptServerVersion(group.uid);
+  assert.deepEqual((await repo.getTransactions((await repo.listGroups())[0]!.id)).map((t) => [t.uid, t.title, t.createdTs]), aView);
+});

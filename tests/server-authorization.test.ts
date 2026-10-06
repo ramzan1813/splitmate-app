@@ -433,7 +433,7 @@ test('server authorization: operations on non-existent or deleted groups are rej
     payload: { title: 'Ghost Expense', amount: 100 },
   });
   assert.equal(resNonExistent.status, 'REJECTED');
-  assert.equal(resNonExistent.error, 'FORBIDDEN');
+  assert.equal(resNonExistent.error, 'GROUP_NOT_FOUND');
 
   // 2. Create group and soft delete it
   const groupUid = 'grp_deleted_test';
@@ -447,7 +447,7 @@ test('server authorization: operations on non-existent or deleted groups are rej
     payload: { name: 'To Be Deleted', creatorId: adminId },
   });
 
-  await pushMutation(groupUid, adminId, 'Alice', {
+  const resDelete = await pushMutation(groupUid, adminId, 'Alice', {
     clientMutationId: 'mut_del_grp_delete',
     entityType: 'group',
     entityUid: groupUid,
@@ -455,6 +455,8 @@ test('server authorization: operations on non-existent or deleted groups are rej
     expectedVersion: 1,
     payload: {},
   });
+
+  assert.equal(resDelete.status, 'ACCEPTED');
 
   // 3. Mutation on deleted group is REJECTED
   const resOnDeleted = await pushMutation(groupUid, adminId, 'Alice', {
@@ -466,5 +468,5 @@ test('server authorization: operations on non-existent or deleted groups are rej
     payload: { title: 'After Delete', amount: 500 },
   });
   assert.equal(resOnDeleted.status, 'REJECTED');
-  assert.equal(resOnDeleted.error, 'FORBIDDEN');
+  assert.equal(resOnDeleted.error, 'GROUP_NOT_FOUND');
 });

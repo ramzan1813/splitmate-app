@@ -21,6 +21,8 @@ export interface SyncTxPayload {
   updatedById?: string;
   updatedByName?: string;
   updatedTs: number;
+  /** Creation time (epoch ms). The server keeps the first value it receives and ignores it on updates. */
+  createdTs?: number;
 }
 
 // ---------- Local change signal ----------

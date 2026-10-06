@@ -2,7 +2,7 @@
 import { Pressable, Text, View } from 'react-native';
 import { Avatar, Card, Row } from './ui';
 import { Transaction } from '@/data/types';
-import { money, prettyDate } from '@/lib/format';
+import { money, txWhen } from '@/lib/format';
 import { categoryIcon, colors } from '@/lib/theme';
 
 interface Props {
@@ -46,7 +46,7 @@ function ExpenseCard({ t, currency: cur, myMemberId, memberName, memberIndex }: 
             <Text style={{ fontWeight: '800', fontSize: 17, color: colors.text }} numberOfLines={2}>
               {t.title}
             </Text>
-            <Text style={{ color: colors.muted, fontSize: 13, marginTop: 3 }}>📅 {prettyDate(t.date)}</Text>
+            <Text style={{ color: colors.muted, fontSize: 13, marginTop: 3 }}>📅 {txWhen(t.date, t.createdTs)}</Text>
           </View>
           <Text style={{ fontWeight: '900', fontSize: 20, color: colors.text, marginLeft: 8 }}>{money(t.amount, cur)}</Text>
         </Row>
@@ -129,7 +129,7 @@ function PaymentCard({ t, currency: cur, myMemberId, memberName, memberIndex }: 
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
             <Text style={{ fontWeight: '800', fontSize: 17, color: colors.text }}>Payment</Text>
-            <Text style={{ color: colors.muted, fontSize: 13, marginTop: 3 }}>📅 {prettyDate(t.date)}</Text>
+            <Text style={{ color: colors.muted, fontSize: 13, marginTop: 3 }}>📅 {txWhen(t.date, t.createdTs)}</Text>
           </View>
           <Text style={{ fontWeight: '900', fontSize: 20, color: colors.positive, marginLeft: 8 }}>{money(t.amount, cur)}</Text>
         </Row>

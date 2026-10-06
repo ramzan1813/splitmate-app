@@ -4,7 +4,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Button, Card, Field, Loading, Row, Screen, SectionTitle } from '@/components/ui';
 import { CurrencyPicker } from '@/components/CurrencyPicker';
 import { useGroup } from '@/lib/useGroup';
-import { deleteGroup, updateGroup } from '@/data/repo';
+import { deleteGroup, isGroupAdmin, leaveGroup, updateGroup } from '@/data/repo';
 import { GroupSummary, PermissionModel } from '@/data/types';
 import { confirm, errorMessage, notify } from '@/lib/dialog';
 import { colors } from '@/lib/theme';
@@ -25,6 +25,7 @@ function GroupSettings({ id, data, reload }: { id: string; data: GroupSummary; r
   const [saving, setSaving] = useState(false);
 
   const isCreator = data.isCreator;
+  const isAdmin = isGroupAdmin(data.group, data.myIdentityId);
 
   const save = async () => {
     setSaving(true);
@@ -40,12 +41,34 @@ function GroupSettings({ id, data, reload }: { id: string; data: GroupSummary; r
   };
 
   const remove = async () => {
-    if (!(await confirm('Delete group', `Permanently delete "${data.group.name}" and all its expenses from this phone?`, 'Delete', true))) return;
+    const ok = await confirm(
+      'Delete group for everyone',
+      `Permanently delete "${data.group.name}" with all its expenses, payments and members — for every member, on every phone and on the server. This can't be undone.`,
+      'Delete for everyone',
+      true
+    );
+    if (!ok) return;
     try {
       await deleteGroup(Number(id));
       router.dismissTo('/');
     } catch (e) {
       notify('Could not delete', errorMessage(e));
+    }
+  };
+
+  const leave = async () => {
+    const ok = await confirm(
+      'Leave group',
+      `Remove "${data.group.name}" from this phone? Nothing changes for the other members, and you can rejoin with an invite link.`,
+      'Leave',
+      true
+    );
+    if (!ok) return;
+    try {
+      await leaveGroup(Number(id));
+      router.dismissTo('/');
+    } catch (e) {
+      notify('Could not leave', errorMessage(e));
     }
   };
 
@@ -137,7 +160,21 @@ function GroupSettings({ id, data, reload }: { id: string; data: GroupSummary; r
       )}
       
       <SectionTitle>Danger zone</SectionTitle>
-      <Button title="Delete group" variant="danger" onPress={remove} testID="delete-group" />
+      {isAdmin ? (
+        <>
+          <Button title="Delete group" variant="danger" onPress={remove} testID="delete-group" />
+          <Text style={{ color: colors.muted, fontSize: 12, marginTop: 6 }}>
+            As the admin you can delete the group. This erases it for every member.
+          </Text>
+        </>
+      ) : (
+        <>
+          <Button title="Leave group" variant="danger" onPress={leave} testID="leave-group" />
+          <Text style={{ color: colors.muted, fontSize: 12, marginTop: 6 }}>
+            Removes the group from this phone only. You can rejoin with an invite link.
+          </Text>
+        </>
+      )}
     </Screen>
   );
 }

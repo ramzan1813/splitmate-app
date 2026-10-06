@@ -3,7 +3,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Avatar, Button, Card, Empty, Loading, Row, Screen, SectionTitle } from '@/components/ui';
 import { useGroup } from '@/lib/useGroup';
 import { deleteTransaction, getGroupPermissions } from '@/data/repo';
-import { money, prettyDate } from '@/lib/format';
+import { money, txWhen } from '@/lib/format';
 import { categoryIcon, colors } from '@/lib/theme';
 import { confirm, errorMessage, notify } from '@/lib/dialog';
 
@@ -52,7 +52,7 @@ export default function TransactionDetail() {
           </View>
         </Row>
         <Text style={{ color: colors.white, fontSize: 34, fontWeight: '900', marginTop: 16 }}>{money(tx.amount, cur)}</Text>
-        <Text style={{ color: 'rgba(255,255,255,0.85)', marginTop: 2 }}>📅 {prettyDate(tx.date)}</Text>
+        <Text style={{ color: 'rgba(255,255,255,0.85)', marginTop: 2 }}>📅 {txWhen(tx.date, tx.createdTs)}</Text>
       </View>
 
       {isPayment ? (

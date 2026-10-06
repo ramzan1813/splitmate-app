@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
-import { Modal, Platform, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
+import { Animated, Modal, PanResponder, Platform, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Avatar, Button, Card, Empty, HeaderButton, Loading, Row, Segmented, SectionTitle } from '@/components/ui';
 import { PieChart } from '@/components/PieChart';
@@ -10,12 +10,17 @@ import * as Clipboard from 'expo-clipboard';
 import { useGroup, useSyncStatus } from '@/lib/useGroup';
 import { GroupSyncStatus, syncEngine } from '@/data/syncEngine';
 import { getUnresolvedOutboxMutations } from '@/data/outbox';
+import { GROUP_NOT_FOUND } from '@/data/repo';
 import { DEFAULT_SERVER_URL, getServerUrl } from '@/lib/identity';
 import { money } from '@/lib/format';
+import { dragOffset, isHorizontalSwipe, swipeDirection } from '@/lib/swipeTabs';
 import { colors, colorFor } from '@/lib/theme';
 import { confirm, errorMessage, notify } from '@/lib/dialog';
 
 type Tab = 'transactions' | 'balances' | 'settle' | 'chart';
+/** Order of the tabs in the segmented bar; swiping left/right moves through this list. */
+const TABS: Tab[] = ['transactions', 'balances', 'settle', 'chart'];
+const useNativeDriver = Platform.OS !== 'web';
 
 export default function GroupScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -33,6 +38,30 @@ export default function GroupScreen() {
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  // Horizontal swipe switches tabs. Only claims clearly horizontal drags, so vertical scrolling and taps still work.
+  const { width } = useWindowDimensions();
+  const [slide] = useState(() => new Animated.Value(0));
+  const swipe = useMemo(() => {
+    const index = TABS.indexOf(tab);
+    const springBack = () => Animated.spring(slide, { toValue: 0, useNativeDriver }).start();
+    return PanResponder.create({
+      onMoveShouldSetPanResponderCapture: (_, g) => isHorizontalSwipe(g.dx, g.dy),
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderMove: (_, g) => slide.setValue(dragOffset(TABS.length, index, g.dx)),
+      onPanResponderRelease: (_, g) => {
+        const dir = swipeDirection(TABS.length, index, g.dx, g.vx);
+        const next = TABS[index + dir];
+        if (!dir || !next) return springBack();
+        Animated.timing(slide, { toValue: -dir * width, duration: 140, useNativeDriver }).start(() => {
+          setTab(next);
+          slide.setValue(dir * width);
+          Animated.timing(slide, { toValue: 0, duration: 180, useNativeDriver }).start();
+        });
+      },
+      onPanResponderTerminate: springBack,
+    });
+  }, [tab, slide, width]);
 
   useLayoutEffect(() => {
     nav.setOptions({
@@ -86,6 +115,13 @@ export default function GroupScreen() {
   }, [data, chartMode, memberIndex]);
 
   if (!data) {
+    if (error === GROUP_NOT_FOUND) {
+      return (
+        <Empty title="This group is no longer here" subtitle="It was deleted by its admin or removed from this phone.">
+          <Button title="Back to groups" onPress={() => router.dismissTo('/')} testID="group-gone-home" />
+        </Empty>
+      );
+    }
     return error ? <Empty title="Couldn't load group" subtitle={error}><Button title="Retry" onPress={reload} /></Empty> : <Loading />;
   }
 
@@ -93,158 +129,173 @@ export default function GroupScreen() {
 
   return (
     <View style={{ flex: 1 }}>
-      <ScrollView
-        contentContainerStyle={{ padding: 16, paddingBottom: 120, maxWidth: 760, width: '100%', alignSelf: 'center' }}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={async () => {
-              setRefreshing(true);
-              await refresh();
-              setRefreshing(false);
-            }}
-          />
-        }
-      >
-        {/* Summary header */}
-        <View style={{ backgroundColor: colors.primary, borderRadius: 16, padding: 16, marginBottom: 14 }}>
-          <Row style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-            <Text style={{ color: colors.primaryLight, fontSize: 13 }}>Total group spending</Text>
-            <SyncBadge status={syncStatus} groupUid={data.group.uid} onRefresh={refresh} />
-          </Row>
-          <Text style={{ color: '#fff', fontSize: 28, fontWeight: '800' }} testID="total-spending">
-            {money(data.totals.totalExpenses, cur)}
-          </Text>
-          {me && (
-            <Text style={{ color: '#fff', marginTop: 6 }} testID="my-balance">
-              {me.balance > 0
-                ? `You get back ${money(me.balance, cur)}`
-                : me.balance < 0
-                  ? `You owe ${money(-me.balance, cur)}`
-                  : 'You are all settled up'}
+      <View style={{ flex: 1 }} {...swipe.panHandlers}>
+        <ScrollView
+          contentContainerStyle={{ padding: 16, paddingBottom: 120, maxWidth: 760, width: '100%', alignSelf: 'center' }}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={async () => {
+                setRefreshing(true);
+                await refresh();
+                setRefreshing(false);
+              }}
+            />
+          }
+        >
+          {/* Summary header */}
+          <View style={{ backgroundColor: colors.primary, borderRadius: 16, padding: 16, marginBottom: 14 }}>
+            <Row style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={{ color: colors.primaryLight, fontSize: 13 }}>Total group spending</Text>
+              <SyncBadge status={syncStatus} groupUid={data.group.uid} onRefresh={refresh} />
+            </Row>
+            <Text style={{ color: '#fff', fontSize: 28, fontWeight: '800' }} testID="total-spending">
+              {money(data.totals.totalExpenses, cur)}
             </Text>
-          )}
-          {!me && (
-            <Pressable onPress={() => router.push(`/group/${id}/members`)}>
-              <Text style={{ color: colors.primaryLight, marginTop: 6, textDecorationLine: 'underline' }}>Tap to choose which member is you</Text>
-            </Pressable>
-          )}
-        </View>
+            <Row style={{ marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.2)', justifyContent: 'space-between' }}>
+              <Text style={{ color: colors.primaryLight, fontSize: 13, flex: 1, marginRight: 8 }}>Group balance</Text>
+              <Text
+                style={{ color: data.totals.groupBalance < 0 ? '#FECACA' : '#fff', fontSize: 16, fontWeight: '800' }}
+                numberOfLines={1}
+                testID="group-balance"
+                accessibilityLabel={`Group balance ${money(data.totals.groupBalance, cur)}: payments ${money(data.totals.totalPayments, cur)} minus expenses`}
+              >
+                {money(data.totals.groupBalance, cur)}
+              </Text>
+            </Row>
+            {me && (
+              <Text style={{ color: '#fff', marginTop: 6 }} testID="my-balance">
+                {me.balance > 0
+                  ? `You get back ${money(me.balance, cur)}`
+                  : me.balance < 0
+                    ? `You owe ${money(-me.balance, cur)}`
+                    : 'You are all settled up'}
+              </Text>
+            )}
+            {!me && (
+              <Pressable onPress={() => router.push(`/group/${id}/members`)}>
+                <Text style={{ color: colors.primaryLight, marginTop: 6, textDecorationLine: 'underline' }}>Tap to choose which member is you</Text>
+              </Pressable>
+            )}
+          </View>
 
-        <Segmented<Tab>
-          value={tab}
-          onChange={setTab}
-          options={[
-            { value: 'transactions', label: 'Expenses' },
-            { value: 'balances', label: 'Balances' },
-            { value: 'settle', label: 'Settle up' },
-            { value: 'chart', label: 'Chart' },
-          ]}
-        />
+          <Segmented<Tab>
+            value={tab}
+            onChange={setTab}
+            options={[
+              { value: 'transactions', label: 'Expenses' },
+              { value: 'balances', label: 'Balances' },
+              { value: 'settle', label: 'Settle up' },
+              { value: 'chart', label: 'Chart' },
+            ]}
+          />
 
-        {tab === 'transactions' &&
-          (data.transactions.length === 0 ? (
-            <Empty title="No expenses yet" subtitle='Tap “Add expense” to record the first one.' />
-          ) : (
-            data.transactions.map((t) => (
-              <TransactionCard
-                key={t.id}
-                t={t}
-                currency={cur}
-                myMemberId={data.myMemberId}
-                memberName={memberName}
-                memberIndex={memberIndex}
-                onPress={() => router.push(`/group/${id}/transaction/${t.id}`)}
-              />
-            ))
-          ))}
+          <Animated.View style={{ transform: [{ translateX: slide }] }} testID="group-tab-content">
+            {tab === 'transactions' &&
+              (data.transactions.length === 0 ? (
+                <Empty title="No expenses yet" subtitle='Tap “Add expense” to record the first one.' />
+              ) : (
+                data.transactions.map((t) => (
+                  <TransactionCard
+                    key={t.id}
+                    t={t}
+                    currency={cur}
+                    myMemberId={data.myMemberId}
+                    memberName={memberName}
+                    memberIndex={memberIndex}
+                    onPress={() => router.push(`/group/${id}/transaction/${t.id}`)}
+                  />
+                ))
+              ))}
 
-        {tab === 'balances' &&
-          data.stats.map((s) => (
-            <Card key={s.memberId}>
-              <Row>
-                <Avatar name={s.name} index={memberIndex(s.memberId)} />
-                <View style={{ flex: 1, marginLeft: 12 }}>
-                  <Text style={{ fontWeight: '700', fontSize: 15 }}>
-                    {s.name}
-                    {s.memberId === data.myMemberId ? ' (you)' : ''}
-                  </Text>
-                  <Text style={{ color: s.balance > 0 ? colors.positive : s.balance < 0 ? colors.negative : colors.muted, fontWeight: '700', marginTop: 2 }}>
-                    {s.balance > 0 ? `gets back ${money(s.balance, cur)}` : s.balance < 0 ? `owes ${money(-s.balance, cur)}` : 'settled up'}
-                  </Text>
-                </View>
-              </Row>
-              <View style={{ flexDirection: 'row', marginTop: 12, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 }}>
-                <Stat label="Expenses paid" value={money(s.totalPaid, cur)} />
-                <Stat label="Share (benefit)" value={money(s.totalBenefit, cur)} />
-                <Stat label="Paid / Received" value={`${money(s.paymentsMade, cur)} / ${money(s.paymentsReceived, cur)}`} />
-              </View>
-            </Card>
-          ))}
+            {tab === 'balances' &&
+              data.stats.map((s) => (
+                <Card key={s.memberId}>
+                  <Row>
+                    <Avatar name={s.name} index={memberIndex(s.memberId)} />
+                    <View style={{ flex: 1, marginLeft: 12 }}>
+                      <Text style={{ fontWeight: '700', fontSize: 15 }}>
+                        {s.name}
+                        {s.memberId === data.myMemberId ? ' (you)' : ''}
+                      </Text>
+                      <Text style={{ color: s.balance > 0 ? colors.positive : s.balance < 0 ? colors.negative : colors.muted, fontWeight: '700', marginTop: 2 }}>
+                        {s.balance > 0 ? `gets back ${money(s.balance, cur)}` : s.balance < 0 ? `owes ${money(-s.balance, cur)}` : 'settled up'}
+                      </Text>
+                    </View>
+                  </Row>
+                  <View style={{ flexDirection: 'row', marginTop: 12, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 }}>
+                    <Stat label="Expenses paid" value={money(s.totalPaid, cur)} />
+                    <Stat label="Share (benefit)" value={money(s.totalBenefit, cur)} />
+                    <Stat label="Paid / Received" value={`${money(s.paymentsMade, cur)} / ${money(s.paymentsReceived, cur)}`} />
+                  </View>
+                </Card>
+              ))}
 
-        {tab === 'settle' && (
-          <>
-            {data.settlements.length === 0 ? (
-              <Empty title="All settled up 🎉" subtitle="Nobody owes anything right now." />
-            ) : (
+            {tab === 'settle' && (
               <>
-                <SectionTitle>Suggested payments</SectionTitle>
-                {data.settlements.map((x, i) => (
-                  <Card key={i}>
-                    <Row>
-                      <Avatar name={memberName(x.from)} index={memberIndex(x.from)} size={34} />
-                      <View style={{ flex: 1, marginHorizontal: 10 }}>
-                        <Text style={{ fontWeight: '600' }}>
-                          <Text style={{ fontWeight: '800' }}>{memberName(x.from)}</Text> pays <Text style={{ fontWeight: '800' }}>{memberName(x.to)}</Text>
-                        </Text>
-                        <Text style={{ color: colors.negative, fontWeight: '800', fontSize: 16, marginTop: 2 }}>{money(x.amount, cur)}</Text>
-                      </View>
-                      {(
-                        <Button
-                          small
-                          title="Settle"
-                          testID={`settle-${i}`}
-                          onPress={() => router.push(`/group/${id}/payment?from=${x.from}&to=${x.to}&amount=${(x.amount / 100).toFixed(2)}`)}
-                        />
-                      )}
-                    </Row>
-                  </Card>
-                ))}
+                {data.settlements.length === 0 ? (
+                  <Empty title="All settled up 🎉" subtitle="Nobody owes anything right now." />
+                ) : (
+                  <>
+                    <SectionTitle>Suggested payments</SectionTitle>
+                    {data.settlements.map((x, i) => (
+                      <Card key={i}>
+                        <Row>
+                          <Avatar name={memberName(x.from)} index={memberIndex(x.from)} size={34} />
+                          <View style={{ flex: 1, marginHorizontal: 10 }}>
+                            <Text style={{ fontWeight: '600' }}>
+                              <Text style={{ fontWeight: '800' }}>{memberName(x.from)}</Text> pays <Text style={{ fontWeight: '800' }}>{memberName(x.to)}</Text>
+                            </Text>
+                            <Text style={{ color: colors.negative, fontWeight: '800', fontSize: 16, marginTop: 2 }}>{money(x.amount, cur)}</Text>
+                          </View>
+                          {(
+                            <Button
+                              small
+                              title="Settle"
+                              testID={`settle-${i}`}
+                              onPress={() => router.push(`/group/${id}/payment?from=${x.from}&to=${x.to}&amount=${(x.amount / 100).toFixed(2)}`)}
+                            />
+                          )}
+                        </Row>
+                      </Card>
+                    ))}
+                  </>
+                )}
               </>
             )}
-          </>
-        )}
 
-        {tab === 'chart' && (
-          <Card>
-            <Segmented
-              value={chartMode}
-              onChange={setChartMode}
-              options={[
-                { value: 'share', label: 'Share' },
-                { value: 'paid', label: 'Paid' },
-                { value: 'category', label: 'Category' },
-              ]}
-            />
-            <PieChart data={chartData} centerLabel={chartMode === 'category' ? 'By category' : chartMode === 'paid' ? 'Paid' : 'Spent on'} centerValue={money(chartTotal, cur)} />
-            <View style={{ marginTop: 16 }}>
-              {chartData.map((d) => (
-                <Row key={d.label} style={{ paddingVertical: 6 }}>
-                  <View style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: d.color, marginRight: 10 }} />
-                  <Text style={{ flex: 1, color: colors.text }}>{d.label}</Text>
-                  <Text style={{ color: colors.muted, marginRight: 10 }}>{chartTotal ? Math.round((d.value / chartTotal) * 1000) / 10 : 0}%</Text>
-                  <Text style={{ fontWeight: '700' }}>{money(d.value, cur)}</Text>
-                </Row>
-              ))}
-            </View>
-          </Card>
-        )}
+            {tab === 'chart' && (
+              <Card>
+                <Segmented
+                  value={chartMode}
+                  onChange={setChartMode}
+                  options={[
+                    { value: 'share', label: 'Share' },
+                    { value: 'paid', label: 'Paid' },
+                    { value: 'category', label: 'Category' },
+                  ]}
+                />
+                <PieChart data={chartData} centerLabel={chartMode === 'category' ? 'By category' : chartMode === 'paid' ? 'Paid' : 'Spent on'} centerValue={money(chartTotal, cur)} />
+                <View style={{ marginTop: 16 }}>
+                  {chartData.map((d) => (
+                    <Row key={d.label} style={{ paddingVertical: 6 }}>
+                      <View style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: d.color, marginRight: 10 }} />
+                      <Text style={{ flex: 1, color: colors.text }}>{d.label}</Text>
+                      <Text style={{ color: colors.muted, marginRight: 10 }}>{chartTotal ? Math.round((d.value / chartTotal) * 1000) / 10 : 0}%</Text>
+                      <Text style={{ fontWeight: '700' }}>{money(d.value, cur)}</Text>
+                    </Row>
+                  ))}
+                </View>
+              </Card>
+            )}
+          </Animated.View>
 
-        <Row style={{ gap: 10, marginTop: 8 }}>
-          <Button title="📊 Insights" variant="outline" onPress={() => router.push(`/insights?groupId=${id}`)} style={{ flex: 1 }} testID="open-group-insights" />
-          <Button title="📄 Report & export" variant="outline" onPress={() => router.push(`/group/${id}/report`)} style={{ flex: 1 }} testID="open-report" />
-        </Row>
-      </ScrollView>
+          <Row style={{ gap: 10, marginTop: 8 }}>
+            <Button title="📊 Insights" variant="outline" onPress={() => router.push(`/insights?groupId=${id}`)} style={{ flex: 1 }} testID="open-group-insights" />
+            <Button title="📄 Report & export" variant="outline" onPress={() => router.push(`/group/${id}/report`)} style={{ flex: 1 }} testID="open-report" />
+          </Row>
+        </ScrollView>
+      </View>
 
       {/* Responsive Bottom Floating Action Bar */}
       <View

@@ -41,7 +41,15 @@ test('sync foundation: device ID is stable, persistent, and idempotent', async (
 test('sync foundation: schema migrations establish all required sync tables and columns', async () => {
   const db = await getDb();
   const v = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version', []);
-  assert.equal(v?.user_version, 6, 'Schema version must be 6');
+  assert.equal(v?.user_version, 8, 'Schema version must be 8');
+
+  // Transactions carry their synced creation time
+  const txCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(transactions)', []);
+  assert.ok(txCols.some((c) => c.name === 'created_ts'));
+
+  // Groups can be hidden while a leave/delete finishes syncing
+  const groupCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(groups)', []);
+  assert.ok(groupCols.some((c) => c.name === 'removal'));
 
   // The old relay's event log is gone
   const legacy = await db.getFirstAsync("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sync_events'", []);

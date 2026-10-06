@@ -1,6 +1,6 @@
 // All reads/writes of app data. Money is stored as integer cents.
 import { DB, getDb, Param } from './db';
-import { computeShares, memberStats, suggestSettlements } from './logic';
+import { computeShares, groupCashTotals, memberStats, suggestSettlements } from './logic';
 import { AppError, Group, GroupListItem, GroupSummary, Member, Split, Transaction, TxInput, TxType } from './types';
 import { CATEGORIES } from '../lib/theme';
 import { CURRENCIES } from '../lib/currencies';
@@ -100,6 +100,7 @@ interface TxRow {
   updated_by_id?: string;
   updated_by_name?: string;
   updated_ts?: number;
+  created_ts?: number | null;
   server_version?: number;
   is_deleted?: number;
   deleted_at?: string | null;
@@ -177,10 +178,13 @@ export async function removeCustomCategory(name: string) {
 }
 
 // ---------- groups ----------
+/** Message of the error getGroup throws for a group that is not (or no longer) on this phone. */
+export const GROUP_NOT_FOUND = 'Group not found';
+
 export async function getGroup(id: number): Promise<Group> {
   const db = await getDb();
   const g = await db.getFirstAsync<GroupRow>('SELECT * FROM groups WHERE id = ? AND is_deleted = 0', [id]);
-  if (!g) throw new AppError('Group not found');
+  if (!g) throw new AppError(GROUP_NOT_FOUND);
   return mapGroup(g);
 }
 
@@ -197,7 +201,7 @@ export async function getTransactions(groupId?: number): Promise<Transaction[]> 
   const db = await getDb();
   const where = groupId ? 'WHERE t.group_id = ? AND t.is_deleted = 0' : 'WHERE t.is_deleted = 0';
   const params: Param[] = groupId ? [groupId] : [];
-  const rows = await db.getAllAsync<TxRow>(`SELECT t.* FROM transactions t ${where} ORDER BY t.date DESC, t.id DESC`, params);
+  const rows = await db.getAllAsync<TxRow>(`SELECT t.* FROM transactions t ${where} ORDER BY t.date DESC, t.created_ts IS NULL, t.created_ts DESC, t.id DESC`, params);
   const splits = await db.getAllAsync<{ transaction_id: number; member_id: number; value: number; share: number }>(
     `SELECT s.* FROM transaction_splits s JOIN transactions t ON t.id = s.transaction_id ${where}`,
     params
@@ -224,6 +228,7 @@ export async function getTransactions(groupId?: number): Promise<Transaction[]> 
     updatedById: t.updated_by_id,
     updatedByName: t.updated_by_name,
     updatedTs: t.updated_ts,
+    createdTs: t.created_ts ?? null,
     serverVersion: t.server_version ?? 1,
     isDeleted: Boolean(t.is_deleted),
     deletedAt: t.deleted_at ?? undefined,
@@ -262,19 +267,20 @@ export async function getGroupSummary(id: number): Promise<GroupSummary> {
   const perms = getGroupPermissions(group, identity.id);
 
   const categories: Record<string, number> = {};
-  let totalExpenses = 0;
   for (const t of transactions) {
     if (t.type !== 'expense') continue;
-    totalExpenses += t.amount;
     categories[t.category] = (categories[t.category] || 0) + t.amount;
   }
+  const cash = groupCashTotals(transactions);
   return {
     group,
     members,
     stats,
     settlements: suggestSettlements(stats),
     totals: {
-      totalExpenses,
+      totalExpenses: cash.totalExpenses,
+      totalPayments: cash.totalPayments,
+      groupBalance: cash.balance,
       expenseCount: transactions.filter((t) => t.type === 'expense').length,
       paymentCount: transactions.filter((t) => t.type === 'payment').length,
     },
@@ -407,6 +413,7 @@ export async function buildTxSyncPayload(db: DB, txId: number): Promise<SyncTxPa
     ...(t.updated_by_id ? { updatedById: t.updated_by_id, updatedByName: t.updated_by_name } : {}),
     splits: splits.map((s) => ({ memberName: s.name, memberUid: s.uid || undefined, value: s.value, share: s.share })),
     updatedTs: t.updated_ts || Date.parse(t.updated_at) || Date.now(),
+    ...(t.created_ts ? { createdTs: t.created_ts } : {}),
   };
 }
 
@@ -530,17 +537,62 @@ export async function updateGroup(
   return getGroup(id);
 }
 
+/** The group admin is its creator. Only the admin can delete a group; everyone else can leave it. */
+export function isGroupAdmin(group: Pick<Group, 'creatorId'>, currentUserId: string) {
+  return !!group.creatorId && group.creatorId === currentUserId;
+}
+
+/** Hides a group and its records at once; they stay on the phone until its queued changes are sent. */
+async function hideGroup(db: DB, groupId: number, removal: 'leave' | 'delete') {
+  const ts = now();
+  await db.runAsync('UPDATE groups SET is_deleted = 1, deleted_at = ?, removal = ?, updated_at = ? WHERE id = ?', [ts, removal, ts, groupId]);
+  await db.runAsync('UPDATE members SET is_deleted = 1, deleted_at = ? WHERE group_id = ? AND is_deleted = 0', [ts, groupId]);
+  await db.runAsync('UPDATE transactions SET is_deleted = 1, deleted_at = ?, updated_at = ? WHERE group_id = ? AND is_deleted = 0', [ts, ts, groupId]);
+}
+
+/** Undoes hideGroup (only the records it hid) when the server refuses an admin's delete. */
+export async function unhideGroup(db: DB, groupUid: string) {
+  const g = await db.getFirstAsync<{ id: number; deleted_at: string | null }>('SELECT id, deleted_at FROM groups WHERE uid = ?', [groupUid]);
+  if (!g?.deleted_at) return;
+  await db.runAsync('UPDATE members SET is_deleted = 0, deleted_at = NULL WHERE group_id = ? AND deleted_at = ?', [g.id, g.deleted_at]);
+  await db.runAsync('UPDATE transactions SET is_deleted = 0, deleted_at = NULL WHERE group_id = ? AND deleted_at = ?', [g.id, g.deleted_at]);
+  await db.runAsync('UPDATE groups SET is_deleted = 0, deleted_at = NULL, removal = NULL WHERE id = ?', [g.id]);
+}
+
+/** Erases every local record of a group: data, queued changes, sync state and notifications. */
+export async function purgeGroupLocal(groupUid: string, dbInstance?: DB) {
+  const db = dbInstance ?? (await getDb());
+  await db.withTransactionAsync(async () => {
+    const g = await db.getFirstAsync<{ id: number }>('SELECT id FROM groups WHERE uid = ?', [groupUid]);
+    if (g) {
+      await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id IN (SELECT id FROM transactions WHERE group_id = ?)', [g.id]);
+      await db.runAsync('DELETE FROM transactions WHERE group_id = ?', [g.id]);
+      await db.runAsync('DELETE FROM members WHERE group_id = ?', [g.id]);
+      await db.runAsync('DELETE FROM groups WHERE id = ?', [g.id]);
+    }
+    await db.runAsync('DELETE FROM outbox_mutations WHERE group_uid = ?', [groupUid]);
+    await db.runAsync('DELETE FROM sync_state WHERE group_uid = ?', [groupUid]);
+    await db.runAsync('DELETE FROM sync_notifications WHERE group_uid = ?', [groupUid]);
+    await db.runAsync('DELETE FROM settings WHERE key = ?', [`sync.uploaded.${groupUid}`]);
+  });
+}
+
+/**
+ * Admin only: deletes the group for everyone. It disappears from this phone at once; the delete is
+ * queued (works offline) and, once the server accepts it, every record is erased there and here.
+ * Other members' phones erase their copy on their next sync.
+ */
 export async function deleteGroup(id: number) {
   const db = await getDb();
-  const g = await db.getFirstAsync<GroupRow>('SELECT * FROM groups WHERE id = ?', [id]);
+  const g = await db.getFirstAsync<GroupRow>('SELECT * FROM groups WHERE id = ? AND is_deleted = 0', [id]);
   if (!g) return;
+  const identity = await getIdentity();
+  if (!isGroupAdmin(mapGroup(g), identity.id)) throw new AppError('Only the group admin can delete this group. You can leave it instead.');
 
-  const ts = now();
   await db.withTransactionAsync(async () => {
-    await db.runAsync('UPDATE groups SET is_deleted = 1, deleted_at = ?, updated_at = ? WHERE id = ?', [ts, ts, id]);
-    await db.runAsync('UPDATE members SET is_deleted = 1, deleted_at = ? WHERE group_id = ?', [ts, id]);
-    await db.runAsync('UPDATE transactions SET is_deleted = 1, deleted_at = ?, updated_at = ? WHERE group_id = ?', [ts, ts, id]);
-
+    await hideGroup(db, id, 'delete');
+    // This phone's unsent edits would be erased with the group anyway.
+    await db.runAsync('DELETE FROM outbox_mutations WHERE group_uid = ?', [g.uid]);
     await enqueueOutboxMutation(
       {
         clientMutationId: `mut_${newUid()}`,
@@ -555,6 +607,26 @@ export async function deleteGroup(id: number) {
     );
   });
   signalLocalChange(g.uid);
+}
+
+/**
+ * Members only: removes the group from this phone, nothing changes for anyone else (they can rejoin
+ * with an invite). It disappears at once; changes not yet sent are pushed first, then it is erased.
+ */
+export async function leaveGroup(id: number) {
+  const db = await getDb();
+  const g = await db.getFirstAsync<GroupRow>('SELECT * FROM groups WHERE id = ? AND is_deleted = 0', [id]);
+  if (!g) return;
+  const identity = await getIdentity();
+  if (isGroupAdmin(mapGroup(g), identity.id)) throw new AppError('You are the admin of this group. Delete it instead.');
+
+  await db.withTransactionAsync(() => hideGroup(db, id, 'leave'));
+  const unsent = await db.getFirstAsync<{ c: number }>(
+    "SELECT COUNT(*) AS c FROM outbox_mutations WHERE group_uid = ? AND status IN ('pending', 'sending')",
+    [g.uid]
+  );
+  if (!unsent?.c) await purgeGroupLocal(g.uid, db);
+  else signalLocalChange(g.uid);
 }
 
 // ---------- members ----------
@@ -744,14 +816,15 @@ export async function createTransaction(groupId: number, body: TxInput) {
     authorName: myDisplayName,
     splits: t.shares.map((s) => ({ memberName: memberMap.get(s.memberId) || 'Unknown', memberUid: memberUids.get(s.memberId), value: s.value, share: s.share })),
     updatedTs,
+    createdTs: updatedTs,
   };
 
   await db.withTransactionAsync(async () => {
     const ts = now();
     const r = await db.runAsync(
-      `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, updated_ts, server_version, is_deleted, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
-      [groupId, txUid, t.type, t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, identity.id, myDisplayName, updatedTs, ts, ts]
+      `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, updated_ts, created_ts, server_version, is_deleted, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
+      [groupId, txUid, t.type, t.title, t.amount, t.paidBy, t.splitType, t.category, t.note, t.date, identity.id, myDisplayName, updatedTs, updatedTs, ts, ts]
     );
     id = r.lastInsertRowId;
     for (const s of t.shares) {

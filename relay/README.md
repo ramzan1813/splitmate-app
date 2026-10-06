@@ -22,11 +22,14 @@ other phone ──GET /sync/changes/:groupUid?after=<cursor>──▶ Worker
 | Server sequence | `groups.last_sequence`, incremented under the group row lock in the same transaction as the `sync_changes` insert. Sequences become visible in commit order, so `after=N` never skips a change. |
 | Retry | `clientMutationId` is idempotent. The first outcome (ACCEPTED, CONFLICT or REJECTED) is stored and replayed verbatim. Transient DB errors return **503**; mutations already processed stay committed and replay on retry. |
 | Conflict | Stale `expectedVersion` → `CONFLICT / VERSION_MISMATCH` with the current version, and nothing is written. Re-creating an existing uid → `ALREADY_EXISTS`. A second member with the same name → `DUPLICATE_MEMBER_NAME`. |
+| Creation time | `transactions.created_ts` (epoch ms) is set by the creating phone (`createdTs`), stored on create and never changed by updates. Every create/update change carries the stored value, so all phones show the same time. Older apps that don't send it get `NULL`; an invalid value is `REJECTED / VALIDATION_ERROR`. |
 | Financial validation | Amounts are positive integer cents. Splits are required, and their shares must sum exactly to the amount (`SPLIT_TOTAL_MISMATCH`). Changing an amount requires new splits (`SPLITS_REQUIRED`). A rejected mutation rolls back everything it touched. |
 | Offline | Clients keep writing locally and push the outbox when back online. The server never needs a connected client. |
 | Recovery | The app pulls from its cursor on launch, on returning to the foreground, when a group opens, on pull-to-refresh and after each local edit. `latestServerSequence` is the last sequence in the page, so paging never skips changes. A cursor ahead of the server → **409 `CURSOR_AHEAD`**; the app then replays the change log from 0. |
 | Notifications | Hints only, never data. A target is pending while its `delivered_sequence < last_sequence`. That state commits with the change, so nothing is lost and bursts coalesce. A cron job every minute retries with exponential backoff (30s → 1h). |
-| Deletes | Tombstones (`is_deleted = true`), propagated as `delete` changes. |
+| Deletes | Members and transactions: tombstones (`is_deleted = true`), propagated as `delete` changes. Groups: only the creator (admin) may delete; the delete **erases every record** of the group (entities, splits, change log, idempotency ledger, notification targets) with no version check. Deleting an already-erased group is `ACCEPTED` (idempotent retries). |
+| Missing vs hidden group | Reads of a group that does not exist return **404 `GROUP_NOT_FOUND`**; a phone that synced the group before treats this as "deleted by the admin" and erases its copy. A group that exists but is hidden (`is_display`) returns **404 `GROUP_UNAVAILABLE`**, and phones keep their copy. Pushes to a missing group are `REJECTED / GROUP_NOT_FOUND` and are not recorded. |
+| Hidden rows | Rows with `is_display = false` are never returned (see below). Phones keep what they already downloaded. |
 
 ## Endpoints
 
@@ -47,6 +50,36 @@ other phone ──GET /sync/changes/:groupUid?after=<cursor>──▶ Worker
 | `GET /join?uid=&name=&cur=` | – | Invite page that opens `splitmate://join?...`; the app then loads the group from `/sync/bootstrap` |
 
 Admin routes need `Authorization: Bearer <ADMIN_API_KEY>`. If the key is not set, they return 503.
+
+### Hiding rows (`is_display`)
+
+Every SplitMate table has `is_display BOOLEAN NOT NULL DEFAULT true`. Set it to `false` in the database to stop the
+server returning a row; set it back to `true` to show it again:
+
+```sql
+UPDATE sync_users    SET is_display = false WHERE user_id = '…';     -- an account (actorId)
+UPDATE group_members SET is_display = false WHERE member_uid = '…';
+UPDATE groups        SET is_display = false WHERE uid = '…';
+UPDATE transactions  SET is_display = false WHERE tx_uid = '…';
+```
+
+Hiding cascades so a phone never receives a partial picture:
+
+| Hidden | Also hidden |
+|---|---|
+| user (`sync_users`) | groups they created, transactions they added, members linked to them (`group_members.user_id`), their devices |
+| group | everything in it: members, transactions, splits, changes, push and webhook targets |
+| member | transactions they paid or are split into |
+| split | its whole transaction |
+| change (`sync_changes`) | that change only; the cursor still moves past it |
+
+The rules live in the `visible_*` views of [migrations/004_is_display.sql](migrations/004_is_display.sql), and every
+read that returns data goes through them (bootstrap, change feed, device and webhook listings, notification
+dispatch). The push path reads the base tables on purpose: locking, idempotency, version, uniqueness and permission
+checks must see hidden rows, or a retry could apply twice or a write could collide with a hidden row.
+
+`sync_users` has one row per account and is filled in on every push (the name avoids clashing with other apps'
+`users` tables in a shared database).
 
 ### Webhook delivery
 
@@ -79,7 +112,9 @@ Non-local hosts get `sslmode=verify-full` automatically unless the URL sets `ssl
 ```bash
 DATABASE_URL="postgresql://<user>:<password>@<host>/<database>" npm run migrate
 ```
-You can also paste [migrations/001_init.sql](migrations/001_init.sql) into your provider's SQL editor.
+You can also paste the files in [migrations/](migrations/) into your provider's SQL editor, in order.
+`003_erase_deleted_groups.sql` permanently erases groups that were only marked deleted before group deletes erased
+data; back up first if any of them matter.
 The migration enables RLS with no policies, so a Supabase-style Data API (anon key) cannot read
 these tables. The Worker connects as the table owner and is unaffected.
 
@@ -94,7 +129,9 @@ Optional: put [Hyperdrive](https://developers.cloudflare.com/hyperdrive/) in fro
 connections (`npx wrangler hyperdrive create splitmate-db --connection-string="..."`), then uncomment the
 `[[hyperdrive]]` block in [wrangler.toml](wrangler.toml). The Worker prefers `HYPERDRIVE` when it is bound.
 
-For local dev, put the same keys in `relay/.dev.vars` (git-ignored), then run `npm run dev`.
+For local dev, put the same keys in `relay/.dev.vars` (git-ignored), then run `npm run dev`. `.dev.vars` points at
+the shared **development** database: migrate it with
+`DATABASE_URL="<url from .dev.vars>" npm run migrate` whenever a migration is added, and test against it.
 
 ### 4. Deploy
 The Worker is connected to this repository through Cloudflare's Git integration, so Cloudflare builds
@@ -119,9 +156,7 @@ docker compose up --build -d                      # server on :8787, web app on 
 docker compose --profile migrate run --rm --build migrate
 docker compose down
 ```
-The server uses whatever database `relay/.dev.vars` points at. Point `DATABASE_URL` at a local
-Postgres (e.g. `postgresql://postgres:<pw>@host.docker.internal:5432/splitmate?sslmode=disable`)
-rather than production when you test, so test groups don't land in real data.
+The server uses whatever database `relay/.dev.vars` points at: the development database, never production.
 
 ## Development
 
@@ -136,7 +171,11 @@ rather than production when you test, so test groups don't land in real data.
 
 ```text
 relay/
-├── migrations/001_init.sql   # Postgres schema (source of truth)
+├── migrations/               # Postgres schema (source of truth), applied in order
+│   ├── 001_init.sql
+│   ├── 002_transaction_created_ts.sql  # transaction creation time
+│   ├── 003_erase_deleted_groups.sql    # erase data of groups deleted before deletes erased
+│   └── 004_is_display.sql              # is_display on every table, sync_users, visible_* views
 ├── scripts/migrate.ts        # applies migrations once each (schema_migrations table)
 ├── src/
 │   ├── index.ts              # Worker entry: Express via httpServerHandler + cron dispatcher

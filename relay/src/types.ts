@@ -65,6 +65,8 @@ export interface Transaction {
   updatedById?: string;
   updatedByName?: string;
   updatedTs?: number;
+  /** When the transaction was created (epoch ms, creating phone's clock); null when unknown. Never changes. */
+  createdTs: number | null;
   serverVersion: number;
   isDeleted: boolean;
   createdAt: string;

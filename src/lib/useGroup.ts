@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
-import { getGroupSummary } from '@/data/repo';
+import { getGroupSummary, GROUP_NOT_FOUND } from '@/data/repo';
 import { GroupSummary } from '@/data/types';
 import { GroupSyncStatus, syncEngine } from '@/data/syncEngine';
 import { errorMessage } from './dialog';
@@ -20,7 +20,10 @@ export function useGroup(id: string | number | undefined) {
       groupUidRef.current = summary.group.uid;
       setError('');
     } catch (e) {
-      setError(errorMessage(e));
+      const message = errorMessage(e);
+      // Left, or deleted by the admin: stop showing the old copy.
+      if (message === GROUP_NOT_FOUND) setData(null);
+      setError(message);
     }
   }, [id]);
 

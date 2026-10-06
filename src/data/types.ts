@@ -59,6 +59,8 @@ export interface Transaction {
   updatedById?: string;
   updatedByName?: string;
   updatedTs?: number;
+  /** When it was created (epoch ms, creating phone's clock). Synced and never changed; null when unknown. */
+  createdTs?: number | null;
   serverVersion?: number;
   isDeleted?: boolean;
   deletedAt?: string;
@@ -88,7 +90,8 @@ export interface GroupSummary {
   members: Member[];
   stats: MemberStat[];
   settlements: Settlement[];
-  totals: { totalExpenses: number; expenseCount: number; paymentCount: number };
+  /** groupBalance = totalPayments - totalExpenses (cents); negative when spending exceeds money paid in. */
+  totals: { totalExpenses: number; totalPayments: number; groupBalance: number; expenseCount: number; paymentCount: number };
   categories: { name: string; amount: number }[];
   myMemberId: number | null;
   myIdentityId: string;
@@ -228,6 +231,7 @@ export interface GroupBootstrapResponse {
     updatedById?: string;
     updatedByName?: string;
     updatedTs?: number;
+    createdTs?: number | null;
     serverVersion: number;
     createdAt: string;
     updatedAt: string;

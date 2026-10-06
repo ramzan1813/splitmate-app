@@ -12,8 +12,9 @@ Built with Expo SDK 57 (React Native 0.86, TypeScript, Expo Router).
 
 | Area | What you get |
 |---|---|
-| **Groups & members** | 160+ currencies, invite by QR code or link. You pick which member you are when you create or join a group, and it stays fixed after that. |
-| **Expenses & splits** | Split equally, unequally, by percentage or by shares, with live validation. Categories, dates, notes, and who added or last edited each entry. |
+| **Groups & members** | 160+ currencies, invite by QR code or link. You pick which member you are when you create or join a group, and it stays fixed after that. Members can **leave** a group (removed from their phone only; they can rejoin); the admin can **delete** it for everyone. |
+| **Expenses & splits** | Split equally, unequally, by percentage or by shares, with live validation. Categories, dates, notes, and who added or last edited each entry. Each entry shows the date and the time it was added; entries on the same day are listed newest first. |
+| **Group overview** | Total spending plus a **group balance** (payments − expenses, negative when overspent). Swipe left/right to move between Expenses, Balances, Settle up and Chart. |
 | **Payments & settle up** | One-to-one payments and minimal-transfer settle-up suggestions. |
 | **Insights & reports** | Spending trends, category and per-person breakdowns, printable/PDF reports and Excel (.xlsx) export, all generated on the phone. |
 | **Permissions** | Per group: **Admin only**, **Contributor** (members add and edit their own entries) or **Collaborative** (anyone edits; only the author or admin deletes). Enforced by the server. |
@@ -39,6 +40,13 @@ phone B ──GET /sync/changes/:group?after=<cursor>──▶ sync server
 - **Retries:** failed pushes stay queued and are retried on the next sync; the server deduplicates by
   `clientMutationId`.
 - **Old data:** groups created before the sync engine are uploaded on their first sync.
+- **Creation time:** set once by the phone that adds a transaction, stored by the server and sent to every phone,
+  so all members see the same time and order. Edits never change it.
+- **Leave / delete:** leaving is local only (unsent changes are pushed first). The admin's delete is queued like any
+  change; the server then erases every record of the group, and a phone that has synced the group before treats the
+  server's `GROUP_NOT_FOUND` as "deleted" and erases its copy too.
+- **Hidden rows:** rows marked `is_display = false` in the database are never returned by the server; phones keep
+  what they already downloaded.
 
 The full contract (endpoints, conflict codes, notifications) is in [relay/README.md](relay/README.md).
 Engineering rules for sync changes are in [AGENTS.md](AGENTS.md).
@@ -72,7 +80,12 @@ docker compose down
 ```
 
 The server reads `relay/.dev.vars` (`DATABASE_URL`, `ADMIN_API_KEY`); see [relay/README.md](relay/README.md).
-Point `DATABASE_URL` at a local Postgres when testing, not production.
+`relay/.dev.vars` points at the shared **development** database: run migrations and tests against it, never against
+production.
+
+Without `EXPO_PUBLIC_SERVER_URL`, the web app syncs with the **production** server. For local testing start it with
+`EXPO_PUBLIC_SERVER_URL=http://127.0.0.1:8787 npx expo start --web` (sample groups created on first launch are uploaded
+to whichever server the app uses).
 
 ## Deploying the server
 
@@ -112,9 +125,9 @@ splitmate-app/
 │   │   ├── syncEngine.ts         # push, pull, backfill, join, conflict resolution
 │   │   ├── sync.ts               # change notifications and the local-change signal
 │   │   ├── settings.ts           # key/value app settings
-│   │   ├── logic.ts, insights.ts # split math, balances, settle-up, analytics
+│   │   ├── logic.ts, insights.ts # split math, balances, group balance, settle-up, analytics
 │   │   └── backup.ts, samples.ts # backup import/export, sample groups
-│   └── lib/                      # identity and server URL, PIN, formatting, reports, Excel writer
+│   └── lib/                      # identity and server URL, PIN, formatting, swipe-tab rules, reports, Excel writer
 ├── relay/                        # sync server (Cloudflare Worker) — see relay/README.md
 ├── tests/                        # node:test suites
 ├── docker-compose.yml, Dockerfile.web, docker/  # local server + web stack

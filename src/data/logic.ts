@@ -91,6 +91,20 @@ export function memberStats(members: Pick<Member, 'id' | 'name'>[], transactions
   return [...stats.values()];
 }
 
+/**
+ * Group cash position: payments count as money coming in, expenses as money going out.
+ * balance = totalPayments - totalExpenses, so it is negative when more was spent than paid in.
+ */
+export function groupCashTotals(transactions: Pick<Transaction, 'type' | 'amount'>[]) {
+  let totalExpenses = 0;
+  let totalPayments = 0;
+  for (const t of transactions) {
+    if (t.type === 'expense') totalExpenses += t.amount;
+    else totalPayments += t.amount;
+  }
+  return { totalExpenses, totalPayments, balance: totalPayments - totalExpenses };
+}
+
 /** Settlement plan: repeatedly match the largest debtor with the largest creditor. */
 export function suggestSettlements(stats: MemberStat[]): Settlement[] {
   const creditors = stats.filter((s) => s.balance > 0).map((s) => ({ id: s.memberId, amt: s.balance }));

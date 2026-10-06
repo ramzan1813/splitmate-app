@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { createNodeDb } from './node-db';
 import { getDb, migrate, setDb } from '../src/data/db';
 import * as repo from '../src/data/repo';
-import { computeShares, distribute, memberStats, suggestSettlements } from '../src/data/logic';
+import { computeShares, distribute, groupCashTotals, memberStats, suggestSettlements } from '../src/data/logic';
 import { exportAll, exportGroup, findExisting, importFile, parseExport } from '../src/data/backup';
 import { computeInsights, periodRange } from '../src/data/insights';
 import { buildXlsx } from '../src/lib/xlsx';
 import { unzipSync, strFromU8 } from 'fflate';
 import { createSampleGroups, getSampleGroupIds, removeSampleGroups } from '../src/data/samples';
 import { CURRENCIES, searchCurrencies } from '../src/lib/currencies';
-import { currencySymbol, money } from '../src/lib/format';
+import { currencySymbol, money, prettyTime, txWhen } from '../src/lib/format';
 
 beforeEach(async () => {
   const db = createNodeDb();
@@ -58,6 +58,8 @@ test('group summary balances', async () => {
   const bal = Object.fromEntries(s.stats.map((x) => [x.name, x.balance]));
   assert.deepEqual(bal, { Owner: 9000, Bilal: -4000, Sara: -5000 });
   assert.equal(s.totals.totalExpenses, 69000);
+  assert.equal(s.totals.totalPayments, 5000);
+  assert.equal(s.totals.groupBalance, 5000 - 69000, 'group balance = payments in - expenses out');
   assert.equal(s.myMemberId, s.members[0]!.id);
   assert.equal(s.transactions.length, 5);
   const list = await repo.listGroups();
@@ -71,6 +73,73 @@ test('validation errors', async () => {
   await assert.rejects(repo.createTransaction(g.id, { type: 'expense', title: '', amount: 10, paidBy: o, splits: [{ memberId: o }] }), /title/);
   await assert.rejects(repo.createTransaction(g.id, { type: 'expense', title: 'x', amount: 10, paidBy: 9999, splits: [{ memberId: o }] }), /who paid/);
   await assert.rejects(repo.createGroup({ name: ' ', myName: 'me' }), /required/);
+});
+
+test('group balance: payments in minus expenses out, zero or negative when nothing extra was paid in', () => {
+  const exp = (amount: number) => ({ type: 'expense' as const, amount });
+  const pay = (amount: number) => ({ type: 'payment' as const, amount });
+  assert.deepEqual(groupCashTotals([]), { totalExpenses: 0, totalPayments: 0, balance: 0 });
+  assert.deepEqual(groupCashTotals([pay(10000), exp(2500), exp(1500)]), { totalExpenses: 4000, totalPayments: 10000, balance: 6000 });
+  assert.equal(groupCashTotals([pay(4000), exp(4000)]).balance, 0, 'everything paid in was spent');
+  assert.equal(groupCashTotals([pay(1000), exp(3500)]).balance, -2500, 'overspent → negative');
+});
+
+test('group balance: deleted transactions no longer count', async () => {
+  const { g, o, b } = await seed();
+  const extraId = await repo.createTransaction(g.id, { type: 'payment', amount: 700, paidBy: o, to: b });
+  assert.equal((await repo.getGroupSummary(g.id)).totals.groupBalance, 5000 + 70000 - 69000);
+  await repo.deleteTransaction(g.id, extraId);
+  assert.equal((await repo.getGroupSummary(g.id)).totals.groupBalance, 5000 - 69000);
+});
+
+test('transaction time: shown with the date, and with the day it was added when that differs', () => {
+  const at = (y: number, m: number, d: number, h: number, min: number) => new Date(y, m - 1, d, h, min).getTime();
+  const nb = ' '; // the time never splits across lines
+  assert.equal(prettyTime(at(2026, 10, 6, 0, 5)), `12:05${nb}AM`);
+  assert.equal(prettyTime(at(2026, 10, 6, 12, 0)), `12:00${nb}PM`);
+  assert.equal(prettyTime(at(2026, 10, 6, 15, 42)), `3:42${nb}PM`);
+  assert.equal(txWhen('2026-10-06', at(2026, 10, 6, 15, 42)), `6 Oct 2026 · 3:42${nb}PM`);
+  assert.equal(txWhen('2026-08-25', at(2026, 10, 6, 9, 7)), `25 Aug 2026 · added 6 Oct 2026, 9:07${nb}AM`, 'back-dated entry');
+  assert.equal(txWhen('2026-10-06', null), '6 Oct 2026', 'unknown time: date only');
+});
+
+test('transaction time: set once on create, kept on edit, and orders each day newest first', async () => {
+  const { g, o, b } = await seed();
+  const db = await getDb();
+  const txs = await repo.getTransactions(g.id);
+  assert.ok(txs.every((t) => typeof t.createdTs === 'number' && t.createdTs > 0), 'new transactions record when they were created');
+
+  // Same date, different creation times (and one unknown): newest first, unknown last.
+  const ids: number[] = [];
+  for (const title of ['First', 'Second', 'Third', 'Unknown']) {
+    ids.push(await repo.createTransaction(g.id, { type: 'expense', title, amount: 10, paidBy: o, splitType: 'equal', splits: [{ memberId: o }, { memberId: b }], date: '2026-11-01' }));
+  }
+  const base = Date.UTC(2026, 10, 1, 8);
+  await db.runAsync('UPDATE transactions SET created_ts = ? WHERE id = ?', [base + 3_600_000, ids[0]!]);
+  await db.runAsync('UPDATE transactions SET created_ts = ? WHERE id = ?', [base + 3 * 3_600_000, ids[1]!]);
+  await db.runAsync('UPDATE transactions SET created_ts = ? WHERE id = ?', [base + 2 * 3_600_000, ids[2]!]);
+  await db.runAsync('UPDATE transactions SET created_ts = NULL WHERE id = ?', [ids[3]!]);
+  const day = (await repo.getTransactions(g.id)).filter((t) => t.date === '2026-11-01').map((t) => t.title);
+  assert.deepEqual(day, ['Second', 'Third', 'First', 'Unknown']);
+
+  const before = (await repo.getTransactions(g.id)).find((t) => t.id === ids[0])!.createdTs;
+  await repo.updateTransaction(g.id, ids[0]!, { type: 'expense', title: 'First (edited)', amount: 20, paidBy: o, splitType: 'equal', splits: [{ memberId: o }, { memberId: b }], date: '2026-11-01' });
+  assert.equal((await repo.getTransactions(g.id)).find((t) => t.id === ids[0])!.createdTs, before, 'editing never moves the creation time');
+});
+
+test('transaction time: upgrading the app derives it like the server does', async () => {
+  const { g, o, b } = await seed();
+  const db = await getDb();
+  const [edited, untouched] = (await repo.getTransactions(g.id)).slice(0, 2);
+  await repo.updateTransaction(g.id, edited!.id, { type: 'payment', amount: 60, paidBy: b, to: o, date: edited!.date });
+  const untouchedUpdatedTs = (await db.getFirstAsync<{ updated_ts: number }>('SELECT updated_ts FROM transactions WHERE id = ?', [untouched!.id]))!.updated_ts;
+
+  // Roll back to the schema before creation times existed, then upgrade again.
+  await db.execAsync('ALTER TABLE transactions DROP COLUMN created_ts; ALTER TABLE groups DROP COLUMN removal; PRAGMA user_version = 6;');
+  await migrate(db);
+  const after = Object.fromEntries((await repo.getTransactions(g.id)).map((t) => [t.id, t.createdTs]));
+  assert.equal(after[untouched!.id], untouchedUpdatedTs, 'never edited: its last-change time is its creation time');
+  assert.equal(after[edited!.id], null, 'edited before the upgrade: creation time unknown, shown as date only');
 });
 
 test('edit/delete transaction and members', async () => {
@@ -118,6 +187,11 @@ test('export -> import round trip, duplicates and "me"', async () => {
 
   // import as copy, choosing Bilal as me
   const [copyId] = await importFile(parsed, { onDuplicate: 'copy', meRef: { [file.groups[0]!.uid]: b } });
+  assert.deepEqual(
+    (await repo.getTransactions(copyId!)).map((t) => [t.title, t.createdTs]),
+    (await repo.getTransactions(g.id)).map((t) => [t.title, t.createdTs]),
+    'export/import keeps each transaction’s creation time'
+  );
   const copy = await repo.getGroupSummary(copyId!);
   assert.equal(copy.group.name, 'Trip (copy)');
   assert.notEqual(copy.group.uid, file.groups[0]!.uid);

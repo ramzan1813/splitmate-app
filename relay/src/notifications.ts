@@ -95,6 +95,7 @@ async function dispatchWebhooks(db: Database, opts: NotifierOptions, groupUid: s
           SELECT w2.id FROM webhook_subscriptions w2
             JOIN groups g2 ON g2.uid = w2.group_uid
            WHERE w2.is_active
+             AND EXISTS (SELECT 1 FROM visible_webhook_subscriptions v WHERE v.id = w2.id) -- is_display
              AND w2.delivered_sequence < g2.last_sequence
              AND w2.next_attempt_at <= now()
              AND ($1::text IS NULL OR w2.group_uid = $1)
@@ -172,6 +173,7 @@ async function dispatchExpoPush(db: Database, opts: NotifierOptions, groupUid: s
             JOIN groups g2 ON g2.uid = s2.group_uid
             JOIN devices d2 ON d2.device_id = s2.device_id
            WHERE d2.push_enabled AND d2.expo_push_token IS NOT NULL
+             AND EXISTS (SELECT 1 FROM visible_device_group_subscriptions v WHERE v.group_uid = s2.group_uid AND v.device_id = s2.device_id) -- is_display
              AND s2.delivered_sequence < g2.last_sequence
              AND s2.next_attempt_at <= now()
              AND ($1::text IS NULL OR s2.group_uid = $1)

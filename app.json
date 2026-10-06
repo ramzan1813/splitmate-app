@@ -19,7 +19,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.splitmate.app",
-      "versionCode": 15,
+      "versionCode": 16,
       "permissions": [
         "CAMERA",
         "android.permission.CAMERA",

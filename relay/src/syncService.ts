@@ -61,6 +61,24 @@ interface PushContext {
   actorName?: string;
 }
 
+/**
+ * The group does not exist on this server: never created here, or deleted by its admin (which erases
+ * every record of it). Phones that already synced the group treat this as "deleted"; see syncEngine.
+ */
+const groupNotFound = (groupUid: string) => new HttpError(404, 'GROUP_NOT_FOUND', `Group ${groupUid} not found`);
+
+/** Code for a group that exists but is hidden (is_display). Distinct from GROUP_NOT_FOUND, which phones treat as deleted. */
+const GROUP_UNAVAILABLE = 'GROUP_UNAVAILABLE';
+
+/** The live group a read may return, or an error saying it is gone (deleted) or hidden. */
+async function findReadableGroup(db: Queryable, groupUid: string) {
+  const [group] = await db.query('SELECT * FROM visible_groups WHERE uid = $1 AND is_deleted = false', [groupUid]);
+  if (group) return group;
+  const [hidden] = await db.query('SELECT 1 AS x FROM groups WHERE uid = $1 AND is_deleted = false', [groupUid]);
+  if (hidden) throw new HttpError(404, GROUP_UNAVAILABLE, `Group ${groupUid} is not available`);
+  throw groupNotFound(groupUid);
+}
+
 const iso = (v: Date | string | null | undefined) => (v instanceof Date ? v.toISOString() : v ?? '');
 const isNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
 const normName = (v: string) => v.trim().toLowerCase();
@@ -74,21 +92,21 @@ export async function getGroupBootstrap(db: Database, groupUid: string): Promise
     // One snapshot for every read below, so serverSequence matches the rows returned.
     await tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
 
-    const [group] = await tx.query('SELECT * FROM groups WHERE uid = $1 AND is_deleted = false', [groupUid]);
-    if (!group) throw new HttpError(404, 'NOT_FOUND', `Group ${groupUid} not found`);
+    const group = await findReadableGroup(tx, groupUid);
 
+    // Only rows with is_display (and everything they depend on) visible: see migrations/004_is_display.sql.
     const members = await tx.query(
-      'SELECT * FROM group_members WHERE group_uid = $1 AND is_deleted = false ORDER BY id ASC',
+      'SELECT * FROM visible_members WHERE group_uid = $1 AND is_deleted = false ORDER BY id ASC',
       [groupUid]
     );
     const txRows = await tx.query(
-      'SELECT * FROM transactions WHERE group_uid = $1 AND is_deleted = false ORDER BY date DESC, id DESC',
+      'SELECT * FROM visible_transactions WHERE group_uid = $1 AND is_deleted = false ORDER BY date DESC, id DESC',
       [groupUid]
     );
     const splits = await tx.query(
       `SELECT s.transaction_uid, s.member_uid, s.value, s.share
-         FROM transaction_splits s
-         JOIN transactions t ON t.tx_uid = s.transaction_uid
+         FROM visible_splits s
+         JOIN visible_transactions t ON t.tx_uid = s.transaction_uid
         WHERE t.group_uid = $1 AND t.is_deleted = false
         ORDER BY s.member_uid`,
       [groupUid]
@@ -153,6 +171,7 @@ export async function getGroupBootstrap(db: Database, groupUid: string): Promise
         updatedById: t.updated_by_id ?? undefined,
         updatedByName: t.updated_by_name ?? undefined,
         updatedTs: t.updated_ts,
+        createdTs: t.created_ts ?? null,
         serverVersion: t.server_version,
         isDeleted: t.is_deleted,
         createdAt: iso(t.created_at),
@@ -175,13 +194,21 @@ export async function getChangesSince(
 ): Promise<PullChangesResponse> {
   const safeLimit = Math.min(Math.max(1, Math.floor(limit) || 100), 500);
   const after = Math.max(0, Math.floor(afterSequence) || 0);
+  // Read the group's sequence first: every change up to it is committed, so the cursor can safely skip
+  // past hidden changes without ever jumping over one committed later.
+  const group = await findReadableGroup(db, groupUid);
+  const lastSequence: number = group.last_sequence ?? 0;
+  if (after > lastSequence) {
+    // The cursor references history this server does not have: the replica must re-bootstrap.
+    throw new HttpError(409, 'CURSOR_AHEAD', `Cursor ${after} is ahead of server sequence ${lastSequence}; re-bootstrap required`);
+  }
 
   const rows = await db.query(
-    `SELECT * FROM sync_changes
-      WHERE group_uid = $1 AND sequence > $2
+    `SELECT * FROM visible_changes
+      WHERE group_uid = $1 AND sequence > $2 AND sequence <= $3
       ORDER BY sequence ASC
-      LIMIT $3`,
-    [groupUid, after, safeLimit + 1]
+      LIMIT $4`,
+    [groupUid, after, lastSequence, safeLimit + 1]
   );
   const hasMore = rows.length > safeLimit;
   const page = hasMore ? rows.slice(0, safeLimit) : rows;
@@ -200,19 +227,10 @@ export async function getChangesSince(
     createdAt: iso(r.created_at),
   }));
 
-  if (changes.length > 0) {
-    // The client stores latestServerSequence as its cursor, so report the last sequence in
-    // this page (not the group maximum) to never jump past changes it has not applied.
-    return { groupUid, latestServerSequence: changes[changes.length - 1]!.sequence, hasMore, changes };
-  }
-
-  const [g] = await db.query<{ last_sequence: number }>('SELECT last_sequence FROM groups WHERE uid = $1', [groupUid]);
-  const lastSequence = g?.last_sequence ?? 0;
-  if (after > lastSequence) {
-    // The cursor references history this server does not have: the replica must re-bootstrap.
-    throw new HttpError(409, 'CURSOR_AHEAD', `Cursor ${after} is ahead of server sequence ${lastSequence}; re-bootstrap required`);
-  }
-  return { groupUid, latestServerSequence: lastSequence, hasMore: false, changes };
+  // The client stores latestServerSequence as its cursor. With more visible changes to come, report the
+  // last one in this page; otherwise everything up to lastSequence is delivered or hidden, so skip to it.
+  const latestServerSequence = hasMore ? changes[changes.length - 1]!.sequence : lastSequence;
+  return { groupUid, latestServerSequence, hasMore, changes };
 }
 
 // ---------------------------------------------------------------------------
@@ -261,9 +279,15 @@ async function touchDevice(db: Database, ctx: PushContext) {
        last_seen_at = now()`,
     [ctx.deviceId, ctx.actorId, ctx.actorName ?? null]
   );
+  // Keeps one row per account so it can be hidden (sync_users.is_display); the flag itself is never touched here.
+  await db.query(
+    `INSERT INTO sync_users (user_id, user_name) VALUES ($1, $2)
+     ON CONFLICT (user_id) DO UPDATE SET user_name = COALESCE(EXCLUDED.user_name, sync_users.user_name), updated_at = now()`,
+    [ctx.actorId, ctx.actorName ?? null]
+  );
   await db.query(
     `INSERT INTO device_group_subscriptions (group_uid, device_id, delivered_sequence)
-     SELECT uid, $2, last_sequence FROM groups WHERE uid = $1
+     SELECT uid, $2, last_sequence FROM visible_groups WHERE uid = $1
      ON CONFLICT (group_uid, device_id) DO NOTHING`,
     [ctx.groupUid, ctx.deviceId]
   );
@@ -301,6 +325,11 @@ async function processMutation(db: Database, ctx: PushContext, mut: PushMutation
     try {
       return await db.transaction(async (tx) => {
         const group = await lockGroup(tx, ctx.groupUid);
+        if (mut.entityType === 'group' && mut.operation === 'delete') return eraseGroup(tx, ctx, group, mut);
+        // Nothing is recorded for a group that doesn't exist, so a deleted group leaves no trace.
+        if (!group && !(mut.entityType === 'group' && mut.operation === 'create')) {
+          return { clientMutationId: mut.clientMutationId, status: 'REJECTED', entityUid: mut.entityUid, error: 'GROUP_NOT_FOUND', message: 'Group not found or deleted' };
+        }
         const prior = await findPriorOutcome(tx, mut.clientMutationId);
         if (prior) return prior;
 
@@ -357,6 +386,9 @@ async function recordOutcome(
   }
 }
 
+// The push path reads base tables, not the visible_* views, on purpose: locking, idempotency, version,
+// uniqueness and permission checks must see hidden rows too (or a retry could apply twice, or a write could
+// collide with a hidden row). None of these reads return data to a phone; is_display only governs reads.
 async function lockGroup(tx: Queryable, groupUid: string): Promise<GroupRow | null> {
   const [row] = await tx.query<GroupRow>(
     'SELECT uid, creator_id, permission_model, is_deleted, server_version, last_sequence FROM groups WHERE uid = $1 FOR UPDATE',
@@ -452,6 +484,29 @@ function normalizePermissionModel(v: unknown): string | null {
   return upper;
 }
 
+/**
+ * The admin deletes the group: every record of it is erased from the server (entities, splits,
+ * change log, idempotency ledger, notification targets). Deleting an already-erased group succeeds,
+ * so a retried delete is idempotent. The admin's delete wins over any version: no version check.
+ */
+async function eraseGroup(tx: Queryable, ctx: PushContext, group: GroupRow | null, mut: PushMutation): Promise<PushMutationResult> {
+  const accepted: PushMutationResult = { clientMutationId: mut.clientMutationId, status: 'ACCEPTED', entityUid: mut.entityUid };
+  if (mut.entityUid !== ctx.groupUid) throw rejected('VALIDATION_ERROR', 'Group mutations must target the push groupUid');
+  if (!group) return accepted;
+  if (group.creator_id !== ctx.actorId) throw rejected('FORBIDDEN', 'Only the group admin can delete the group');
+
+  const uid = group.uid;
+  await tx.query('DELETE FROM transaction_splits WHERE transaction_uid IN (SELECT tx_uid FROM transactions WHERE group_uid = $1)', [uid]);
+  await tx.query('DELETE FROM transactions WHERE group_uid = $1', [uid]);
+  await tx.query('DELETE FROM group_members WHERE group_uid = $1', [uid]);
+  await tx.query('DELETE FROM sync_changes WHERE group_uid = $1', [uid]);
+  await tx.query('DELETE FROM client_mutations WHERE group_uid = $1', [uid]);
+  await tx.query('DELETE FROM device_group_subscriptions WHERE group_uid = $1', [uid]);
+  await tx.query('DELETE FROM webhook_subscriptions WHERE group_uid = $1', [uid]);
+  await tx.query('DELETE FROM groups WHERE uid = $1', [uid]);
+  return accepted;
+}
+
 async function applyGroupMutation(tx: Queryable, ctx: PushContext, group: GroupRow | null, mut: PushMutation, p: any) {
   if (mut.entityUid !== ctx.groupUid) {
     throw rejected('VALIDATION_ERROR', 'Group mutations must target the push groupUid');
@@ -511,12 +566,8 @@ async function applyGroupMutation(tx: Queryable, ctx: PushContext, group: GroupR
     return { serverVersion: nextVersion, serverSequence };
   }
 
-  await tx.query(
-    'UPDATE groups SET is_deleted = true, deleted_at = now(), server_version = $1, updated_at = now() WHERE uid = $2',
-    [nextVersion, mut.entityUid]
-  );
-  const serverSequence = await appendChange(tx, ctx, 'group', mut.entityUid, 'delete', nextVersion, {});
-  return { serverVersion: nextVersion, serverSequence };
+  // Group deletes never reach here: eraseGroup handles them.
+  throw rejected('VALIDATION_ERROR', `Unsupported group operation ${mut.operation}`);
 }
 
 // --- Members ---------------------------------------------------------------
@@ -713,6 +764,9 @@ function validateTxFields(p: any, isCreate: boolean) {
   if (has('date') && !/^\d{4}-\d{2}-\d{2}/.test(String(p.date))) {
     throw rejected('VALIDATION_ERROR', 'date must be formatted YYYY-MM-DD');
   }
+  if (isCreate && has('createdTs') && !(Number.isSafeInteger(p.createdTs) && p.createdTs > 0)) {
+    throw rejected('VALIDATION_ERROR', 'createdTs must be a positive integer timestamp in milliseconds');
+  }
 }
 
 async function insertSplits(tx: Queryable, txUid: string, splits: ResolvedSplit[]) {
@@ -724,10 +778,14 @@ async function insertSplits(tx: Queryable, txUid: string, splits: ResolvedSplit[
   }
 }
 
-/** Change-log payload: the client's payload plus the server-resolved member uids. */
-function txChangePayload(p: any, payerMemberUid: string | undefined, splits: ResolvedSplit[] | undefined) {
+/**
+ * Change-log payload: the client's payload plus the server-resolved member uids and the stored
+ * creation time (immutable; phones overwrite their copy with it, so every device shows the same time).
+ */
+function txChangePayload(p: any, payerMemberUid: string | undefined, splits: ResolvedSplit[] | undefined, createdTs: number | null) {
   return {
     ...p,
+    createdTs,
     ...(payerMemberUid ? { paidByMemberUid: payerMemberUid } : {}),
     ...(splits
       ? {
@@ -738,8 +796,8 @@ function txChangePayload(p: any, payerMemberUid: string | undefined, splits: Res
 }
 
 async function applyTransactionMutation(tx: Queryable, ctx: PushContext, mut: PushMutation, p: any) {
-  const [existing] = await tx.query<{ group_uid: string; server_version: number; is_deleted: boolean; amount: number }>(
-    'SELECT group_uid, server_version, is_deleted, amount FROM transactions WHERE tx_uid = $1',
+  const [existing] = await tx.query<{ group_uid: string; server_version: number; is_deleted: boolean; amount: number; created_ts: number | null }>(
+    'SELECT group_uid, server_version, is_deleted, amount, created_ts FROM transactions WHERE tx_uid = $1',
     [mut.entityUid]
   );
   if (existing && existing.group_uid !== ctx.groupUid) {
@@ -756,11 +814,13 @@ async function applyTransactionMutation(tx: Queryable, ctx: PushContext, mut: Pu
 
     const payerMemberUid = await resolveMemberRef(tx, ctx, p.paidByMemberUid, p.paidByName, 'paidBy');
     const splits = await resolveSplits(tx, ctx, splitsInput);
+    // Older apps don't send it; store unknown rather than inventing a time the creator's phone doesn't have.
+    const createdTs: number | null = p.createdTs ?? null;
 
     await tx.query(
       `INSERT INTO transactions (tx_uid, group_uid, type, title, amount, paid_by_member_uid, split_type, category, note, date,
-                                 author_id, author_name, updated_by_id, updated_by_name, updated_ts, server_version)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 1)`,
+                                 author_id, author_name, updated_by_id, updated_by_name, updated_ts, created_ts, server_version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 1)`,
       [
         mut.entityUid,
         ctx.groupUid,
@@ -777,11 +837,12 @@ async function applyTransactionMutation(tx: Queryable, ctx: PushContext, mut: Pu
         p.updatedById ?? null,
         p.updatedByName ?? null,
         Number.isSafeInteger(p.updatedTs) ? p.updatedTs : Date.now(),
+        createdTs,
       ]
     );
     await insertSplits(tx, mut.entityUid, splits);
 
-    const serverSequence = await appendChange(tx, ctx, 'transaction', mut.entityUid, 'create', 1, txChangePayload(p, payerMemberUid, splits));
+    const serverSequence = await appendChange(tx, ctx, 'transaction', mut.entityUid, 'create', 1, txChangePayload(p, payerMemberUid, splits, createdTs));
     return { serverVersion: 1, serverSequence };
   }
 
@@ -850,7 +911,7 @@ async function applyTransactionMutation(tx: Queryable, ctx: PushContext, mut: Pu
       await insertSplits(tx, mut.entityUid, splits);
     }
 
-    const serverSequence = await appendChange(tx, ctx, 'transaction', mut.entityUid, 'update', nextVersion, txChangePayload(p, payerMemberUid, splits));
+    const serverSequence = await appendChange(tx, ctx, 'transaction', mut.entityUid, 'update', nextVersion, txChangePayload(p, payerMemberUid, splits, existing.created_ts ?? null));
     return { serverVersion: nextVersion, serverSequence };
   }
 

@@ -2,6 +2,28 @@
 
 Release notes for each version. The release workflow copies the section matching the version in `app.json` into the GitHub Release.
 
+## Unreleased
+
+Run the server migrations `002`–`004` before releasing this app version (see [relay/README.md](relay/README.md)).
+
+### New
+- **Swipe between tabs.** In a group, swipe left or right to move between Expenses, Balances, Settle up and Chart. Tapping the tab bar still works.
+- **Group balance.** The group header shows *Group balance* under total spending: all payments minus all expenses. Zero when they match, negative (in red) when more was spent than paid in.
+- **Time on every transaction.** Cards and the detail screen show when a transaction was added, e.g. *6 Oct 2026 · 3:42 PM*, or *25 Aug 2026 · added 6 Oct 2026, 9:07 AM* for a back-dated entry. Every phone shows the same time, and editing never changes it.
+- **Newest first within a day.** Transactions on the same date are ordered by the time they were added.
+- **Leave group.** Members (everyone except the admin) can leave a group from Group settings. It disappears from that phone at once; anything not yet synced is sent first, then the group is removed from the phone. Nothing changes for the other members, and you can rejoin with an invite link.
+- **Delete group for everyone.** Only the admin (the group's creator) can delete a group. It disappears from the admin's phone at once (also offline), and once the delete reaches the server every record of the group is erased there. Other members' phones remove the group on their next sync and show *Group deleted*, including how many of their unsynced changes could not be saved.
+
+### Changed
+- Group settings show **Delete group** only to the admin and **Leave group** only to members.
+- A group that is no longer on the phone (left, or deleted by the admin) shows *This group is no longer here* instead of an error.
+
+### Fixed
+- A member who tapped *Delete group* lost the group on their phone while the server refused the delete, leaving a stuck *not synced* state.
+
+### Upgrading
+- Transactions created before this version show a time only if they were never edited; edited ones show the date only.
+
 ## 2.0.0 — 2026-10-06
 
 Sync moves from the encrypted WebSocket relay to the new SplitMate sync server. Update every phone in a group: older versions can no longer sync.
