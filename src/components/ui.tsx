@@ -258,11 +258,7 @@ export const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 14,
     marginBottom: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 1,
+    boxShadow: '0px 2px 6px rgba(0, 0, 0, 0.05)',
   },
   avatar: { alignItems: 'center', justifyContent: 'center' },
   chip: {

@@ -1,11 +1,11 @@
 # SplitMate Sync API (`relay/`)
 
-Express 5 on Cloudflare Workers, backed by Supabase Postgres. Clients sync over plain HTTPS.
+Express 5 on Cloudflare Workers, backed by Postgres (Neon in production). Clients sync over plain HTTPS.
 There are no WebSockets. Other devices learn about changes through **signed webhooks** and
 **Expo push notifications**, and then pull deltas with a cursor.
 
-```
-phone ──POST /sync/push──▶ Worker (Express) ──▶ Supabase Postgres
+```text
+phone ──POST /sync/push──▶ Worker (Express) ──▶ Postgres
                               │  (after commit)
                               ├──▶ Expo push  { CHANGES_AVAILABLE, groupUid, latestSequence } ──▶ other phones
                               └──▶ webhooks   (same event, HMAC-signed)                        ──▶ your services
@@ -24,7 +24,7 @@ other phone ──GET /sync/changes/:groupUid?after=<cursor>──▶ Worker
 | Conflict | Stale `expectedVersion` → `CONFLICT / VERSION_MISMATCH` with the current version, and nothing is written. Re-creating an existing uid → `ALREADY_EXISTS`. A second member with the same name → `DUPLICATE_MEMBER_NAME`. |
 | Financial validation | Amounts are positive integer cents. Splits are required, and their shares must sum exactly to the amount (`SPLIT_TOTAL_MISMATCH`). Changing an amount requires new splits (`SPLITS_REQUIRED`). A rejected mutation rolls back everything it touched. |
 | Offline | Clients keep writing locally and push the outbox when back online. The server never needs a connected client. |
-| Recovery | Clients pull from their cursor on start, on reconnect and on each notification. `latestServerSequence` is the last sequence in the page, so paging never skips changes. A cursor ahead of the server → **409 `CURSOR_AHEAD`**, and the client must re-bootstrap. |
+| Recovery | The app pulls from its cursor on launch, on returning to the foreground, when a group opens, on pull-to-refresh and after each local edit. `latestServerSequence` is the last sequence in the page, so paging never skips changes. A cursor ahead of the server → **409 `CURSOR_AHEAD`**; the app then replays the change log from 0. |
 | Notifications | Hints only, never data. A target is pending while its `delivered_sequence < last_sequence`. That state commits with the change, so nothing is lost and bursts coalesce. A cron job every minute retries with exponential backoff (30s → 1h). |
 | Deletes | Tombstones (`is_deleted = true`), propagated as `delete` changes. |
 
@@ -44,7 +44,7 @@ other phone ──GET /sync/changes/:groupUid?after=<cursor>──▶ Worker
 | `DELETE /webhooks/:id` | admin | Removes a webhook |
 | `POST /webhooks/:id/reactivate` | admin | Re-enables a webhook disabled after 30 failed attempts |
 | `POST /notifications/dispatch` | admin | Runs the dispatcher now (the cron job does this every minute) |
-| `GET /join?name=&cur=…` | – | Invite page that opens `splitmate://join?...` |
+| `GET /join?uid=&name=&cur=` | – | Invite page that opens `splitmate://join?...`; the app then loads the group from `/sync/bootstrap` |
 
 Admin routes need `Authorization: Bearer <ADMIN_API_KEY>`. If the key is not set, they return 503.
 
@@ -73,14 +73,14 @@ npm install
 ```
 
 ### 2. Create the schema
-Works with any Postgres (Neon, Supabase, local). Use a **direct** or **session** connection string.
+Works with any Postgres (Neon, Supabase, local). Use a **direct** or **session-pooled** connection string.
 Non-local hosts get `sslmode=verify-full` automatically unless the URL sets `sslmode`
 (use `sslmode=disable` for a plaintext Postgres container reached by service name):
 ```bash
-DATABASE_URL="postgresql://postgres:<password>@db.<project>.supabase.co:5432/postgres" npm run migrate
+DATABASE_URL="postgresql://<user>:<password>@<host>/<database>" npm run migrate
 ```
-You can also paste [migrations/001_init.sql](migrations/001_init.sql) into the Supabase SQL editor.
-The migration enables RLS with no policies, so the Supabase Data API (anon key) cannot read
+You can also paste [migrations/001_init.sql](migrations/001_init.sql) into your provider's SQL editor.
+The migration enables RLS with no policies, so a Supabase-style Data API (anon key) cannot read
 these tables. The Worker connects as the table owner and is unaffected.
 
 ### 3. Configure the Worker
@@ -90,16 +90,17 @@ npx wrangler secret put DATABASE_URL       # Postgres connection string (used wh
 npx wrangler secret put ADMIN_API_KEY      # long random string
 npx wrangler secret put EXPO_ACCESS_TOKEN  # only if Expo push security is enabled
 ```
-Recommended: put [Hyperdrive](https://developers.cloudflare.com/hyperdrive/) in front of Supabase. It pools connections and terminates TLS to Supabase for you; with a raw `DATABASE_URL`, check that the Worker can verify Supabase TLS before relying on it
-(`npx wrangler hyperdrive create splitmate-db --connection-string="..."`), then uncomment the
+Optional: put [Hyperdrive](https://developers.cloudflare.com/hyperdrive/) in front of Postgres to pool
+connections (`npx wrangler hyperdrive create splitmate-db --connection-string="..."`), then uncomment the
 `[[hyperdrive]]` block in [wrangler.toml](wrangler.toml). The Worker prefers `HYPERDRIVE` when it is bound.
 
 For local dev, put the same keys in `relay/.dev.vars` (git-ignored), then run `npm run dev`.
 
 ### 4. Deploy
-Pushing to `main` with changes under `relay/` runs [.github/workflows/deploy-relay.yml](../.github/workflows/deploy-relay.yml):
-tests → `npm run migrate` → `wrangler deploy` → `/health/db` check. It can also be run by hand from the
-Actions tab. It needs the GitHub secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` and `DATABASE_URL`.
+The Worker is connected to this repository through Cloudflare's Git integration, so Cloudflare builds
+and deploys it on push. That does not touch the database: when a change adds a file under
+`relay/migrations/`, run `npm run migrate` against the production `DATABASE_URL` before (or right after)
+pushing, then check `/health/db`.
 
 Manual deploy from a machine logged in with `wrangler login`:
 ```bash
@@ -114,10 +115,13 @@ keeps the class exported so the data is not erased; remove it only together with
 ### Local Docker stack
 From the repo root, with `relay/.dev.vars` filled in:
 ```bash
-docker compose up --build -d                      # relay on :8787, web app on :8081
+docker compose up --build -d                      # server on :8787, web app on :8081
 docker compose --profile migrate run --rm --build migrate
 docker compose down
 ```
+The server uses whatever database `relay/.dev.vars` points at. Point `DATABASE_URL` at a local
+Postgres (e.g. `postgresql://postgres:<pw>@host.docker.internal:5432/splitmate?sslmode=disable`)
+rather than production when you test, so test groups don't land in real data.
 
 ## Development
 
@@ -130,7 +134,7 @@ docker compose down
 
 ## Layout
 
-```
+```text
 relay/
 ├── migrations/001_init.sql   # Postgres schema (source of truth)
 ├── scripts/migrate.ts        # applies migrations once each (schema_migrations table)
@@ -144,5 +148,6 @@ relay/
 │   ├── joinPage.ts           # invite landing page
 │   ├── legacyRelayRoom.ts    # keeps the v2 Durable Object class (and its data) alive
 │   └── types.ts              # wire types shared with the app
-└── test-support/             # PGlite test server + fake Expo hub
+├── test-support/             # PGlite test server + fake Expo hub (used by the root test suite)
+└── Dockerfile                # local wrangler-dev image for docker-compose.yml
 ```

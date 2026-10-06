@@ -1,7 +1,7 @@
 // Pure money logic. All money values are integer cents.
 import { AppError, MemberStat, Member, Settlement, SplitType, Transaction } from './types';
 
-export const SPLIT_TYPES: SplitType[] = ['equal', 'unequal', 'percent', 'shares'];
+const SPLIT_TYPES: SplitType[] = ['equal', 'unequal', 'percent', 'shares'];
 
 /**
  * Distribute `total` cents across weights using largest-remainder,

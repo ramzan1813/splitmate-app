@@ -1,125 +1,122 @@
-# SplitMate — Offline-First Multi-Device Synchronized App
+# SplitMate
 
-A self-contained mobile app for sharing, splitting, and synchronizing group expenses across devices. All data lives on your phone in an on-device **SQLite** database (`expo-sqlite`), with server-authoritative, conflict-safe synchronization powered by **Cloudflare Workers & SQLite Durable Objects**.
+Offline-first group expense splitting for Android (and the web), with multi-phone sync.
+
+Every phone keeps its own copy of the data in on-device **SQLite** and works fully offline. Edits are queued in an
+outbox and synced through the **SplitMate sync server** (Express on Cloudflare Workers + Postgres) whenever the
+phone is online.
 
 Built with Expo SDK 57 (React Native 0.86, TypeScript, Expo Router).
 
----
-
-## 🌟 Key Features
+## Features
 
 | Area | What you get |
 |---|---|
-| **Offline-First SQLite** | Read and write with zero latency directly to local SQLite. Offline mutations are enqueued in an `outbox` table. |
-| **Server-Authoritative Sync** | Atomic push batches with idempotency, monotonic server sequence change log (`sync_changes`), and cursor pull. |
-| **Optimistic Concurrency** | Transaction updates verify `expectedVersion` — stale concurrent writes are rejected with `VERSION_MISMATCH` instead of blind overwrites. |
-| **Group Permission Models** | 3 server-enforced permission models per group: **Admin Only** (admin control), **Contributor** (peers can add and edit own expenses), and **Collaborative** (author-protected deletion with audit trail). |
-| **Realtime Notifications** | WebSocket (`/ws`) `CHANGES_AVAILABLE` signals prompt connected clients to pull incremental changes and advance cursors. |
-| **QR Code & Deep Link Invites** | ISO/IEC 18004 compliant QR codes and universal invite links (`https://splitmate-relay.rn45819.workers.dev/join?...` / `splitmate://join?...`) to share and join groups in one tap. |
-| **On-device accounts** | No email or phone numbers required. Cryptographic identities and device IDs are generated and stored 100% on-device. |
-| **Groups & members** | Multi-currency support (160+ currencies). Members are mapped seamlessly across devices. |
-| **Expenses & Splits** | Split **equally, unequally, by percentage or by shares**, with live validation. Category, date, author tag, and audit notes. |
-| **Payments & Settlements** | One-to-one payments, plus **Settle up** suggestions calculated from minimal transfer plans. |
-| **Insights dashboard** | Spending trends, category breakdown, paid vs share breakdown, day of week analysis, and top expenses. |
-| **Reports & Excel Export** | In-app printable/PDF reports and standalone **Excel (.xlsx)** export generated on the phone. |
-| **Privacy & Security** | Optional 4-digit PIN (salted hash, lockout protection). No analytics, no ads, and zero personal tracking. |
+| **Groups & members** | 160+ currencies, invite by QR code or link, pick which member is you. |
+| **Expenses & splits** | Split equally, unequally, by percentage or by shares, with live validation. Categories, dates, notes, and who added or last edited each entry. |
+| **Payments & settle up** | One-to-one payments and minimal-transfer settle-up suggestions. |
+| **Insights & reports** | Spending trends, category and per-person breakdowns, printable/PDF reports and Excel (.xlsx) export, all generated on the phone. |
+| **Permissions** | Per group: **Admin only**, **Contributor** (members add and edit their own entries) or **Collaborative** (anyone edits; only the author or admin deletes). Enforced by the server. |
+| **Offline-first sync** | Writes go to SQLite and an outbox first. The app pushes and pulls on launch, on returning to the foreground, when a group opens, on pull-to-refresh and after every edit. Concurrent edits are detected with entity versions; refused changes are kept and shown, never dropped silently. |
+| **Sync status** | Each group shows *Synced*, *Syncing*, *N pending*, *Offline*, *Sync error* or *N not synced*; tap it to sync now or resolve refused changes. |
+| **Configurable server** | Settings → Server sets the sync server URL, so a phone or the web app can talk to a local development server. |
+| **Backup & restore** | JSON backup of every group, validated import. |
+| **Privacy** | No accounts, ads or analytics. Optional 4-digit PIN lock (salted hash, lockout). |
 
----
+## How sync works
 
-## 💻 Run it Locally
+```text
+phone A ──POST /sync/push──▶ sync server ──▶ Postgres
+                                  │ (Expo push / webhooks: "changes available")
+phone B ──GET /sync/changes/:group?after=<cursor>──▶ sync server
+```
 
-Requires Node.js 22.13+ (https://nodejs.org).
+- **Source of truth:** the server. Each phone holds a replica plus an outbox of unsent mutations.
+- **Identity & versions:** groups, members and transactions have client-assigned uids and a server version;
+  updates send `expectedVersion`, and a stale one is refused as a conflict.
+- **Ordering:** each group has a gapless server sequence; a phone stores its cursor and advances it in the same
+  SQLite transaction that applies the changes.
+- **Retries:** failed pushes stay queued and are retried on the next sync; the server deduplicates by
+  `clientMutationId`.
+- **Old data:** groups created before the sync engine are uploaded on their first sync.
 
-### 1. Install & Test Frontend & Backend
+The full contract (endpoints, conflict codes, notifications) is in [relay/README.md](relay/README.md).
+Engineering rules for sync changes are in [AGENTS.md](AGENTS.md).
+
+## Run it locally
+
+Requires Node.js 22.13+.
+
 ```bash
-# In the root repository:
 npm install
-npm test              # Runs 58 automated unit, integration, and E2E tests
-npx tsc --noEmit      # TypeScript verification (0 errors)
-npx expo start        # Start Expo development server (press 'w' for web)
+npm install --prefix relay   # server packages; the test suite starts the server in-process
+npm test                     # unit, server and client-sync tests (in-memory SQLite + PGlite)
+npm run typecheck
+npm run lint
+npm start                    # Expo dev server (press "w" for web)
 ```
 
-### 2. Run Relay Server Locally
+After `npm install` adds or removes packages, restart the dev server with `npx expo start -c`; a running
+Metro can keep a stale module map and fail with "Unable to resolve module".
+
+To run the app against a local sync server instead of production, start the server (`cd relay && npm run dev`)
+and set **Settings → Server** to `http://localhost:8787` (web) or `http://<your PC's IP>:8787` (phone dev build).
+Release APKs only allow `https://` servers (`usesCleartextTraffic` is off).
+
+### Docker (server + web app)
+
 ```bash
-# In the relay/ folder:
-cd relay
-npm install
-npm run dev           # Runs Cloudflare Worker locally via Wrangler at http://localhost:8787
-npm run build         # Validates Worker bundling & Durable Object bindings
+docker compose up --build -d                              # server on :8787, web app on :8081
+docker compose --profile migrate run --rm --build migrate # apply database migrations
+docker compose down
 ```
 
----
+The server reads `relay/.dev.vars` (`DATABASE_URL`, `ADMIN_API_KEY`); see [relay/README.md](relay/README.md).
+Point `DATABASE_URL` at a local Postgres when testing, not production.
 
-## 🌐 Cloudflare Worker Relay Coordinator (`relay/`)
+## Deploying the server
 
-All backend synchronization endpoints, SQLite Durable Objects, and WebSocket brokers reside exclusively in the **`relay/`** directory:
+The Worker is connected to this repo through Cloudflare's Git integration and deploys on push. Database
+migrations are not run by that deploy: after adding a file under `relay/migrations/`, run
+`npm --prefix relay run migrate` with the production `DATABASE_URL`, then check `GET /health/db`.
 
-- **Health Check:** `GET /health` or `GET /`
-- **Bootstrap Snapshot:** `GET /sync/bootstrap/:groupId`
-- **Incremental Changes:** `GET /sync/changes/:groupId?after=<sequence>`
-- **Atomic Outbox Push:** `POST /sync/push`
-- **Realtime WebSocket:** `GET /ws`
-- **Web Join Landing Page:** `GET /join`
+## Building the Android APK
 
-To deploy the relay coordinator to Cloudflare Workers:
-```bash
-cd relay
-npx wrangler login
-npm run deploy
-```
+**GitHub Actions** ([build-apk.yml](.github/workflows/build-apk.yml)) builds a signed release APK when you:
 
----
+- push a commit whose message contains `[build]`, `[apk]` or `build:` → APK as a workflow artifact;
+- push a commit containing `[release]` or `release:`, push a `v*` tag, or run the workflow by hand → APK attached
+  to the GitHub Release `v<version>` (created, or its APK replaced if it already exists), with notes taken from the
+  matching `## <version>` section of [CHANGELOG.md](CHANGELOG.md).
 
-## 📱 Building the Android APK
+The version comes from `app.json` (`version`, `android.versionCode`). Signing secrets are described in
+[SIGNING.md](SIGNING.md).
 
-You can build a standalone release `.apk` using either **Expo Cloud (EAS Build)** or **GitHub Actions CI/CD**:
+**EAS Build:** `npx eas-cli@latest login`, then `npm run build:apk`.
 
-### Method 1: Fast Expo Cloud Build (EAS)
-```bash
-npx eas-cli@latest login
-npm run build:apk
-```
+## Project structure
 
-### Method 2: Free GitHub Actions CI/CD
-1. Push this repository to your GitHub account.
-2. (Optional) Add signing secrets (see [SIGNING.md](SIGNING.md)).
-3. Go to **Actions → Build Android APK → Run workflow**.
-4. Download the signed `.apk` from the Releases / Artifacts page.
-
----
-
-## 📂 Project Structure
-
-```
+```text
 splitmate-app/
-├── app.json                  # Expo application configuration & native permissions
-├── package.json              # Mobile dependencies, scripts, and Expo toolchain
-├── relay/                    # Cloudflare Workers & Durable Objects SQLite Coordinator
-│   ├── wrangler.toml         # Cloudflare Worker config with DO SQLite migrations
-│   ├── package.json          # Relay scripts & wrangler dependencies
-│   ├── tsconfig.json         # Relay TypeScript compiler settings
-│   ├── README.md             # Relay architecture & API documentation
-│   └── src/
-│       ├── index.ts          # Worker fetch router & RelayRoom Durable Object
-│       ├── api.ts            # REST API handler (/sync/bootstrap, /sync/changes, /sync/push)
-│       ├── db.ts             # Cloudflare DO SQLite & In-memory adapter
-│       ├── syncService.ts    # Push mutations, monotonic sequence log, optimistic concurrency
-│       ├── permissions.ts    # Server-authoritative permission engine
-│       ├── realtimeHub.ts    # Pub/Sub lightweight notification dispatcher
-│       └── types.ts          # Shared server DTO interfaces
-├── src/                      # Mobile Offline-First Application Source
-│   ├── data/                 # Local SQLite Engine & Outbox Sync Coordinator
-│   │   ├── db.ts             # SQLite initialization & schema migrations (v1-v4)
-│   │   ├── repo.ts           # Local repositories (groups, members, transactions, outbox enqueue)
-│   │   ├── outbox.ts         # Local outbox management (pending, synced, conflict states)
-│   │   ├── syncState.ts      # Server sequence cursors & sync watermarks
-│   │   ├── syncEngine.ts     # Mobile sync engine (push outbox, pull changes, apply to SQLite)
-│   │   ├── logic.ts          # Split math, balances, settle-up algorithms
-│   │   ├── insights.ts       # Spending trends & analytics calculations
-│   │   ├── backup.ts         # JSON backup export & validated import
-│   │   └── types.ts          # Core TypeScript data definitions
-│   ├── app/                  # Expo Router Screens
-│   ├── components/           # UI Components, QR code generator, and camera scanner
-│   └── lib/                  # Identity, Crypto, PIN, formatting, and Excel writer
-└── tests/                    # 58 Automated Node & SQLite Test Suites
+├── app.json, eas.json            # Expo app config and EAS build profiles
+├── plugins/withReleaseSigning.js # injects the release keystore into the generated Android project
+├── src/
+│   ├── app/                      # screens (Expo Router)
+│   ├── components/               # UI kit, charts, calendar, QR code and scanner
+│   ├── data/
+│   │   ├── db.ts                 # SQLite schema and migrations
+│   │   ├── platform.ts           # expo-sqlite adapter (serializes transactions)
+│   │   ├── repo.ts               # groups, members, transactions; every write also queues an outbox mutation
+│   │   ├── outbox.ts             # outbox queue (pending / sending / failed / conflict)
+│   │   ├── syncState.ts          # per-group server cursor, status, upload marker
+│   │   ├── syncEngine.ts         # push, pull, backfill, join, conflict resolution
+│   │   ├── sync.ts               # change notifications and the local-change signal
+│   │   ├── settings.ts           # key/value app settings
+│   │   ├── logic.ts, insights.ts # split math, balances, settle-up, analytics
+│   │   └── backup.ts, samples.ts # backup import/export, sample groups
+│   └── lib/                      # identity and server URL, PIN, formatting, reports, Excel writer
+├── relay/                        # sync server (Cloudflare Worker) — see relay/README.md
+├── tests/                        # node:test suites
+├── docker-compose.yml, Dockerfile.web, docker/  # local server + web stack
+└── vendor/decode-uri-component/  # linear-time replacement (fixes a DoS advisory), forced via package.json "overrides"
 ```

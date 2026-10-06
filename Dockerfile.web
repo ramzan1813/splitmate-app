@@ -1,5 +1,5 @@
 # SplitMate web frontend for local testing: static Expo web export served by nginx.
-# EXPO_PUBLIC_* values are inlined at build time, so the relay URL is a build arg.
+# EXPO_PUBLIC_* values are inlined at build time, so the server URL is a build arg.
 # It is the URL the *browser* uses, so it must be reachable from the host (localhost), not a compose service name.
 FROM node:24-bookworm-slim AS build
 
@@ -11,8 +11,8 @@ RUN npm ci --no-audit --no-fund
 
 COPY . .
 
-ARG EXPO_PUBLIC_RELAY_URL=http://localhost:8787
-ENV EXPO_PUBLIC_RELAY_URL=$EXPO_PUBLIC_RELAY_URL \
+ARG EXPO_PUBLIC_SERVER_URL=http://localhost:8787
+ENV EXPO_PUBLIC_SERVER_URL=$EXPO_PUBLIC_SERVER_URL \
     EXPO_NO_TELEMETRY=1 \
     CI=1
 

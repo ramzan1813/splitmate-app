@@ -23,6 +23,30 @@ const mapSyncStateRow = (r: SyncStateRow): SyncState => ({
   updatedAt: r.updated_at,
 });
 
+// A group's "upload marker" says its full local history is already in the outbox or on the server.
+// Groups without it (created before the sync engine existed) get backfilled on their first sync.
+const uploadMarkerKey = (groupUid: string) => `sync.uploaded.${groupUid}`;
+
+export async function hasUploadMarker(groupUid: string, dbInstance?: DB): Promise<boolean> {
+  const db = dbInstance ?? (await getDb());
+  return !!(await db.getFirstAsync<{ value: string }>('SELECT value FROM settings WHERE key = ?', [uploadMarkerKey(groupUid)]));
+}
+
+export async function setUploadMarker(groupUid: string, dbInstance?: DB): Promise<void> {
+  const db = dbInstance ?? (await getDb());
+  await db.runAsync(
+    `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    [uploadMarkerKey(groupUid), new Date().toISOString()]
+  );
+}
+
+/** Forgets every group's server cursor and upload marker (used when the server URL changes). */
+export async function resetAllSyncBindings(dbInstance?: DB): Promise<void> {
+  const db = dbInstance ?? (await getDb());
+  await db.runAsync(`DELETE FROM settings WHERE key LIKE 'sync.uploaded.%'`, []);
+  await db.runAsync(`UPDATE sync_state SET last_server_sequence = 0, updated_at = ?`, [new Date().toISOString()]);
+}
+
 /** Retrieves the current synchronization state and cursor for a group. */
 export async function getSyncState(groupUid: string, dbInstance?: DB): Promise<SyncState | null> {
   const db = dbInstance ?? (await getDb());
@@ -63,6 +87,19 @@ export async function updateServerSequence(groupUid: string, serverSequence: num
   );
 }
 
+/**
+ * Sets the cursor to an exact value (unlike updateServerSequence, which only moves forward).
+ * Used after a bootstrap and when the server reports the cursor is ahead of its history.
+ */
+export async function resetServerSequence(groupUid: string, serverSequence: number, dbInstance?: DB): Promise<void> {
+  const db = dbInstance ?? (await getDb());
+  await db.runAsync(`UPDATE sync_state SET last_server_sequence = ?, updated_at = ? WHERE group_uid = ?`, [
+    serverSequence,
+    new Date().toISOString(),
+    groupUid,
+  ]);
+}
+
 /** Sets the current sync status and optional error details for a group. */
 export async function setSyncStatus(groupUid: string, status: SyncStatus, errorDetail?: string | null, dbInstance?: DB): Promise<void> {
   const db = dbInstance ?? (await getDb());
@@ -75,11 +112,4 @@ export async function setSyncStatus(groupUid: string, status: SyncStatus, errorD
      WHERE group_uid = ?`,
     [status, errorDetail ?? null, now, groupUid]
   );
-}
-
-/** Retrieves all active sync states across all groups. */
-export async function getAllSyncStates(dbInstance?: DB): Promise<SyncState[]> {
-  const db = dbInstance ?? (await getDb());
-  const rows = await db.getAllAsync<SyncStateRow>(`SELECT * FROM sync_state ORDER BY updated_at DESC`, []);
-  return rows.map(mapSyncStateRow);
 }

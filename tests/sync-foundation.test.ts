@@ -5,19 +5,18 @@ import { migrate, setDb, getDb } from '../src/data/db';
 import * as repo from '../src/data/repo';
 import { getDeviceId } from '../src/lib/identity';
 import {
-  clearAcknowledgedOutboxMutations,
+  discardUnresolvedOutboxMutations,
   enqueueOutboxMutation,
   getOutboxCount,
   getOutboxMutationsByStatus,
   getPendingOutboxMutations,
-  markOutboxMutationAcknowledged,
   markOutboxMutationConflict,
   markOutboxMutationFailed,
   markOutboxMutationInFlight,
-  removeOutboxMutation,
+  requeueOutboxMutations,
+  resetInFlightOutboxMutations,
 } from '../src/data/outbox';
 import {
-  getAllSyncStates,
   getSyncState,
   initSyncState,
   setSyncStatus,
@@ -39,10 +38,14 @@ test('sync foundation: device ID is stable, persistent, and idempotent', async (
   assert.equal(dev2, dev1, 'Repeated getDeviceId calls must return the identical device ID');
 });
 
-test('sync foundation: schema migration v4 establishes all required sync tables and columns', async () => {
+test('sync foundation: schema migrations establish all required sync tables and columns', async () => {
   const db = await getDb();
   const v = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version', []);
-  assert.equal(v?.user_version, 4, 'Schema version must be 4');
+  assert.equal(v?.user_version, 6, 'Schema version must be 6');
+
+  // The old relay's event log is gone
+  const legacy = await db.getFirstAsync("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sync_events'", []);
+  assert.equal(legacy, null);
 
   // Verify outbox_mutations table
   const outbox = await db.getAllAsync('SELECT * FROM outbox_mutations', []);
@@ -169,32 +172,38 @@ test('sync foundation: outbox state transitions and lifecycle methods', async ()
   assert.equal(inFlight.length, 1);
   assert.equal(inFlight[0]!.clientMutationId, 'mut_test_state_1');
 
-  // 2. Failure retry
-  await markOutboxMutationFailed('mut_test_state_1', 'Network timeout');
-  let failed = await getOutboxMutationsByStatus('failed', 'grp_test_1');
-  assert.equal(failed.length, 1);
-  assert.equal(failed[0]!.retryCount, 1);
-  assert.equal(failed[0]!.errorMessage, 'Network timeout');
+  // 2. Transient failure (network down): back to pending for the next sync
+  await requeueOutboxMutations(['mut_test_state_1'], 'Network timeout');
+  let pending = await getPendingOutboxMutations('grp_test_1');
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0]!.retryCount, 1);
+  assert.equal(pending[0]!.errorMessage, 'Network timeout');
 
-  // 3. Conflict
+  // 3. A push interrupted mid-request (app killed) is recovered on the next sync
+  await markOutboxMutationInFlight(['mut_test_state_1']);
+  await resetInFlightOutboxMutations('grp_test_1');
+  assert.equal((await getPendingOutboxMutations('grp_test_1')).length, 1);
+
+  // 4. Rejected by the server: kept as failed for the user to review
+  await markOutboxMutationFailed('mut_test_state_1', 'FORBIDDEN');
+  const failed = await getOutboxMutationsByStatus('failed', 'grp_test_1');
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0]!.retryCount, 2);
+
+  // 5. Conflict
   await markOutboxMutationConflict('mut_test_state_1', 'VERSION_MISMATCH');
-  let conflict = await getOutboxMutationsByStatus('conflict', 'grp_test_1');
+  const conflict = await getOutboxMutationsByStatus('conflict', 'grp_test_1');
   assert.equal(conflict.length, 1);
   assert.equal(conflict[0]!.errorMessage, 'VERSION_MISMATCH');
 
-  // 4. Acknowledged
-  await markOutboxMutationAcknowledged('mut_test_state_1');
-  let acked = await getOutboxMutationsByStatus('acknowledged', 'grp_test_1');
-  assert.equal(acked.length, 1);
-
-  // 5. Counts summary
+  // 6. Counts summary
   const counts = await getOutboxCount('grp_test_1');
   assert.equal(counts.pending, 0);
+  assert.equal(counts.conflict, 1);
   assert.equal(counts.total, 1);
 
-  // 6. Clear acknowledged
-  const cleared = await clearAcknowledgedOutboxMutations('grp_test_1');
-  assert.equal(cleared, 1);
+  // 7. The user accepts the server's version: refused mutations are discarded
+  assert.equal(await discardUnresolvedOutboxMutations('grp_test_1'), 1);
   assert.equal((await getOutboxCount('grp_test_1')).total, 0);
 });
 
@@ -229,10 +238,6 @@ test('sync foundation: sync cursor and sync state management', async () => {
   updated = await getSyncState('grp_cursor_test');
   assert.equal(updated?.syncStatus, 'error');
   assert.equal(updated?.errorDetail, 'Connection lost');
-
-  // 5. Query all sync states
-  const all = await getAllSyncStates();
-  assert.ok(all.some((s) => s.groupUid === 'grp_cursor_test'));
 });
 
 test('sync foundation: financial calculations strictly ignore soft-deleted tombstones', async () => {

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Button, Card, Field, Row, Screen, SectionTitle } from '@/components/ui';
+import { Button, Field, Row, Screen, SectionTitle } from '@/components/ui';
 import { CurrencyPicker } from '@/components/CurrencyPicker';
 import { createGroup } from '@/data/repo';
 import { PermissionModel } from '@/data/types';
@@ -86,7 +86,7 @@ export default function NewGroup() {
             {permissionModel === 'contributor' && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓</Text>}
           </Row>
           <Text style={{ color: colors.muted, fontSize: 13 }}>
-            Members can add expenses and edit/delete their own transactions. Only the admin can edit or delete everyone's transactions.
+            Members can add expenses and edit/delete their own transactions. Only the admin can edit or delete everyone’s transactions.
           </Text>
         </Pressable>
 

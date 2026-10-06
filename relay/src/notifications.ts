@@ -25,7 +25,7 @@ const BATCH_SIZE = 100; // Expo accepts up to 100 messages per request
 const MAX_WEBHOOK_ATTEMPTS = 30; // ~1 day of retries at the backoff cap, then the hook is disabled
 const DEFAULT_EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 
-export function changesAvailableEvent(groupUid: string, latestSequence: number): ChangesAvailableEvent {
+function changesAvailableEvent(groupUid: string, latestSequence: number): ChangesAvailableEvent {
   return { type: 'CHANGES_AVAILABLE', groupUid, latestSequence, timestamp: new Date().toISOString() };
 }
 
@@ -41,7 +41,7 @@ async function hmacSha256Hex(secret: string, message: string): Promise<string> {
   return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export async function signWebhookPayload(secret: string, body: string, timestampSec: number): Promise<string> {
+async function signWebhookPayload(secret: string, body: string, timestampSec: number): Promise<string> {
   return `t=${timestampSec},v1=${await hmacSha256Hex(secret, `${timestampSec}.${body}`)}`;
 }
 
@@ -191,7 +191,7 @@ async function dispatchExpoPush(db: Database, opts: NotifierOptions, groupUid: s
   }));
 
   // One ticket per message, in order. A transport-level failure fails the whole batch.
-  let tickets: Array<{ status: 'ok' | 'error'; message?: string; details?: { error?: string } }>;
+  let tickets: { status: 'ok' | 'error'; message?: string; details?: { error?: string } }[];
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
     if (opts.expoAccessToken) headers.Authorization = `Bearer ${opts.expoAccessToken}`;

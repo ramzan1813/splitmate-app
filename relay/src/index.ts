@@ -10,9 +10,9 @@ import { HttpError } from './syncService';
 export { RelayRoom } from './legacyRelayRoom';
 
 export interface Env {
-  /** Optional Hyperdrive binding in front of Supabase (recommended for production). */
+  /** Optional Hyperdrive binding in front of Postgres (pooled connections). */
   HYPERDRIVE?: { connectionString: string };
-  /** Supabase Postgres connection string (secret). Used when HYPERDRIVE is not bound. */
+  /** Postgres connection string (secret). Used when HYPERDRIVE is not bound. */
   DATABASE_URL?: string;
   ADMIN_API_KEY?: string;
   EXPO_ACCESS_TOKEN?: string;

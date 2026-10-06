@@ -119,7 +119,6 @@ export async function getGroupBootstrap(db: Database, groupUid: string): Promise
         permissionModel: group.permission_model.toLowerCase(),
         creatorId: group.creator_id,
         creatorName: group.creator_name,
-        syncKey: group.sync_key,
         serverVersion: group.server_version,
         isDeleted: group.is_deleted,
         createdAt: iso(group.created_at),
@@ -465,8 +464,8 @@ async function applyGroupMutation(tx: Queryable, ctx: PushContext, group: GroupR
     if (!isNonEmptyString(p.name)) throw rejected('VALIDATION_ERROR', 'Group name is required');
     const permissionModel = normalizePermissionModel(p.permissionModel) ?? 'COLLABORATIVE';
     await tx.query(
-      `INSERT INTO groups (uid, name, description, currency, permission_model, creator_id, creator_name, sync_key, server_version, last_sequence)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, 0)`,
+      `INSERT INTO groups (uid, name, description, currency, permission_model, creator_id, creator_name, server_version, last_sequence)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 0)`,
       [
         mut.entityUid,
         p.name.trim(),
@@ -475,7 +474,6 @@ async function applyGroupMutation(tx: Queryable, ctx: PushContext, group: GroupR
         permissionModel,
         isNonEmptyString(p.creatorId) ? p.creatorId : ctx.actorId,
         isNonEmptyString(p.creatorName) ? p.creatorName : ctx.actorName || 'Admin',
-        typeof p.syncKey === 'string' ? p.syncKey : '',
       ]
     );
     const serverSequence = await appendChange(tx, ctx, 'group', mut.entityUid, 'create', 1, p);
@@ -689,7 +687,7 @@ async function resolveSplits(tx: Queryable, ctx: PushContext, splits: any[]): Pr
   return resolved;
 }
 
-function assertSharesBalance(amount: number, splits: Array<{ share: number }>) {
+function assertSharesBalance(amount: number, splits: { share: number }[]) {
   const total = splits.reduce((sum, s) => sum + s.share, 0);
   if (total !== amount) {
     throw rejected('SPLIT_TOTAL_MISMATCH', `Split shares total ${total} but transaction amount is ${amount}`);

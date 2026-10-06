@@ -112,12 +112,6 @@ export async function markOutboxMutationInFlight(clientMutationIds: string[], db
   await db.runAsync(`UPDATE outbox_mutations SET status = 'sending' WHERE client_mutation_id IN (${placeholders})`, clientMutationIds);
 }
 
-/** Marks a mutation as acknowledged by the server. */
-export async function markOutboxMutationAcknowledged(clientMutationId: string, dbInstance?: DB): Promise<void> {
-  const db = dbInstance ?? (await getDb());
-  await db.runAsync(`UPDATE outbox_mutations SET status = 'acknowledged', error_message = NULL WHERE client_mutation_id = ?`, [clientMutationId]);
-}
-
 /** Marks a mutation as failed, recording error detail and incrementing retry count. */
 export async function markOutboxMutationFailed(clientMutationId: string, errorMessage: string, dbInstance?: DB): Promise<void> {
   const db = dbInstance ?? (await getDb());
@@ -125,6 +119,46 @@ export async function markOutboxMutationFailed(clientMutationId: string, errorMe
     `UPDATE outbox_mutations SET status = 'failed', retry_count = retry_count + 1, error_message = ? WHERE client_mutation_id = ?`,
     [errorMessage, clientMutationId]
   );
+}
+
+/**
+ * Returns mutations to 'pending' after a transient failure (network down, server 5xx) so the next
+ * sync retries them. Safe because the server deduplicates by clientMutationId.
+ */
+export async function requeueOutboxMutations(clientMutationIds: string[], errorMessage: string, dbInstance?: DB): Promise<void> {
+  if (clientMutationIds.length === 0) return;
+  const db = dbInstance ?? (await getDb());
+  const placeholders = clientMutationIds.map(() => '?').join(',');
+  await db.runAsync(
+    `UPDATE outbox_mutations SET status = 'pending', retry_count = retry_count + 1, error_message = ? WHERE client_mutation_id IN (${placeholders})`,
+    [errorMessage, ...clientMutationIds]
+  );
+}
+
+/** Recovers mutations left 'sending' by a push that never completed (e.g. the app was killed mid-request). */
+export async function resetInFlightOutboxMutations(groupUid: string, dbInstance?: DB): Promise<void> {
+  const db = dbInstance ?? (await getDb());
+  await db.runAsync(`UPDATE outbox_mutations SET status = 'pending' WHERE group_uid = ? AND status = 'sending'`, [groupUid]);
+}
+
+/** Lists mutations the server refused (conflict or rejected) so the user can review them. */
+export async function getUnresolvedOutboxMutations(groupUid: string, dbInstance?: DB): Promise<OutboxMutation[]> {
+  const db = dbInstance ?? (await getDb());
+  const rows = await db.getAllAsync<OutboxRow>(
+    `SELECT * FROM outbox_mutations WHERE group_uid = ? AND status IN ('conflict', 'failed') ORDER BY id ASC`,
+    [groupUid]
+  );
+  return rows.map(mapOutboxRow);
+}
+
+/**
+ * Drops this device's refused mutations for a group. Only called on an explicit user decision,
+ * together with rebuilding the group from the server (SyncEngine.acceptServerVersion).
+ */
+export async function discardUnresolvedOutboxMutations(groupUid: string, dbInstance?: DB): Promise<number> {
+  const db = dbInstance ?? (await getDb());
+  const res = await db.runAsync(`DELETE FROM outbox_mutations WHERE group_uid = ? AND status IN ('conflict', 'failed')`, [groupUid]);
+  return res.changes;
 }
 
 /** Marks a mutation as conflict, indicating server version mismatch. */
@@ -140,17 +174,6 @@ export async function markOutboxMutationConflict(clientMutationId: string, error
 export async function removeOutboxMutation(clientMutationId: string, dbInstance?: DB): Promise<void> {
   const db = dbInstance ?? (await getDb());
   await db.runAsync(`DELETE FROM outbox_mutations WHERE client_mutation_id = ?`, [clientMutationId]);
-}
-
-/** Clears all acknowledged mutations from the outbox. */
-export async function clearAcknowledgedOutboxMutations(groupUid?: string, dbInstance?: DB): Promise<number> {
-  const db = dbInstance ?? (await getDb());
-  const sql = groupUid
-    ? `DELETE FROM outbox_mutations WHERE group_uid = ? AND status = 'acknowledged'`
-    : `DELETE FROM outbox_mutations WHERE status = 'acknowledged'`;
-  const params = groupUid ? [groupUid] : [];
-  const res = await db.runAsync(sql, params);
-  return res.changes;
 }
 
 /** Returns the count of outbox mutations grouped by status. */

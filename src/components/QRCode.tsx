@@ -13,7 +13,7 @@ interface QRCodeProps {
 }
 
 export function QRCode({ value, size = 200, color = '#0F172A', backgroundColor = '#FFFFFF' }: QRCodeProps) {
-  const { path, matrixSize } = useMemo(() => {
+  const { path } = useMemo(() => {
     try {
       // Generate standard QR matrix with Medium error correction (recovers up to 15% damage)
       const qr = QRCodeLib.create(value, { errorCorrectionLevel: 'M' });
@@ -31,9 +31,9 @@ export function QRCode({ value, size = 200, color = '#0F172A', backgroundColor =
         }
       }
 
-      return { path: d, matrixSize: numModules };
+      return { path: d };
     } catch {
-      return { path: '', matrixSize: 21 };
+      return { path: '' };
     }
   }, [value, size]);
 

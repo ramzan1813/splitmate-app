@@ -95,7 +95,7 @@ function GroupSettings({ id, data, reload }: { id: string; data: GroupSummary; r
                 {permissionModel === 'contributor' && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓ Active</Text>}
               </Row>
               <Text style={{ color: colors.muted, fontSize: 13 }}>
-                Members can add expenses and edit/delete their own transactions. Only the admin can edit or delete everyone's transactions.
+                Members can add expenses and edit/delete their own transactions. Only the admin can edit or delete everyone’s transactions.
               </Text>
             </Pressable>
 

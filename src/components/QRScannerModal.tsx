@@ -30,16 +30,20 @@ export function QRScannerModal({
   const [manualInput, setManualInput] = useState('');
   const [showManual, setShowManual] = useState(false);
 
-  useEffect(() => {
+  // Start fresh each time the scanner opens (state adjusted during render, not in an effect).
+  const [wasVisible, setWasVisible] = useState(visible);
+  if (visible !== wasVisible) {
+    setWasVisible(visible);
     if (visible) {
       setScanned(false);
       setShowManual(false);
       setManualInput('');
-      if (!permission?.granted) {
-        requestPermission();
-      }
     }
-  }, [visible, permission?.granted]);
+  }
+
+  useEffect(() => {
+    if (visible && !permission?.granted) requestPermission();
+  }, [visible, permission?.granted, requestPermission]);
 
   const handleBarcodeScanned = ({ data }: { data: string }) => {
     if (scanned || !data) return;

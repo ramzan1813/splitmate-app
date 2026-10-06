@@ -1,173 +1,91 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Avatar, Button, Card, Row, Screen, SectionTitle } from '@/components/ui';
-import { createGroup, listGroups } from '@/data/repo';
-import { createSyncEvent, syncManager } from '@/data/sync';
+import { Avatar, Button, Card, Row, Screen } from '@/components/ui';
+import { listGroups } from '@/data/repo';
+import { syncEngine, SyncNetworkError } from '@/data/syncEngine';
+import { GroupBootstrapResponse } from '@/data/types';
 import { useApp } from '@/lib/app';
 import { colors } from '@/lib/theme';
 import { errorMessage, notify } from '@/lib/dialog';
 
+/** Pulls the group uid out of the route params or a scanned/pasted invite (URL, query string or JSON). */
+function inviteGroupUid(params: { uid?: string; invite?: string }): string | null {
+  if (params.invite) {
+    const raw = decodeURIComponent(params.invite).trim();
+    if (raw.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed.uid === 'string' && parsed.uid) return parsed.uid;
+      } catch {
+        // fall through to the uid param
+      }
+    } else {
+      const queryIdx = raw.indexOf('?');
+      const uid = new URLSearchParams(queryIdx !== -1 ? raw.slice(queryIdx + 1) : raw).get('uid');
+      if (uid) return uid;
+    }
+  }
+  return params.uid || null;
+}
+
 export default function JoinScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{
-    uid?: string;
-    key?: string;
-    name?: string;
-    cur?: string;
-    members?: string;
-    creatorId?: string;
-    creatorName?: string;
-    perm?: string;
-    permissionModel?: string;
-    invite?: string;
-  }>();
+  // Depend on the strings, not the params object: it is a new object on every render.
+  const { uid: uidParam, invite: inviteParam } = useLocalSearchParams<{ uid?: string; invite?: string }>();
   const { profileName } = useApp();
   const [loading, setLoading] = useState(true);
   const [joining, setJoining] = useState(false);
-  const [groupInfo, setGroupInfo] = useState<{
-    uid: string;
-    key: string;
-    name: string;
-    currency: string;
-    members: string[];
-    creatorId?: string;
-    creatorName?: string;
-    permissionModel?: any;
-  } | null>(null);
-  const [selectedMember, setSelectedMember] = useState<string>('');
+  const [snapshot, setSnapshot] = useState<GroupBootstrapResponse | null>(null);
+  const [selectedMember, setSelectedMember] = useState('');
   const [error, setError] = useState('');
+  const handled = useRef(false);
+  const myDefaultName = profileName || 'Me';
 
-  const hasHandled = React.useRef(false);
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const uid = inviteGroupUid({ uid: uidParam, invite: inviteParam });
+      if (!uid) {
+        setError('Invalid or incomplete invite link. Please scan a valid SplitMate QR code or paste an invite link.');
+        return;
+      }
+      const existing = (await listGroups()).find((g) => g.uid === uid);
+      if (existing) {
+        handled.current = true;
+        syncEngine.syncGroup(uid).catch(() => {});
+        router.replace(`/group/${existing.id}`);
+        return;
+      }
+      const snap = await syncEngine.fetchGroupSnapshot(uid);
+      const match = snap.members.find((m) => m.name.toLowerCase() === myDefaultName.toLowerCase());
+      setSelectedMember(match?.name || myDefaultName);
+      setSnapshot(snap);
+    } catch (e) {
+      setError(
+        e instanceof SyncNetworkError
+          ? `Couldn't reach the SplitMate server to load this group. Check your connection and try again.\n\n${e.message}`
+          : errorMessage(e)
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [uidParam, inviteParam, router, myDefaultName]);
 
   useEffect(() => {
-    async function init() {
-      if (hasHandled.current) return;
-      try {
-        let rawUid = params.uid;
-        let rawKey = params.key;
-        let rawName = params.name ? decodeURIComponent(params.name) : 'Shared Group';
-        let rawCur = params.cur || 'USD';
-        let rawCreatorId = params.creatorId ? decodeURIComponent(params.creatorId) : '';
-        let rawCreatorName = params.creatorName ? decodeURIComponent(params.creatorName) : '';
-        let rawPerm = (params.perm || params.permissionModel || 'collaborative') as any;
-        let rawMembers: string[] = [];
-
-        if (params.members) {
-          rawMembers = decodeURIComponent(params.members)
-            .split(',')
-            .map((m) => m.trim())
-            .filter(Boolean);
-        }
-
-        // Check if raw invite string is present
-        if (params.invite) {
-          const raw = decodeURIComponent(params.invite).trim();
-          if (raw.startsWith('{')) {
-            try {
-              const parsed = JSON.parse(raw);
-              rawUid = parsed.uid || rawUid;
-              rawKey = parsed.key || parsed.syncKey || rawKey;
-              rawName = parsed.name || rawName;
-              rawCur = parsed.cur || parsed.currency || rawCur;
-              rawCreatorId = parsed.creatorId || rawCreatorId;
-              rawCreatorName = parsed.creatorName || rawCreatorName;
-              rawPerm = parsed.permissionModel || parsed.perm || rawPerm;
-              if (Array.isArray(parsed.members)) {
-                rawMembers = parsed.members.map((m: any) => (typeof m === 'string' ? m : m.name)).filter(Boolean);
-              }
-            } catch {
-              // ignore json parse error
-            }
-          } else {
-            const queryIdx = raw.indexOf('?');
-            const queryString = queryIdx !== -1 ? raw.slice(queryIdx + 1) : raw;
-            const search = new URLSearchParams(queryString);
-            rawUid = search.get('uid') || rawUid;
-            rawKey = search.get('key') || search.get('syncKey') || rawKey;
-            rawName = search.get('name') ? decodeURIComponent(search.get('name')!) : rawName;
-            rawCur = search.get('cur') || search.get('currency') || rawCur;
-            rawCreatorId = search.get('creatorId') ? decodeURIComponent(search.get('creatorId')!) : rawCreatorId;
-            rawCreatorName = search.get('creatorName') ? decodeURIComponent(search.get('creatorName')!) : rawCreatorName;
-            rawPerm = (search.get('perm') || search.get('permissionModel') || rawPerm) as any;
-            if (search.get('members')) {
-              rawMembers = decodeURIComponent(search.get('members')!)
-                .split(',')
-                .map((m) => m.trim())
-                .filter(Boolean);
-            }
-          }
-        }
-
-        if (!rawUid || !rawKey) {
-          setError('Invalid or incomplete invite link. Please scan a valid SplitMate QR code or paste an invite link.');
-          setLoading(false);
-          return;
-        }
-
-        // Check if user already has this group
-        const existingGroups = await listGroups();
-        const existing = existingGroups.find((g) => g.uid === rawUid);
-        if (existing) {
-          hasHandled.current = true;
-          if (existing.syncKey || rawKey) {
-            await syncManager.connectGroup(existing.uid, existing.syncKey || rawKey);
-            await syncManager.requestState(existing.uid);
-          }
-          router.replace(`/group/${existing.id}`);
-          return;
-        }
-
-        // Auto-match profile name if present among members
-        const myDefaultName = profileName || 'Me';
-        const match = rawMembers.find((m) => m.toLowerCase() === myDefaultName.toLowerCase());
-        setSelectedMember(match || myDefaultName);
-
-        setGroupInfo({
-          uid: rawUid,
-          key: rawKey,
-          name: rawName,
-          currency: rawCur,
-          members: rawMembers,
-          creatorId: rawCreatorId,
-          creatorName: rawCreatorName,
-          permissionModel: rawPerm,
-        });
-      } catch (e) {
-        setError(errorMessage(e));
-      } finally {
-        setLoading(false);
-      }
-    }
-    init();
-  }, [params, router, profileName]);
+    if (!handled.current) load();
+  }, [load]);
 
   const handleJoin = async () => {
-    if (!groupInfo || hasHandled.current) return;
+    if (!snapshot || handled.current) return;
     try {
-      hasHandled.current = true;
+      handled.current = true;
       setJoining(true);
-      const myChosenName = selectedMember.trim() || profileName || 'Me';
-      const newGroup = await createGroup({
-        name: groupInfo.name,
-        currency: groupInfo.currency,
-        myName: myChosenName,
-        members: groupInfo.members,
-        syncKey: groupInfo.key,
-        uid: groupInfo.uid,
-        creatorId: groupInfo.creatorId,
-        creatorName: groupInfo.creatorName,
-        permissionModel: groupInfo.permissionModel,
-      });
-
-      // Connect to E2EE relay and broadcast JOIN_GROUP announcement + request state
-      await syncManager.connectGroup(groupInfo.uid, groupInfo.key);
-      await createSyncEvent(groupInfo.uid, 'JOIN_GROUP', { memberName: myChosenName });
-      await syncManager.requestState(groupInfo.uid);
-
-      router.replace(`/group/${newGroup.id}`);
+      const groupId = await syncEngine.joinGroup(snapshot, selectedMember.trim() || myDefaultName);
+      router.replace(`/group/${groupId}`);
     } catch (e) {
-      hasHandled.current = false;
+      handled.current = false;
       notify("Couldn't join", errorMessage(e));
     } finally {
       setJoining(false);
@@ -178,141 +96,96 @@ export default function JoinScreen() {
     return (
       <Screen style={{ justifyContent: 'center', alignItems: 'center' }}>
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={{ marginTop: 12, color: colors.muted, fontSize: 14 }}>Connecting to group invite...</Text>
+        <Text style={{ marginTop: 12, color: colors.muted, fontSize: 14 }}>Loading group from the server...</Text>
       </Screen>
     );
   }
 
-  if (error || !groupInfo) {
+  if (error || !snapshot) {
     return (
       <Screen style={{ maxWidth: 480, width: '100%', alignSelf: 'center', justifyContent: 'center' }}>
         <Card style={{ padding: 24, alignItems: 'center' }}>
           <Text style={{ fontSize: 32, marginBottom: 12 }}>⚠️</Text>
-          <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: 8, textAlign: 'center' }}>
-            Invite Link Not Recognized
-          </Text>
+          <Text style={{ fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: 8, textAlign: 'center' }}>Couldn’t open invite</Text>
           <Text style={{ color: colors.muted, textAlign: 'center', fontSize: 14, marginBottom: 20 }}>
-            {error || 'The invite link or QR code is missing required group sync information.'}
+            {error || 'The invite link is missing the group id.'}
           </Text>
           <Row style={{ gap: 10, width: '100%' }}>
             <Button title="Go to Home" variant="outline" onPress={() => router.replace('/')} style={{ flex: 1 }} />
-            <Button title="Manual Import" onPress={() => router.replace('/import')} style={{ flex: 1 }} />
+            <Button title="Try again" onPress={load} style={{ flex: 1 }} />
           </Row>
         </Card>
       </Screen>
     );
   }
 
-  const myDefaultName = profileName || 'Me';
-  const hasMemberOptions = groupInfo.members && groupInfo.members.length > 0;
+  const group = snapshot.group;
+  const members = snapshot.members.map((m) => m.name);
+  const isSelected = (name: string) => selectedMember.toLowerCase() === name.toLowerCase();
+  const optionStyle = (name: string) => ({
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: isSelected(name) ? colors.primary : colors.border,
+    backgroundColor: isSelected(name) ? colors.primaryLight : colors.card,
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+  });
+  const optionText = (name: string) => ({
+    fontWeight: (isSelected(name) ? '700' : '500') as '700' | '500',
+    color: isSelected(name) ? colors.primaryDark : colors.text,
+    flex: 1,
+  });
 
   return (
     <Screen style={{ maxWidth: 480, width: '100%', alignSelf: 'center', justifyContent: 'center' }}>
       <Card style={{ padding: 24, alignItems: 'center' }}>
         <Text style={{ fontSize: 36, marginBottom: 12 }}>🤝</Text>
-        <Text style={{ fontSize: 22, fontWeight: '800', color: colors.text, marginBottom: 6, textAlign: 'center' }}>
-          Join {groupInfo.name}
-        </Text>
+        <Text style={{ fontSize: 22, fontWeight: '800', color: colors.text, marginBottom: 6, textAlign: 'center' }}>Join {group.name}</Text>
         <Text style={{ color: colors.muted, textAlign: 'center', fontSize: 14, marginBottom: 20 }}>
-          You were invited to join this group. All expenses and payments will be synced end-to-end encrypted in real time.
+          You were invited to join this group. Expenses and payments sync through the SplitMate server.
         </Text>
 
         <View style={{ width: '100%', backgroundColor: colors.bg, borderRadius: 12, padding: 14, marginBottom: 16 }}>
           <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
             <Text style={{ color: colors.muted, fontSize: 13 }}>Group Name</Text>
-            <Text style={{ fontWeight: '700', fontSize: 14, color: colors.text }}>{groupInfo.name}</Text>
+            <Text style={{ fontWeight: '700', fontSize: 14, color: colors.text }}>{group.name}</Text>
           </Row>
           <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
             <Text style={{ color: colors.muted, fontSize: 13 }}>Currency</Text>
-            <Text style={{ fontWeight: '700', fontSize: 14, color: colors.text }}>{groupInfo.currency}</Text>
+            <Text style={{ fontWeight: '700', fontSize: 14, color: colors.text }}>{group.currency}</Text>
           </Row>
           <Row style={{ justifyContent: 'space-between' }}>
-            <Text style={{ color: colors.muted, fontSize: 13 }}>Security</Text>
-            <Text style={{ color: colors.positive, fontWeight: '700', fontSize: 13 }}>🔒 E2EE Active</Text>
+            <Text style={{ color: colors.muted, fontSize: 13 }}>Transactions</Text>
+            <Text style={{ fontWeight: '700', fontSize: 14, color: colors.text }}>{snapshot.transactions.length}</Text>
           </Row>
         </View>
 
         {/* Member Identity Binding */}
         <View style={{ width: '100%', marginBottom: 20 }}>
-          <Text style={{ fontWeight: '700', fontSize: 14, color: colors.text, marginBottom: 8 }}>
-            Who represents you in this group?
-          </Text>
+          <Text style={{ fontWeight: '700', fontSize: 14, color: colors.text, marginBottom: 8 }}>Who represents you in this group?</Text>
           <View style={{ gap: 8 }}>
-            {hasMemberOptions &&
-              groupInfo.members.map((m, idx) => {
-                const isSelected = selectedMember.toLowerCase() === m.toLowerCase();
-                return (
-                  <Pressable
-                    key={idx}
-                    onPress={() => setSelectedMember(m)}
-                    style={{
-                      padding: 12,
-                      borderRadius: 10,
-                      borderWidth: 1.5,
-                      borderColor: isSelected ? colors.primary : colors.border,
-                      backgroundColor: isSelected ? colors.primaryLight : colors.card,
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                    }}
-                  >
-                    <Avatar name={m} index={idx} size={28} />
-                    <Text
-                      style={{
-                        marginLeft: 10,
-                        fontWeight: isSelected ? '700' : '500',
-                        color: isSelected ? colors.primaryDark : colors.text,
-                        flex: 1,
-                      }}
-                    >
-                      {m}
-                    </Text>
-                    {isSelected && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓</Text>}
-                  </Pressable>
-                );
-              })}
+            {members.map((m, idx) => (
+              <Pressable key={m} onPress={() => setSelectedMember(m)} style={optionStyle(m)}>
+                <Avatar name={m} index={idx} size={28} />
+                <Text style={[optionText(m), { marginLeft: 10 }]}>{m}</Text>
+                {isSelected(m) && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓</Text>}
+              </Pressable>
+            ))}
 
-            {/* Join as new user if not already matching */}
-            {!groupInfo.members.some((m) => m.toLowerCase() === myDefaultName.toLowerCase()) && (
-              <Pressable
-                onPress={() => setSelectedMember(myDefaultName)}
-                style={{
-                  padding: 12,
-                  borderRadius: 10,
-                  borderWidth: 1.5,
-                  borderColor: selectedMember.toLowerCase() === myDefaultName.toLowerCase() ? colors.primary : colors.border,
-                  backgroundColor: selectedMember.toLowerCase() === myDefaultName.toLowerCase() ? colors.primaryLight : colors.card,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                }}
-              >
+            {/* Join as a new member if the profile name is not in the group */}
+            {!members.some((m) => m.toLowerCase() === myDefaultName.toLowerCase()) && (
+              <Pressable onPress={() => setSelectedMember(myDefaultName)} style={optionStyle(myDefaultName)}>
                 <Text style={{ fontSize: 18, marginRight: 10 }}>👤</Text>
-                <Text
-                  style={{
-                    fontWeight: selectedMember.toLowerCase() === myDefaultName.toLowerCase() ? '700' : '500',
-                    color: selectedMember.toLowerCase() === myDefaultName.toLowerCase() ? colors.primaryDark : colors.text,
-                    flex: 1,
-                  }}
-                >
-                  Join as {myDefaultName} (New Member)
-                </Text>
-                {selectedMember.toLowerCase() === myDefaultName.toLowerCase() && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓</Text>}
+                <Text style={optionText(myDefaultName)}>Join as {myDefaultName} (New Member)</Text>
+                {isSelected(myDefaultName) && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓</Text>}
               </Pressable>
             )}
           </View>
         </View>
 
-        <Button
-          title={`Join as ${selectedMember || myDefaultName}`}
-          onPress={handleJoin}
-          loading={joining}
-          style={{ width: '100%', marginBottom: 10 }}
-        />
-        <Button
-          title="Cancel"
-          variant="ghost"
-          onPress={() => router.replace('/')}
-          style={{ width: '100%' }}
-        />
+        <Button title={`Join as ${selectedMember || myDefaultName}`} onPress={handleJoin} loading={joining} style={{ width: '100%', marginBottom: 10 }} />
+        <Button title="Cancel" variant="ghost" onPress={() => router.replace('/')} style={{ width: '100%' }} />
       </Card>
     </Screen>
   );

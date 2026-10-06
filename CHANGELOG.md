@@ -2,6 +2,30 @@
 
 Release notes for each version. The release workflow copies the section matching the version in `app.json` into the GitHub Release.
 
+## 2.0.0 — 2026-10-06
+
+Sync moves from the encrypted WebSocket relay to the new SplitMate sync server. Update every phone in a group: older versions can no longer sync.
+
+### New
+- **Reliable multi-phone sync.** Edits are saved on the phone first and sent to the server when you're online — on app launch, when you return to the app, when you open a group, on pull-to-refresh and right after each change. Nothing is lost while offline.
+- **Sync status on every group.** The badge shows *Synced*, *Syncing*, *N pending*, *Offline*, *Sync error* or *N not synced*. Tap it to sync now.
+- **Safe conflict handling.** If two people edit the same expense at once, the second edit is refused instead of overwriting the first, shown as *not synced*, and you choose to take the group's current version.
+- **Server setting.** Settings → Server shows the sync server URL, can test the connection, and can point the app at another server (for development).
+- **Joining loads the group from the server**, including all past expenses, and lets you pick which existing member you are.
+- **Merging members now syncs** to everyone in the group.
+- Notifications list what other members added, edited or deleted.
+
+### Upgrading
+- Groups created on this phone before 2.0.0 are uploaded to the server automatically on first sync. If the group already exists on the server (another member uploaded it first), only what's missing is added; if your copy of an expense differs, the shared copy is kept and you get a notification.
+- Old invite links and QR codes still work.
+
+### Fixed
+- The group badge stuck on "Sync Active" and never connecting.
+- The old relay connection retrying in the background every few seconds, and errors when background sync and your own edits wrote to the database at the same time.
+
+### Removed
+- The end-to-end encrypted relay. Group data is now stored on the sync server so new members can download a group's full history.
+
 ## 1.4.1 — 2026-10-04
 
 ### New & Architecture

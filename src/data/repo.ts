@@ -1,15 +1,15 @@
 // All reads/writes of app data. Money is stored as integer cents.
-import { getDb, Param } from './db';
+import { DB, getDb, Param } from './db';
 import { computeShares, memberStats, suggestSettlements } from './logic';
 import { AppError, Group, GroupListItem, GroupSummary, Member, Split, Transaction, TxInput, TxType } from './types';
 import { CATEGORIES } from '../lib/theme';
 import { CURRENCIES } from '../lib/currencies';
-import { generateGroupKey } from '../lib/crypto';
 import { getIdentity } from '../lib/identity';
-import { createSyncEvent, SyncTxPayload } from './sync';
+import { signalLocalChange, SyncTxPayload } from './sync';
 import { enqueueOutboxMutation } from './outbox';
+import { setUploadMarker } from './syncState';
+import { getSetting, setSetting } from './settings';
 
-export { CURRENCIES };
 export const LIMITS = { name: 80, title: 120, note: 1000, description: 300, category: 40, maxAmount: 1_000_000_000 };
 
 const now = () => new Date().toISOString();
@@ -21,7 +21,7 @@ export function newUid() {
 
 const clean = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
 
-export const toCents = (v: unknown) => {
+const toCents = (v: unknown) => {
   const n = Number(v);
   if (!Number.isFinite(n)) throw new AppError('Invalid amount');
   const c = Math.round(n * 100);
@@ -39,7 +39,6 @@ interface GroupRow {
   permission_model?: string;
   creator_id?: string;
   creator_name?: string;
-  sync_key?: string;
   server_version?: number;
   is_deleted?: number;
   deleted_at?: string | null;
@@ -55,7 +54,6 @@ const mapGroup = (g: GroupRow): Group => ({
   permissionModel: (g.permission_model as Group['permissionModel']) || 'collaborative',
   creatorId: g.creator_id || '',
   creatorName: g.creator_name || '',
-  syncKey: g.sync_key || '',
   serverVersion: g.server_version ?? 1,
   isDeleted: Boolean(g.is_deleted),
   deletedAt: g.deleted_at ?? undefined,
@@ -145,19 +143,6 @@ async function touch(groupId: number) {
   await db.runAsync('UPDATE groups SET updated_at = ? WHERE id = ?', [now(), groupId]);
 }
 
-// ---------- settings ----------
-export async function getSetting(key: string): Promise<string | null> {
-  const db = await getDb();
-  const r = await db.getFirstAsync<{ value: string }>('SELECT value FROM settings WHERE key = ?', [key]);
-  return r ? r.value : null;
-}
-
-export async function setSetting(key: string, value: string | null) {
-  const db = await getDb();
-  if (value === null) await db.runAsync('DELETE FROM settings WHERE key = ?', [key]);
-  else await db.runAsync('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [key, value]);
-}
-
 // ---------- categories ----------
 const CUSTOM_CATEGORIES_KEY = 'customCategories';
 
@@ -196,11 +181,6 @@ export async function getGroup(id: number): Promise<Group> {
   const db = await getDb();
   const g = await db.getFirstAsync<GroupRow>('SELECT * FROM groups WHERE id = ? AND is_deleted = 0', [id]);
   if (!g) throw new AppError('Group not found');
-  if (!g.sync_key) {
-    const newKey = generateGroupKey();
-    await db.runAsync('UPDATE groups SET sync_key = ?, updated_at = ? WHERE id = ?', [newKey, now(), id]);
-    g.sync_key = newKey;
-  }
   return mapGroup(g);
 }
 
@@ -314,68 +294,28 @@ export async function createGroup(input: {
   description?: string;
   currency?: string;
   permissionModel?: Group['permissionModel'];
-  creatorId?: string;
-  creatorName?: string;
   myName: string;
   members?: string[];
-  syncKey?: string;
-  uid?: string;
 }) {
   const name = clean(input.name, LIMITS.name);
   if (!name) throw new AppError('Group name is required');
   const myName = clean(input.myName, LIMITS.name) || 'Me';
   const currency = CURRENCIES.includes(String(input.currency)) ? String(input.currency) : 'USD';
   const permissionModel = input.permissionModel || 'collaborative';
-  const identity = await getIdentity();
-  const creatorId = input.creatorId && input.creatorId.trim() !== '' ? input.creatorId : identity.id;
-  const creatorName = input.creatorName && input.creatorName.trim() !== '' ? input.creatorName : myName;
-  const syncKey = input.syncKey || generateGroupKey();
-  const groupUid = input.uid || newUid();
+  const creatorId = (await getIdentity()).id;
+  const creatorName = myName;
+  const groupUid = newUid();
   const others = (input.members || [])
     .map((m) => clean(m, LIMITS.name))
     .filter((m) => Boolean(m) && m.toLowerCase() !== myName.toLowerCase());
 
   const db = await getDb();
-  if (input.uid) {
-    const existing = await db.getFirstAsync<GroupRow>('SELECT * FROM groups WHERE uid = ?', [input.uid]);
-    if (existing) {
-      const updates: string[] = [];
-      const params: any[] = [];
-      if (syncKey && (!existing.sync_key || existing.sync_key !== syncKey)) {
-        updates.push('sync_key = ?');
-        params.push(syncKey);
-      }
-      if (input.creatorId && (!existing.creator_id || existing.creator_id !== input.creatorId)) {
-        updates.push('creator_id = ?');
-        params.push(input.creatorId);
-      }
-      if (input.creatorName && (!existing.creator_name || existing.creator_name !== input.creatorName)) {
-        updates.push('creator_name = ?');
-        params.push(input.creatorName);
-      }
-      if (input.permissionModel && (!existing.permission_model || existing.permission_model !== input.permissionModel)) {
-        updates.push('permission_model = ?');
-        params.push(input.permissionModel);
-      }
-      if (existing.is_deleted) {
-        updates.push('is_deleted = 0, deleted_at = NULL');
-      }
-      if (updates.length > 0) {
-        updates.push('updated_at = ?');
-        params.push(now());
-        params.push(existing.id);
-        await db.runAsync(`UPDATE groups SET ${updates.join(', ')} WHERE id = ?`, params);
-      }
-      return getGroup(existing.id);
-    }
-  }
-
   let gid = 0;
   await db.withTransactionAsync(async () => {
     const ts = now();
     const r = await db.runAsync(
-      'INSERT INTO groups (uid, name, description, currency, permission_model, creator_id, creator_name, sync_key, server_version, is_deleted, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)',
-      [groupUid, name, clean(input.description, LIMITS.description), currency, permissionModel, creatorId, creatorName, syncKey, ts, ts]
+      'INSERT INTO groups (uid, name, description, currency, permission_model, creator_id, creator_name, server_version, is_deleted, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)',
+      [groupUid, name, clean(input.description, LIMITS.description), currency, permissionModel, creatorId, creatorName, ts, ts]
     );
     gid = r.lastInsertRowId;
     const myMemberUid = `mem_${newUid()}`;
@@ -398,7 +338,6 @@ export async function createGroup(input: {
           permissionModel,
           creatorId,
           creatorName,
-          syncKey,
         },
       },
       db
@@ -434,14 +373,58 @@ export async function createGroup(input: {
         db
       );
     }
+    // Everything this group contains is in the outbox, so it never needs a backfill.
+    await setUploadMarker(groupUid, db);
   });
+  signalLocalChange(groupUid);
   return getGroup(gid);
+}
+
+/** Builds the server payload for a stored transaction from its current local rows. */
+export async function buildTxSyncPayload(db: DB, txId: number): Promise<SyncTxPayload> {
+  const t = await db.getFirstAsync<TxRow & { payer_name: string; payer_uid: string }>(
+    `SELECT t.*, m.name AS payer_name, m.uid AS payer_uid FROM transactions t JOIN members m ON m.id = t.paid_by WHERE t.id = ?`,
+    [txId]
+  );
+  if (!t) throw new AppError('Transaction not found');
+  const splits = await db.getAllAsync<{ name: string; uid: string; value: number; share: number }>(
+    'SELECT m.name, m.uid, s.value, s.share FROM transaction_splits s JOIN members m ON m.id = s.member_id WHERE s.transaction_id = ? ORDER BY m.id',
+    [txId]
+  );
+  return {
+    txUid: t.uid || `tx_${t.id}`,
+    type: t.type,
+    title: t.title,
+    amount: t.amount,
+    paidByName: t.payer_name,
+    paidByMemberUid: t.payer_uid || undefined,
+    splitType: t.split_type,
+    category: t.category,
+    note: t.note,
+    date: t.date,
+    authorId: t.author_id,
+    authorName: t.author_name,
+    ...(t.updated_by_id ? { updatedById: t.updated_by_id, updatedByName: t.updated_by_name } : {}),
+    splits: splits.map((s) => ({ memberName: s.name, memberUid: s.uid || undefined, value: s.value, share: s.share })),
+    updatedTs: t.updated_ts || Date.parse(t.updated_at) || Date.now(),
+  };
 }
 
 export async function mergeMembers(groupId: number, sourceMemberId: number, targetMemberId: number) {
   if (sourceMemberId === targetMemberId) throw new AppError('Cannot merge a member into themselves');
+  const group = await getGroup(groupId);
+  const source = await getMemberRow(groupId, sourceMemberId);
+  await getMemberRow(groupId, targetMemberId);
   const db = await getDb();
   await db.withTransactionAsync(async () => {
+    // Every live transaction the source member pays or shares in changes and must reach the server.
+    const affected = await db.getAllAsync<{ id: number; server_version: number }>(
+      `SELECT DISTINCT t.id, t.server_version FROM transactions t
+        LEFT JOIN transaction_splits s ON s.transaction_id = t.id
+        WHERE t.group_id = ? AND t.is_deleted = 0 AND (t.paid_by = ? OR s.member_id = ?)`,
+      [groupId, sourceMemberId, sourceMemberId]
+    );
+
     // 1. Reassign transactions where source was paid_by
     await db.runAsync('UPDATE transactions SET paid_by = ? WHERE group_id = ? AND paid_by = ?', [targetMemberId, groupId, sourceMemberId]);
 
@@ -467,263 +450,40 @@ export async function mergeMembers(groupId: number, sourceMemberId: number, targ
       }
     }
 
-    // 3. Delete source member
-    await db.runAsync('DELETE FROM members WHERE id = ? AND group_id = ?', [sourceMemberId, groupId]);
-    await touch(groupId);
-  });
-}
-
-export async function mergeMembersByName(groupId: number, sourceName: string, targetName: string) {
-  const members = await getMembers(groupId);
-  const source = members.find((m) => m.name.toLowerCase().trim() === sourceName.toLowerCase().trim());
-  const target = members.find((m) => m.name.toLowerCase().trim() === targetName.toLowerCase().trim());
-  if (source && target && source.id !== target.id) {
-    await mergeMembers(groupId, source.id, target.id);
-  }
-}
-
-export interface GroupSnapshotChunkPayload {
-  groupUid: string;
-  name: string;
-  description: string;
-  currency: string;
-  permissionModel?: Group['permissionModel'];
-  creatorId?: string;
-  creatorName?: string;
-  chunkIndex?: number;
-  totalChunks?: number;
-  batchId?: string;
-  members: string[];
-  transactions: {
-    txUid: string;
-    type: TxType;
-    title: string;
-    amount: number;
-    paidByName: string;
-    splitType: Transaction['splitType'];
-    category: string;
-    note: string;
-    date: string;
-    authorId?: string;
-    authorName?: string;
-    updatedById?: string;
-    updatedByName?: string;
-    updatedTs: number;
-    splits: { memberName: string; value: number; share: number }[];
-  }[];
-}
-
-export type GroupSnapshotPayload = GroupSnapshotChunkPayload;
-
-export async function exportGroupSnapshot(groupId: number): Promise<GroupSnapshotPayload> {
-  const group = await getGroup(groupId);
-  const members = await getMembers(groupId);
-  const txs = await getTransactions(groupId);
-  const memberMap = new Map(members.map((m) => [m.id, m.name]));
-
-  return {
-    groupUid: group.uid,
-    name: group.name,
-    description: group.description,
-    currency: group.currency,
-    permissionModel: group.permissionModel,
-    creatorId: group.creatorId,
-    creatorName: group.creatorName,
-    chunkIndex: 0,
-    totalChunks: 1,
-    members: members.map((m) => m.name),
-    transactions: txs.map((t) => ({
-      txUid: t.uid || `tx_${t.id}`,
-      type: t.type,
-      title: t.title,
-      amount: t.amount,
-      paidByName: memberMap.get(t.paidBy) || 'Unknown',
-      splitType: t.splitType,
-      category: t.category,
-      note: t.note,
-      date: t.date,
-      authorId: t.authorId,
-      authorName: t.authorName,
-      updatedById: t.updatedById,
-      updatedByName: t.updatedByName,
-      updatedTs: t.updatedTs || (t.createdAt ? new Date(t.createdAt).getTime() : Date.now()),
-      splits: t.splits.map((s) => ({
-        memberName: memberMap.get(s.memberId) || 'Unknown',
-        value: s.value,
-        share: s.share,
-      })),
-    })),
-  };
-}
-
-export async function exportGroupSnapshotBatches(
-  groupId: number,
-  batchSize = 25
-): Promise<GroupSnapshotChunkPayload[]> {
-  const full = await exportGroupSnapshot(groupId);
-  if (full.transactions.length <= batchSize) {
-    return [{ ...full, chunkIndex: 0, totalChunks: 1, batchId: `batch_${Date.now().toString(16)}` }];
-  }
-
-  const batchId = `batch_${Date.now().toString(16)}`;
-  const totalChunks = Math.ceil(full.transactions.length / batchSize);
-  const chunks: GroupSnapshotChunkPayload[] = [];
-
-  for (let i = 0; i < totalChunks; i++) {
-    const slice = full.transactions.slice(i * batchSize, (i + 1) * batchSize);
-    chunks.push({
-      groupUid: full.groupUid,
-      name: full.name,
-      description: full.description,
-      currency: full.currency,
-      permissionModel: full.permissionModel,
-      creatorId: full.creatorId,
-      creatorName: full.creatorName,
-      chunkIndex: i,
-      totalChunks,
-      batchId,
-      members: full.members,
-      transactions: slice,
-    });
-  }
-
-  return chunks;
-}
-
-export async function applyGroupSnapshot(groupId: number, snapshot: GroupSnapshotPayload): Promise<{ added: number; updated: number }> {
-  const db = await getDb();
-  let added = 0;
-  let updated = 0;
-  const nowIso = now();
-
-  await db.withTransactionAsync(async () => {
-    // 1. Update group metadata & permission model if present
-    if (snapshot.permissionModel || snapshot.creatorId) {
-      await db.runAsync(
-        "UPDATE groups SET permission_model = COALESCE(NULLIF(?, ''), permission_model), creator_id = COALESCE(NULLIF(?, ''), creator_id), creator_name = COALESCE(NULLIF(?, ''), creator_name), updated_at = ? WHERE id = ?",
-        [snapshot.permissionModel || '', snapshot.creatorId || '', snapshot.creatorName || '', nowIso, groupId]
+    // 3. Queue the rewritten transactions, then remove the source member (soft delete, like deleteMember)
+    const ts = now();
+    for (const tx of affected) {
+      await db.runAsync('UPDATE transactions SET server_version = server_version + 1, updated_at = ? WHERE id = ?', [ts, tx.id]);
+      const payload = await buildTxSyncPayload(db, tx.id);
+      await enqueueOutboxMutation(
+        {
+          clientMutationId: `mut_${newUid()}`,
+          groupUid: group.uid,
+          entityType: 'transaction',
+          entityUid: payload.txUid,
+          operation: 'update',
+          expectedVersion: tx.server_version ?? 1,
+          payload,
+        },
+        db
       );
     }
-
-    // 2. Ensure all members in snapshot exist
-    const currentMembers = await getMembers(groupId);
-    const memberNameMap = new Map<string, number>(currentMembers.map((m) => [m.name.toLowerCase().trim(), m.id]));
-
-    for (const memName of snapshot.members) {
-      const cleanName = clean(memName, LIMITS.name);
-      if (cleanName && !memberNameMap.has(cleanName.toLowerCase().trim())) {
-        const r = await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [groupId, cleanName, nowIso]);
-        memberNameMap.set(cleanName.toLowerCase().trim(), r.lastInsertRowId);
-      }
-    }
-
-    // 3. Import / Merge transactions
-    for (const tx of snapshot.transactions) {
-      let payerId = memberNameMap.get(tx.paidByName.toLowerCase().trim());
-      if (!payerId) {
-        const r = await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [groupId, tx.paidByName, nowIso]);
-        payerId = r.lastInsertRowId;
-        memberNameMap.set(tx.paidByName.toLowerCase().trim(), payerId);
-      }
-
-      const existingTx = await db.getFirstAsync<{ id: number; updated_ts: number }>(
-        'SELECT id, updated_ts FROM transactions WHERE group_id = ? AND uid = ?',
-        [groupId, tx.txUid]
-      );
-
-      if (existingTx) {
-        // Last-Write-Wins: update only if snapshot is newer
-        if ((tx.updatedTs || 0) > (existingTx.updated_ts || 0)) {
-          await db.runAsync(
-            `UPDATE transactions SET type = ?, title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, author_id = ?, author_name = ?, updated_by_id = ?, updated_by_name = ?, updated_ts = ?, updated_at = ?
-             WHERE id = ?`,
-            [
-              tx.type,
-              tx.title,
-              tx.amount,
-              payerId,
-              tx.splitType,
-              tx.category,
-              tx.note,
-              tx.date,
-              tx.authorId || '',
-              tx.authorName || '',
-              tx.updatedById || '',
-              tx.updatedByName || '',
-              tx.updatedTs,
-              nowIso,
-              existingTx.id,
-            ]
-          );
-          await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [existingTx.id]);
-          for (const s of tx.splits) {
-            let sMemberId = memberNameMap.get(s.memberName.toLowerCase().trim());
-            if (!sMemberId) {
-              const r = await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [groupId, s.memberName, nowIso]);
-              sMemberId = r.lastInsertRowId;
-              memberNameMap.set(s.memberName.toLowerCase().trim(), sMemberId);
-            }
-            await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [
-              existingTx.id,
-              sMemberId,
-              s.value,
-              s.share,
-            ]);
-          }
-          updated++;
-        }
-      } else {
-        // Insert new transaction
-        const ins = await db.runAsync(
-          `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, updated_by_id, updated_by_name, updated_ts, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            groupId,
-            tx.txUid,
-            tx.type,
-            tx.title,
-            tx.amount,
-            payerId,
-            tx.splitType,
-            tx.category,
-            tx.note,
-            tx.date,
-            tx.authorId || '',
-            tx.authorName || '',
-            tx.updatedById || '',
-            tx.updatedByName || '',
-            tx.updatedTs || Date.now(),
-            nowIso,
-            nowIso,
-          ]
-        );
-        const newTxId = ins.lastInsertRowId;
-        for (const s of tx.splits) {
-          let sMemberId = memberNameMap.get(s.memberName.toLowerCase().trim());
-          if (!sMemberId) {
-            const r = await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, 0, ?)', [groupId, s.memberName, nowIso]);
-            sMemberId = r.lastInsertRowId;
-            memberNameMap.set(s.memberName.toLowerCase().trim(), sMemberId);
-          }
-          await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [
-            newTxId,
-            sMemberId,
-            s.value,
-            s.share,
-          ]);
-        }
-        added++;
-      }
-    }
+    await db.runAsync('UPDATE members SET is_deleted = 1, deleted_at = ? WHERE id = ? AND group_id = ?', [ts, sourceMemberId, groupId]);
+    await enqueueOutboxMutation(
+      {
+        clientMutationId: `mut_${newUid()}`,
+        groupUid: group.uid,
+        entityType: 'member',
+        entityUid: source.uid || `mem_${sourceMemberId}`,
+        operation: 'delete',
+        expectedVersion: source.server_version ?? 1,
+        payload: { memberName: source.name },
+      },
+      db
+    );
     await touch(groupId);
   });
-
-  return { added, updated };
-}
-
-export async function setGroupSyncKey(id: number, syncKey: string) {
-  const db = await getDb();
-  await db.runAsync('UPDATE groups SET sync_key = ?, updated_at = ? WHERE id = ?', [syncKey, now(), id]);
+  signalLocalChange(group.uid);
 }
 
 export async function updateGroup(
@@ -765,8 +525,7 @@ export async function updateGroup(
     );
   });
 
-  // Broadcast settings change event
-  await createSyncEvent(g.uid, 'UPDATE_GROUP', { name, description, currency, permissionModel });
+  signalLocalChange(g.uid);
   return getGroup(id);
 }
 
@@ -794,6 +553,7 @@ export async function deleteGroup(id: number) {
       db
     );
   });
+  signalLocalChange(g.uid);
 }
 
 // ---------- members ----------
@@ -825,9 +585,7 @@ export async function addMember(groupId: number, rawName: string) {
     );
   });
 
-  if (group.uid) {
-    await createSyncEvent(group.uid, 'ADD_MEMBER', { name });
-  }
+  signalLocalChange(group.uid);
 
   return memberId;
 }
@@ -869,9 +627,7 @@ export async function renameMember(groupId: number, memberId: number, rawName: s
     );
   });
 
-  if (group.uid) {
-    await createSyncEvent(group.uid, 'RENAME_MEMBER', { oldName, newName: name });
-  }
+  signalLocalChange(group.uid);
 }
 
 /** Marks which member is the phone's owner (or nobody when memberId is null). */
@@ -914,9 +670,7 @@ export async function deleteMember(groupId: number, memberId: number) {
     );
   });
 
-  if (group.uid) {
-    await createSyncEvent(group.uid, 'DELETE_MEMBER', { memberName: m.name });
-  }
+  signalLocalChange(group.uid);
 }
 
 // ---------- transactions ----------
@@ -959,6 +713,7 @@ export async function createTransaction(groupId: number, body: TxInput) {
 
   const members = await getMembers(groupId);
   const memberMap = new Map(members.map((m) => [m.id, m.name]));
+  const memberUids = new Map(members.map((m) => [m.id, m.uid]));
   const myMember = members.find((m) => m.isMe);
   const myDisplayName = myMember?.name || identity.name || 'Me';
   const t = await validateTx(groupId, body);
@@ -972,13 +727,14 @@ export async function createTransaction(groupId: number, body: TxInput) {
     title: t.title,
     amount: t.amount,
     paidByName: memberMap.get(t.paidBy) || 'Unknown',
+    paidByMemberUid: memberUids.get(t.paidBy),
     splitType: t.splitType,
     category: t.category,
     note: t.note,
     date: t.date,
     authorId: identity.id,
     authorName: myDisplayName,
-    splits: t.shares.map((s) => ({ memberName: memberMap.get(s.memberId) || 'Unknown', value: s.value, share: s.share })),
+    splits: t.shares.map((s) => ({ memberName: memberMap.get(s.memberId) || 'Unknown', memberUid: memberUids.get(s.memberId), value: s.value, share: s.share })),
     updatedTs,
   };
 
@@ -1008,9 +764,7 @@ export async function createTransaction(groupId: number, body: TxInput) {
     );
   });
   await touch(groupId);
-
-  // Broadcast sync event
-  await createSyncEvent(group.uid, 'UPSERT_TX', payload);
+  signalLocalChange(group.uid);
 
   return id;
 }
@@ -1028,6 +782,7 @@ export async function updateTransaction(groupId: number, txId: number, body: TxI
 
   const members = await getMembers(groupId);
   const memberMap = new Map(members.map((m) => [m.id, m.name]));
+  const memberUids = new Map(members.map((m) => [m.id, m.uid]));
   const myMember = members.find((m) => m.isMe);
   const myDisplayName = myMember?.name || identity.name || 'Me';
   const t = await validateTx(groupId, { ...body, type: existing.type });
@@ -1039,6 +794,7 @@ export async function updateTransaction(groupId: number, txId: number, body: TxI
     title: t.title,
     amount: t.amount,
     paidByName: memberMap.get(t.paidBy) || 'Unknown',
+    paidByMemberUid: memberUids.get(t.paidBy),
     splitType: t.splitType,
     category: t.category,
     note: t.note,
@@ -1047,7 +803,7 @@ export async function updateTransaction(groupId: number, txId: number, body: TxI
     authorName: existing.author_name,
     updatedById: identity.id,
     updatedByName: myDisplayName,
-    splits: t.shares.map((s) => ({ memberName: memberMap.get(s.memberId) || 'Unknown', value: s.value, share: s.share })),
+    splits: t.shares.map((s) => ({ memberName: memberMap.get(s.memberId) || 'Unknown', memberUid: memberUids.get(s.memberId), value: s.value, share: s.share })),
     updatedTs,
   };
 
@@ -1075,8 +831,7 @@ export async function updateTransaction(groupId: number, txId: number, body: TxI
     );
   });
   await touch(groupId);
-
-  await createSyncEvent(group.uid, 'UPSERT_TX', payload);
+  signalLocalChange(group.uid);
 }
 
 export async function deleteTransaction(groupId: number, txId: number) {
@@ -1110,9 +865,7 @@ export async function deleteTransaction(groupId: number, txId: number) {
     );
   });
 
-  if (existing?.uid) {
-    await createSyncEvent(group.uid, 'DELETE_TX', { txUid: existing.uid, authorId: existing.author_id });
-  }
+  signalLocalChange(group.uid);
 }
 
 /** Wipes every group, member, transaction and setting. */
@@ -1122,7 +875,6 @@ export async function eraseAllData() {
     await db.runAsync('DELETE FROM outbox_mutations', []);
     await db.runAsync('DELETE FROM sync_state', []);
     await db.runAsync('DELETE FROM sync_notifications', []);
-    await db.runAsync('DELETE FROM sync_events', []);
     await db.runAsync('DELETE FROM transaction_splits', []);
     await db.runAsync('DELETE FROM transactions', []);
     await db.runAsync('DELETE FROM members', []);

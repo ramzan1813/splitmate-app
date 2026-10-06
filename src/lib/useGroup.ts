@@ -2,14 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { getGroupSummary } from '@/data/repo';
 import { GroupSummary } from '@/data/types';
+import { GroupSyncStatus, syncEngine } from '@/data/syncEngine';
 import { errorMessage } from './dialog';
-import { subscribeToSync, syncManager } from '@/data/sync';
 
-/** Loads a group's full summary from the local database, connects E2EE sync, and updates reactively. */
+/** Loads a group's full summary from the local database and keeps it current as sync pulls changes. */
 export function useGroup(id: string | number | undefined) {
   const [data, setData] = useState<GroupSummary | null>(null);
   const [error, setError] = useState('');
-  const [connected, setConnected] = useState(false);
   const groupUidRef = useRef<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -20,42 +19,60 @@ export function useGroup(id: string | number | undefined) {
       setData(summary);
       groupUidRef.current = summary.group.uid;
       setError('');
-      if (summary?.group?.uid && summary?.group?.syncKey) {
-        syncManager.connectGroup(summary.group.uid, summary.group.syncKey);
-        setConnected(syncManager.isConnected(summary.group.uid));
-      }
     } catch (e) {
       setError(errorMessage(e));
     }
   }, [id]);
 
+  /** Reloads local data and runs a sync cycle (push pending edits, pull others' changes). */
+  const refresh = useCallback(async () => {
+    await reload();
+    const uid = groupUidRef.current;
+    if (uid) await syncEngine.syncGroup(uid).catch(() => {});
+  }, [reload]);
+
   useFocusEffect(
     useCallback(() => {
-      reload();
-    }, [reload])
+      refresh();
+    }, [refresh])
   );
 
-  useEffect(() => {
-    const unsub = subscribeToSync((_event, groupUid) => {
-      if (!groupUidRef.current || groupUidRef.current === groupUid) {
-        reload();
-      }
-    });
-
-    const interval = setInterval(() => {
-      if (groupUidRef.current) {
-        setConnected(syncManager.isConnected(groupUidRef.current));
-      }
-    }, 2000);
-
-    return () => {
-      unsub();
-      clearInterval(interval);
-    };
-  }, [reload]);
+  useEffect(
+    () =>
+      syncEngine.subscribe((groupUid) => {
+        if (groupUidRef.current === groupUid) reload();
+      }),
+    [reload]
+  );
 
   const memberName = (mid: number) => data?.members.find((m) => m.id === mid)?.name ?? 'Unknown';
   const memberIndex = (mid: number) => Math.max(0, data?.members.findIndex((m) => m.id === mid) ?? 0);
 
-  return { data, error, reload, memberName, memberIndex, isConnected: connected };
+  return { data, error, reload, refresh, memberName, memberIndex };
+}
+
+/** Live sync status for one group (drives the header badge). */
+export function useSyncStatus(groupUid: string | undefined) {
+  const [status, setStatus] = useState<GroupSyncStatus | null>(null);
+
+  useEffect(() => {
+    if (!groupUid) return;
+    let active = true;
+    const load = () => {
+      syncEngine
+        .getGroupSyncStatus(groupUid)
+        .then((s) => active && setStatus(s))
+        .catch(() => {});
+    };
+    load();
+    const unsubStatus = syncEngine.subscribeStatus((uid) => uid === groupUid && load());
+    const unsubData = syncEngine.subscribe((uid) => uid === groupUid && load());
+    return () => {
+      active = false;
+      unsubStatus();
+      unsubData();
+    };
+  }, [groupUid]);
+
+  return status;
 }

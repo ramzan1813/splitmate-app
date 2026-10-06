@@ -42,7 +42,7 @@ export function Welcome() {
       >
         <Logo />
         <Text style={{ color: colors.text, fontSize: 15, marginBottom: 16, textAlign: 'center' }}>
-          Everything stays on this phone. No account, no internet needed.
+          Works offline, no account needed. Share groups with friends by invite link.
         </Text>
         <Field label="What should we call you?" value={name} onChangeText={setName} placeholder="Your name" onSubmitEditing={start} testID="welcome-name" />
         <Button title="Get started" onPress={start} testID="welcome-start" />

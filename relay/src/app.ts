@@ -22,7 +22,7 @@ export interface AppDeps {
   fetch: typeof fetch;
 }
 
-export const SERVICE_VERSION = '3.0.0';
+const SERVICE_VERSION = '3.0.0';
 const EXPO_TOKEN_RE = /^Expo(nent)?PushToken\[[^\]]+\]$/;
 const MAX_GROUPS_PER_DEVICE_REGISTRATION = 100;
 
@@ -96,7 +96,7 @@ export function createApp(deps: AppDeps) {
       status: 'ok',
       name: 'SplitMate Sync API',
       version: SERVICE_VERSION,
-      architecture: 'Express on Cloudflare Workers + Supabase Postgres; webhooks + Expo push notifications',
+      architecture: 'Express on Cloudflare Workers + Postgres; webhooks + Expo push notifications',
     });
   };
   app.get('/', health);

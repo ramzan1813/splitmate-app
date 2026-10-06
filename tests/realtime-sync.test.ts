@@ -1,23 +1,70 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createNodeDb } from './node-db';
-import { migrate, setDb, DB } from '../src/data/db';
+import { migrate, setDb } from '../src/data/db';
 import * as repo from '../src/data/repo';
 import { getSyncState } from '../src/data/syncState';
 import { getDeviceId } from '../src/lib/identity';
 import { startTestServer, TestServer } from '../relay/test-support/testServer';
 import { ExpoPushHub } from '../relay/test-support/pushHub';
-import {
-  SyncEngine,
-  SyncTransport,
-  MemoryRealtimeClient,
-} from '../src/data/syncEngine';
+import { RealtimeClient, SyncEngine, SyncTransport } from '../src/data/syncEngine';
 import {
   GroupBootstrapResponse,
   PullChangesResponse,
   PushMutationsRequest,
   PushMutationsResponse,
+  RealtimeNotification,
 } from '../src/data/types';
+
+/** Stands in for the phone's push-notification receiver, fed by the test push hub. */
+class MemoryRealtimeClient implements RealtimeClient {
+  private connected = true;
+  private subscribedGroups = new Set<string>();
+  private handlers = new Set<(notification: RealtimeNotification) => void>();
+  private unsubscribers = new Map<string, () => void>();
+
+  constructor(private hub: { subscribe(groupUid: string, cb: (notif: RealtimeNotification) => void): () => void }) {}
+
+  connect(): void {
+    this.connected = true;
+    for (const groupUid of this.subscribedGroups) this.attach(groupUid);
+  }
+
+  disconnect(): void {
+    this.connected = false;
+    for (const unsub of this.unsubscribers.values()) unsub();
+    this.unsubscribers.clear();
+  }
+
+  isConnected(): boolean {
+    return this.connected;
+  }
+
+  subscribeGroup(groupUid: string): void {
+    this.subscribedGroups.add(groupUid);
+    if (this.connected) this.attach(groupUid);
+  }
+
+  unsubscribeGroup(groupUid: string): void {
+    this.subscribedGroups.delete(groupUid);
+    this.unsubscribers.get(groupUid)?.();
+    this.unsubscribers.delete(groupUid);
+  }
+
+  onNotification(handler: (notification: RealtimeNotification) => void): () => void {
+    this.handlers.add(handler);
+    return () => this.handlers.delete(handler);
+  }
+
+  private attach(groupUid: string) {
+    if (this.unsubscribers.has(groupUid)) return;
+    const unsub = this.hub.subscribe(groupUid, (notif) => {
+      if (!this.connected) return;
+      for (const h of this.handlers) h(notif);
+    });
+    this.unsubscribers.set(groupUid, unsub);
+  }
+}
 
 /** Test Sync Transport connecting the mobile SyncEngine to the Express backend over HTTP */
 class DirectServerSyncTransport implements SyncTransport {
@@ -104,15 +151,8 @@ test('phase 4: online device A creates transaction -> device B receives notifica
   const realtimeB = new MemoryRealtimeClient(realtimeHub);
   const engineB = new SyncEngine(transportB, realtimeB, dbB);
 
-  // Device B bootstraps or creates local group shell and syncs initial state
-  const groupB = await repo.createGroup({
-    name: 'Rome Holiday',
-    myName: 'Bob',
-    members: ['Alice'],
-    uid: groupA.uid,
-    syncKey: groupA.syncKey,
-    creatorId: groupA.creatorId,
-  });
+  // Device B joins from the server's snapshot as the existing member Bob
+  const groupB = await repo.getGroup(await engineB.joinGroup(await engineB.fetchGroupSnapshot(groupA.uid), 'Bob'));
   await engineB.syncGroup(groupB.uid);
 
   // Device B is now subscribed to groupA.uid in realtime
@@ -197,14 +237,8 @@ test('phase 4: realtime disconnect -> missed notification -> reconnect -> cursor
   const realtimeB = new MemoryRealtimeClient(realtimeHub);
   const engineB = new SyncEngine(transportB, realtimeB, dbB);
 
-  const groupB = await repo.createGroup({
-    name: 'Tokyo Trip',
-    myName: 'Bob',
-    members: ['Alice'],
-    uid: groupA.uid,
-    syncKey: groupA.syncKey,
-    creatorId: groupA.creatorId,
-  });
+  // Device B joins from the server's snapshot as the existing member Bob
+  const groupB = await repo.getGroup(await engineB.joinGroup(await engineB.fetchGroupSnapshot(groupA.uid), 'Bob'));
   await engineB.syncGroup(groupB.uid);
 
   const stateB1 = await getSyncState(groupB.uid, dbB);

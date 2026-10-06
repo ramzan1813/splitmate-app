@@ -8,7 +8,7 @@ import { safeFileName, shareFile } from './files';
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
-export function reportHtml(s: GroupSummary) {
+function reportHtml(s: GroupSummary) {
   const cur = s.group.currency;
   const name = (id: number) => s.members.find((m) => m.id === id)?.name ?? 'Unknown';
   const statRows = s.stats

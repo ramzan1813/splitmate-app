@@ -20,7 +20,6 @@ export interface Group {
   permissionModel: PermissionModel;
   creatorId: string;
   creatorName: string;
-  syncKey?: string;
   serverVersion: number;
   isDeleted: boolean;
   createdAt: string;

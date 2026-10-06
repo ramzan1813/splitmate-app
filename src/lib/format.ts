@@ -1,6 +1,4 @@
-import { CURRENCIES, findCurrency } from './currencies';
-
-export { CURRENCIES };
+import { findCurrency } from './currencies';
 
 export function currencySymbol(code: string) {
   return findCurrency(code)?.symbol ?? `${code} `;

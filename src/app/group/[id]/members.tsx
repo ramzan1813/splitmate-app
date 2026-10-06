@@ -4,7 +4,6 @@ import { useLocalSearchParams } from 'expo-router';
 import { Avatar, Button, Card, Field, Loading, Row, Screen, SectionTitle } from '@/components/ui';
 import { useGroup } from '@/lib/useGroup';
 import { addMember, deleteMember, mergeMembers, renameMember, setMe } from '@/data/repo';
-import { createSyncEvent } from '@/data/sync';
 import { exportGroup } from '@/data/backup';
 import { Member } from '@/data/types';
 import { money } from '@/lib/format';
@@ -64,12 +63,6 @@ export default function Members() {
 
     run(async () => {
       await mergeMembers(gid, mergingFrom.id, target.id);
-      if (data.group.uid) {
-        await createSyncEvent(data.group.uid, 'MERGE_MEMBERS', {
-          sourceMemberName: srcName,
-          targetMemberName: tgtName,
-        });
-      }
       setMergingFrom(null);
       notify('Members Merged', `Consolidated ${srcName} into ${tgtName}.`);
     }, 'Could not merge members');
@@ -94,7 +87,7 @@ export default function Members() {
       {mergingFrom && (
         <Card style={{ backgroundColor: colors.primaryLight, borderWidth: 1.5, borderColor: colors.primary, marginBottom: 16 }}>
           <Text style={{ fontWeight: '800', fontSize: 16, color: colors.primaryDark, marginBottom: 4 }}>
-            Merge "{mergingFrom.name}" into another member
+            Merge “{mergingFrom.name}” into another member
           </Text>
           <Text style={{ color: colors.primaryDark, fontSize: 13, marginBottom: 12 }}>
             Select the destination member. All expenses, payments, and splits for {mergingFrom.name} will be reassigned:

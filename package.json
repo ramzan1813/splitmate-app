@@ -8,6 +8,7 @@
     "expo-build-properties": "~57.0.22",
     "expo-camera": "~57.0.6",
     "expo-clipboard": "~57.0.2",
+    "expo-constants": "~57.0.21",
     "expo-crypto": "~57.0.3",
     "expo-document-picker": "~57.0.3",
     "expo-file-system": "~57.0.7",
@@ -32,6 +33,8 @@
   "devDependencies": {
     "@types/qrcode": "^1.5.6",
     "@types/react": "~19.2.2",
+    "eslint": "^9.39.5",
+    "eslint-config-expo": "~57.0.2",
     "tsx": "^4.23.15",
     "typescript": "~6.0.3"
   },
@@ -43,7 +46,7 @@
     "typecheck": "tsc --noEmit",
     "build:apk": "npx eas-cli@latest build -p android --profile preview",
     "build:apk:local": "npx expo prebuild -p android && cd android && gradlew assembleRelease",
-    "test": "tsx --env-file=tests/.env.test --test --test-force-exit tests/*.test.ts",
+    "test": "tsx --env-file=tests/.env.test --test tests/*.test.ts",
     "lint": "expo lint"
   },
   "private": true,

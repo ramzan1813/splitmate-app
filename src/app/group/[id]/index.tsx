@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { Modal, Platform, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { Avatar, Button, Card, Empty, HeaderButton, Loading, Row, Segmented, SectionTitle } from '@/components/ui';
@@ -7,10 +7,13 @@ import { TransactionCard } from '@/components/TransactionCard';
 import { QRCode } from '@/components/QRCode';
 import { QRScannerModal } from '@/components/QRScannerModal';
 import * as Clipboard from 'expo-clipboard';
-import { useGroup } from '@/lib/useGroup';
+import { useGroup, useSyncStatus } from '@/lib/useGroup';
+import { GroupSyncStatus, syncEngine } from '@/data/syncEngine';
+import { getUnresolvedOutboxMutations } from '@/data/outbox';
+import { DEFAULT_SERVER_URL, getServerUrl } from '@/lib/identity';
 import { money } from '@/lib/format';
 import { colors, colorFor } from '@/lib/theme';
-import { notify } from '@/lib/dialog';
+import { confirm, errorMessage, notify } from '@/lib/dialog';
 
 type Tab = 'transactions' | 'balances' | 'settle' | 'chart';
 
@@ -18,7 +21,12 @@ export default function GroupScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const nav = useNavigation();
-  const { data, error, reload, memberName, memberIndex, isConnected } = useGroup(id);
+  const { data, error, reload, refresh, memberName, memberIndex } = useGroup(id);
+  const syncStatus = useSyncStatus(data?.group.uid);
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
+  useEffect(() => {
+    getServerUrl().then(setServerUrl).catch(() => {});
+  }, []);
   const [tab, setTab] = useState<Tab>('transactions');
   const [refreshing, setRefreshing] = useState(false);
   const [chartMode, setChartMode] = useState<'paid' | 'share' | 'category'>('share');
@@ -60,13 +68,10 @@ export default function GroupScreen() {
 
   const inviteLink = useMemo(() => {
     if (!data?.group?.uid) return '';
-    const memberNames = (data.members || []).map((m) => encodeURIComponent(m.name)).join(',');
-    const creatorId = encodeURIComponent(data.group.creatorId || '');
-    const creatorName = encodeURIComponent(data.group.creatorName || '');
-    const perm = encodeURIComponent(data.group.permissionModel || 'collaborative');
-    const qs = `uid=${data.group.uid}&key=${data.group.syncKey || ''}&name=${encodeURIComponent(data.group.name)}&cur=${data.group.currency}&members=${memberNames}&creatorId=${creatorId}&creatorName=${creatorName}&perm=${perm}`;
-    return `https://splitmate-relay.rn45819.workers.dev/join?${qs}`;
-  }, [data]);
+    // The joining phone fetches the group itself from the server; name/cur are only for the invite page.
+    const qs = `uid=${encodeURIComponent(data.group.uid)}&name=${encodeURIComponent(data.group.name)}&cur=${data.group.currency}`;
+    return `${serverUrl}/join?${qs}`;
+  }, [data, serverUrl]);
 
   const chartData = useMemo(() => {
     if (!data) return [];
@@ -95,7 +100,7 @@ export default function GroupScreen() {
             refreshing={refreshing}
             onRefresh={async () => {
               setRefreshing(true);
-              await reload();
+              await refresh();
               setRefreshing(false);
             }}
           />
@@ -105,10 +110,7 @@ export default function GroupScreen() {
         <View style={{ backgroundColor: colors.primary, borderRadius: 16, padding: 16, marginBottom: 14 }}>
           <Row style={{ justifyContent: 'space-between', alignItems: 'center' }}>
             <Text style={{ color: colors.primaryLight, fontSize: 13 }}>Total group spending</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 }}>
-              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: isConnected ? '#10B981' : '#F59E0B', marginRight: 6 }} />
-              <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>{isConnected ? 'E2EE Synced' : 'Sync Active'}</Text>
-            </View>
+            <SyncBadge status={syncStatus} groupUid={data.group.uid} onRefresh={refresh} />
           </Row>
           <Text style={{ color: '#fff', fontSize: 28, fontWeight: '800' }} testID="total-spending">
             {money(data.totals.totalExpenses, cur)}
@@ -285,13 +287,13 @@ export default function GroupScreen() {
         )}
       </View>
 
-      {/* Group Invite & E2EE Sync Modal */}
+      {/* Group Invite Modal */}
       <Modal visible={showInviteModal} transparent animationType="slide" onRequestClose={() => setShowInviteModal(false)}>
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 }}>
           <View style={{ backgroundColor: '#fff', borderRadius: 20, padding: 24, maxWidth: 360, width: '100%', alignItems: 'center' }}>
             <Text style={{ fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: 4 }}>Group Invite & Sync</Text>
             <Text style={{ fontSize: 13, color: colors.muted, textAlign: 'center', marginBottom: 16 }}>
-              Scan this QR code with another phone to join and sync <Text style={{ fontWeight: '700' }}>{data.group.name}</Text> end-to-end encrypted.
+              Scan this QR code with another phone to join and sync <Text style={{ fontWeight: '700' }}>{data.group.name}</Text>.
             </Text>
 
             {inviteLink ? <QRCode value={inviteLink} size={210} /> : null}
@@ -330,6 +332,58 @@ export default function GroupScreen() {
         }}
       />
     </View>
+  );
+}
+
+const BADGE: Record<GroupSyncStatus['phase'], { color: string; label: (s: GroupSyncStatus) => string }> = {
+  syncing: { color: '#F59E0B', label: () => 'Syncing…' },
+  synced: { color: '#10B981', label: () => 'Synced' },
+  pending: { color: '#F59E0B', label: (s) => `${s.pending} pending` },
+  offline: { color: '#94A3B8', label: () => 'Offline' },
+  error: { color: '#EF4444', label: () => 'Sync error' },
+  conflict: { color: '#EF4444', label: (s) => `${s.unresolved} not synced` },
+  never: { color: '#94A3B8', label: () => 'Not synced' },
+};
+
+/** Header badge: what the server has of this group. Tap to sync now or to resolve refused changes. */
+function SyncBadge({ status, groupUid, onRefresh }: { status: GroupSyncStatus | null; groupUid: string; onRefresh: () => Promise<void> }) {
+  const look = BADGE[status?.phase ?? 'never'];
+
+  const onPress = async () => {
+    if (status?.phase === 'conflict') {
+      const refused = await getUnresolvedOutboxMutations(groupUid);
+      const reasons = [...new Set(refused.map((m) => m.errorMessage).filter(Boolean))].slice(0, 3).join('\n• ');
+      const ok = await confirm(
+        'Changes not synced',
+        `The server refused ${refused.length} change(s) from this phone:\n• ${reasons}\n\nUse the server's version of this group? Your refused changes will be discarded.`,
+        "Use server's version",
+        true
+      );
+      if (!ok) return;
+      try {
+        await syncEngine.acceptServerVersion(groupUid);
+        notify('Group updated', "This phone now matches the server's copy of the group.");
+      } catch (e) {
+        notify("Couldn't update", errorMessage(e));
+      }
+      return;
+    }
+    if ((status?.phase === 'error' || status?.phase === 'offline') && status.error) {
+      notify(status.phase === 'offline' ? "Can't reach the server" : 'Sync problem', `${status.error}\n\nRetrying now.`);
+    }
+    await onRefresh();
+  };
+
+  return (
+    <Pressable
+      onPress={onPress}
+      testID="sync-status"
+      accessibilityLabel={`Sync status: ${look.label(status ?? ({ pending: 0, unresolved: 0 } as GroupSyncStatus))}`}
+      style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 12 }}
+    >
+      <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: look.color, marginRight: 6 }} />
+      <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>{look.label(status ?? ({ pending: 0, unresolved: 0 } as GroupSyncStatus))}</Text>
+    </Pressable>
   );
 }
 

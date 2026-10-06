@@ -11,7 +11,6 @@ export interface Group {
   permissionModel: PermissionModel;
   creatorId: string;
   creatorName: string;
-  syncKey?: string; // 256-bit AES encryption key for E2EE sync
   serverVersion?: number;
   isDeleted?: boolean;
   deletedAt?: string;
@@ -117,7 +116,8 @@ export interface TxInput {
 export type SyncEntityType = 'group' | 'member' | 'transaction';
 export type SyncOperation = 'create' | 'update' | 'delete';
 export type SyncStatus = 'idle' | 'syncing' | 'offline' | 'error' | 'conflict';
-export type OutboxStatus = 'pending' | 'sending' | 'acknowledged' | 'failed' | 'conflict';
+/** pending: waiting to be sent · sending: in a push · failed: rejected by the server · conflict: version conflict */
+export type OutboxStatus = 'pending' | 'sending' | 'failed' | 'conflict';
 
 export interface OutboxMutation<T = unknown> {
   id?: number;
@@ -164,14 +164,14 @@ export interface PushMutationsRequest {
   deviceId: string;
   actorId?: string;
   actorName?: string;
-  mutations: Array<{
+  mutations: {
     clientMutationId: string;
     entityType: SyncEntityType;
     entityUid: string;
     operation: SyncOperation;
     expectedVersion: number;
     payload: unknown;
-  }>;
+  }[];
 }
 
 export interface PushMutationResult {
@@ -196,34 +196,43 @@ export interface PullChangesResponse {
   changes: ServerChange[];
 }
 
+/** GET /sync/bootstrap/:groupUid — the server's complete current copy of a group (wire shape, see relay/src/types.ts). */
 export interface GroupBootstrapResponse {
   groupUid: string;
   serverSequence: number;
-  group: Group;
-  members: Member[];
-  transactions: Transaction[];
-}
-
-export type SyncAction =
-  | 'UPSERT_TX'
-  | 'DELETE_TX'
-  | 'UPDATE_GROUP'
-  | 'JOIN_GROUP'
-  | 'REQUEST_STATE'
-  | 'STATE_SNAPSHOT'
-  | 'MERGE_MEMBERS'
-  | 'RENAME_MEMBER'
-  | 'ADD_MEMBER'
-  | 'DELETE_MEMBER';
-
-export interface SyncEvent<T = unknown> {
-  eventId: string;
-  groupUid: string;
-  authorId: string;
-  authorName: string;
-  timestamp: number;
-  action: SyncAction;
-  payload: T;
+  group: {
+    uid: string;
+    name: string;
+    description?: string;
+    currency: string;
+    permissionModel: PermissionModel;
+    creatorId: string;
+    creatorName: string;
+    serverVersion: number;
+    createdAt: string;
+    updatedAt: string;
+  };
+  members: { uid: string; name: string; serverVersion: number }[];
+  transactions: {
+    uid: string;
+    type: TxType;
+    title: string;
+    amount: number;
+    paidByMemberUid: string;
+    splitType: SplitType;
+    category: string;
+    note: string;
+    date: string;
+    authorId: string;
+    authorName: string;
+    updatedById?: string;
+    updatedByName?: string;
+    updatedTs?: number;
+    serverVersion: number;
+    createdAt: string;
+    updatedAt: string;
+    splits: { memberUid: string; value: number; share: number }[];
+  }[];
 }
 
 export interface SyncNotification {

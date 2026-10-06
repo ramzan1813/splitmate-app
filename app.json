@@ -19,7 +19,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.splitmate.app",
-      "versionCode": 14,
+      "versionCode": 15,
       "permissions": [
         "CAMERA",
         "android.permission.CAMERA",
@@ -60,7 +60,7 @@
       "./plugins/withReleaseSigning"
     ],
     "scheme": "splitmate",
-    "description": "Offline group expense splitting with insights. All data stays on your phone.",
+    "description": "Offline-first group expense splitting with insights and multi-phone sync.",
     "extra": {
       "router": {},
       "eas": {

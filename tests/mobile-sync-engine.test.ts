@@ -1,7 +1,7 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createNodeDb } from './node-db';
-import { migrate, setDb, getDb, DB } from '../src/data/db';
+import { migrate, setDb, DB } from '../src/data/db';
 import * as repo from '../src/data/repo';
 import { getDeviceId } from '../src/lib/identity';
 import { getPendingOutboxMutations, getOutboxCount, getOutboxMutationsByStatus, enqueueOutboxMutation } from '../src/data/outbox';
@@ -90,7 +90,7 @@ test('mobile sync engine: 1. offline create keeps local SQLite responsive with p
   const alice = members.find((m) => m.name === 'Alice')!;
   const bob = members.find((m) => m.name === 'Bob')!;
 
-  const txId = await repo.createTransaction(group.id, {
+  await repo.createTransaction(group.id, {
     type: 'expense',
     title: 'Lift Tickets',
     amount: 120,
@@ -215,7 +215,7 @@ test('mobile sync engine: 4. partial failure marks conflicting mutations while a
 
   // Now create two new local mutations in outbox:
   // 1. Valid transaction
-  const validTxId = await repo.createTransaction(group.id, {
+  await repo.createTransaction(group.id, {
     type: 'expense',
     title: 'Snacks',
     amount: 25,

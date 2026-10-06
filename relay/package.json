@@ -1,7 +1,7 @@
 {
   "name": "splitmate-relay",
   "version": "3.0.0",
-  "description": "SplitMate sync API: Express on Cloudflare Workers + Supabase Postgres, webhooks and Expo push (no WebSockets)",
+  "description": "SplitMate sync API: Express on Cloudflare Workers + Postgres, webhooks and Expo push",
   "main": "src/index.ts",
   "scripts": {
     "dev": "wrangler dev",

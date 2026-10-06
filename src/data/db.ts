@@ -11,7 +11,7 @@ export interface DB {
   withTransactionAsync(task: () => Promise<void>): Promise<void>;
 }
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 6;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -142,6 +142,17 @@ const MIGRATIONS: Record<number, string> = {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+  `,
+  // Rows created before v4 have no uid; the server identifies every entity by uid.
+  5: `
+    UPDATE members SET uid = 'mem_' || lower(hex(randomblob(12))) WHERE uid = '';
+    UPDATE transactions SET uid = 'tx_' || lower(hex(randomblob(12))) WHERE uid = '';
+  `,
+  // The encrypted WebSocket relay's event log; the outbox replaced it.
+  6: `
+    DROP INDEX IF EXISTS idx_sync_events_group;
+    DROP INDEX IF EXISTS idx_sync_events_synced;
+    DROP TABLE IF EXISTS sync_events;
   `,
 };
 

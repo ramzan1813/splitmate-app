@@ -27,7 +27,7 @@ services:
       dockerfile: Dockerfile.web
       args:
         # Opened by the browser on the host, hence localhost rather than the service name.
-        EXPO_PUBLIC_RELAY_URL: http://localhost:8787
+        EXPO_PUBLIC_SERVER_URL: http://localhost:8787
     ports:
       - "8081:80"
     depends_on:

@@ -9,7 +9,7 @@ compatibility_flags = ["nodejs_compat"]
 [triggers]
 crons = ["* * * * *"]
 
-# Recommended: put Hyperdrive in front of Supabase for pooled, low-latency connections.
+# Optional: put Hyperdrive in front of Postgres for pooled, low-latency connections.
 #   npx wrangler hyperdrive create splitmate-db --connection-string="postgresql://..."
 # then uncomment and paste the id. Without it the Worker uses the DATABASE_URL secret.
 # [[hyperdrive]]
@@ -17,7 +17,7 @@ crons = ["* * * * *"]
 # id = "<hyperdrive-id>"
 
 # Secrets (never commit them):
-#   npx wrangler secret put DATABASE_URL       # Supabase connection string
+#   npx wrangler secret put DATABASE_URL       # Postgres connection string (Neon in production)
 #   npx wrangler secret put ADMIN_API_KEY      # protects webhook management routes
 #   npx wrangler secret put EXPO_ACCESS_TOKEN  # optional, if Expo push security is enabled
 # Local dev: put the same keys in relay/.dev.vars

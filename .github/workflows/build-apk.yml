@@ -70,6 +70,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            relay/package-lock.json
 
       - uses: actions/setup-java@v5
         with:
@@ -87,7 +90,11 @@ jobs:
           packages: platform-tools
 
       - name: Install dependencies
-        run: npm ci
+        # The unit tests start the sync server in-process (relay/test-support), so they need the
+        # server's packages too. --ignore-scripts skips wrangler's runtime download, which tests don't use.
+        run: |
+          npm ci
+          npm ci --prefix relay --ignore-scripts
 
       - name: Type check and unit tests
         run: |

@@ -12,7 +12,9 @@ import { safeFileName, shareFile } from '@/lib/files';
 import { todayISO } from '@/lib/format';
 import { colors } from '@/lib/theme';
 import { confirm, errorMessage, notify } from '@/lib/dialog';
-import { DEFAULT_RELAY_URL, getIdentity, updateRelayUrl, UserIdentity } from '@/lib/identity';
+import { DEFAULT_SERVER_URL, getIdentity, normalizeServerUrl, updateServerUrl, UserIdentity } from '@/lib/identity';
+import { syncEngine } from '@/data/syncEngine';
+import Constants from 'expo-constants';
 import { getSyncNotifications, markNotificationsRead } from '@/data/sync';
 import { SyncNotification } from '@/data/types';
 
@@ -28,13 +30,14 @@ export default function AppSettings() {
   const [pinMsg, setPinMsg] = useState('');
   const [busy, setBusy] = useState(false);
   const [identity, setIdentity] = useState<UserIdentity | null>(null);
-  const [relayUrl, setRelayUrl] = useState('');
+  const [serverUrl, setServerUrl] = useState('');
+  const [serverCheck, setServerCheck] = useState('');
   const [notifications, setNotifications] = useState<SyncNotification[]>([]);
 
   useEffect(() => {
     getIdentity().then((id) => {
       setIdentity(id);
-      setRelayUrl(id.relayUrl);
+      setServerUrl(id.serverUrl);
     });
     getSyncNotifications().then(setNotifications);
   }, []);
@@ -45,13 +48,39 @@ export default function AppSettings() {
     notify('Saved', 'Your name was updated. New groups will use it.');
   };
 
-  const saveRelay = async () => {
-    const trimmed = relayUrl.trim();
-    await updateRelayUrl(trimmed);
+  /** Switching servers re-syncs every group with the new server, uploading what it lacks. */
+  const applyServerUrl = async (next: string) => {
+    const target = normalizeServerUrl(next) || DEFAULT_SERVER_URL;
+    if (target === identity?.serverUrl) return notify('No change', `Already using ${target}`);
+    const ok = await confirm(
+      'Change server?',
+      `SplitMate will sync with ${target}.\n\nYour groups will be re-synced with that server, and any group it doesn't have will be uploaded to it.`,
+      'Change server'
+    );
+    if (!ok) return;
+    try {
+      await updateServerUrl(target);
+    } catch (e) {
+      return notify('Invalid URL', errorMessage(e));
+    }
     const updated = await getIdentity();
     setIdentity(updated);
-    setRelayUrl(updated.relayUrl);
-    notify('Saved', trimmed ? 'Custom relay server URL saved.' : 'Using default built-in relay server.');
+    setServerUrl(updated.serverUrl);
+    setServerCheck('');
+    syncEngine.syncAllGroups().catch(() => {});
+    notify('Server changed', `Now syncing with ${updated.serverUrl}`);
+  };
+
+  const testServer = async () => {
+    const base = normalizeServerUrl(serverUrl) || DEFAULT_SERVER_URL;
+    setServerCheck('Checking…');
+    try {
+      const res = await fetch(`${base}/health/db`);
+      const body = await res.json().catch(() => null);
+      setServerCheck(res.ok ? '✓ Server and database reachable' : `✗ Server answered ${res.status}: ${body?.message ?? body?.error ?? 'error'}`);
+    } catch (e) {
+      setServerCheck(`✗ Cannot reach ${base}: ${errorMessage(e)}`);
+    }
   };
 
   const startPin = (s: PinStep) => {
@@ -143,49 +172,42 @@ export default function AppSettings() {
       <Field value={name} onChangeText={setName} testID="profile-name" />
       <Button title="Save name" variant="outline" small onPress={saveName} style={{ alignSelf: 'flex-start' }} />
 
-      {/* Device Account & Identity */}
-      <SectionTitle>On-device Account & Identity</SectionTitle>
+      {/* User id the server records as the author of this phone's changes */}
+      <SectionTitle>Your user ID</SectionTitle>
       <Card>
-        <Text style={{ fontSize: 13, color: colors.muted, marginBottom: 6 }}>Device User ID (Public):</Text>
-        <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: 12 }}>
-          {identity?.id || 'Generating...'}
+        <Text style={{ fontSize: 13, color: colors.muted, marginBottom: 6 }}>Created on this phone; no sign-up needed. Group permissions use it to tell members apart.</Text>
+        <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 14, fontWeight: '700', color: colors.text }}>
+          {identity?.id || '…'}
         </Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981', marginRight: 6 }} />
-          <Text style={{ color: colors.positive, fontWeight: '700', fontSize: 12 }}>Cryptographic Key Active (On-Device)</Text>
-        </View>
       </Card>
 
-      {/* E2EE Sync & Cloudflare Relay */}
-      <SectionTitle>E2EE Remote Sync Relay</SectionTitle>
+      {/* Sync server */}
+      <SectionTitle>Server</SectionTitle>
       <Card>
         <Text style={{ color: colors.muted, fontSize: 13, marginBottom: 8 }}>
-          Cloudflare Worker WebSocket Relay URL. Leave blank or use default for built-in high speed E2EE synchronization. All messages are encrypted on-device.
+          The SplitMate server your groups sync with. To test server changes, point this at your development server (for example
+          http://localhost:8787 on web, or http://&lt;your PC’s IP&gt;:8787 on a phone).
         </Text>
+        <Text style={{ color: colors.text, fontSize: 12, fontWeight: '700', marginBottom: 4 }}>Server URL</Text>
         <TextInput
-          value={relayUrl}
-          onChangeText={setRelayUrl}
-          placeholder={DEFAULT_RELAY_URL}
+          value={serverUrl}
+          onChangeText={setServerUrl}
+          placeholder={DEFAULT_SERVER_URL}
           placeholderTextColor="#9CA3AF"
           style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 8, fontSize: 13, backgroundColor: '#fff', marginBottom: 10 }}
           autoCapitalize="none"
           autoCorrect={false}
+          keyboardType="url"
+          testID="server-url"
         />
-        <Row style={{ gap: 8 }}>
-          <Button small variant="outline" title="Save Relay URL" onPress={saveRelay} />
-          {relayUrl !== DEFAULT_RELAY_URL && (
-            <Button
-              small
-              variant="ghost"
-              title="Reset Default"
-              onPress={async () => {
-                await updateRelayUrl('');
-                setRelayUrl(DEFAULT_RELAY_URL);
-                notify('Reset', 'Restored default relay server.');
-              }}
-            />
+        <Row style={{ gap: 8, flexWrap: 'wrap' }}>
+          <Button small variant="outline" title="Save" onPress={() => applyServerUrl(serverUrl)} />
+          <Button small variant="outline" title="Test connection" onPress={testServer} />
+          {identity?.serverUrl !== DEFAULT_SERVER_URL && (
+            <Button small variant="ghost" title="Reset to default" onPress={() => applyServerUrl(DEFAULT_SERVER_URL)} />
           )}
         </Row>
+        {!!serverCheck && <Text style={{ color: colors.muted, fontSize: 12, marginTop: 8 }}>{serverCheck}</Text>}
       </Card>
 
       {/* Sync Notifications */}
@@ -259,13 +281,13 @@ export default function AppSettings() {
       <SectionTitle>Privacy</SectionTitle>
       <Card>
         <Text style={{ color: colors.muted, fontSize: 13 }}>
-          SplitMate works fully offline and syncs peer-to-peer using zero-knowledge end-to-end encryption. It has no central user tracking, no ads and no telemetry, and doesn’t ask for contacts, location, camera, or microphone permissions. Data is stored in the app’s private SQLite database.
+          SplitMate works offline and keeps your data in the app’s private SQLite database. Groups are synced through the server set above, which stores each group’s name, members and transactions so other members’ phones can download them. There are no user accounts, ads or telemetry. The camera is used only to scan invite QR codes; SplitMate never asks for contacts, location or microphone access.
         </Text>
       </Card>
 
       <SectionTitle>Danger zone</SectionTitle>
       <Button title="Erase all data" variant="danger" onPress={erase} />
-      <Text style={{ color: colors.muted, textAlign: 'center', marginTop: 20, fontSize: 12 }}>SplitMate 1.2.0 · E2EE Sync Edition</Text>
+      <Text style={{ color: colors.muted, textAlign: 'center', marginTop: 20, fontSize: 12 }}>SplitMate {Constants.expoConfig?.version ?? ''}</Text>
     </Screen>
   );
 }

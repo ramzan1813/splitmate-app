@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Avatar, Button, Card, Chip, Field, Row, Screen, SectionTitle } from '@/components/ui';
+import { useRouter } from 'expo-router';
+import { Avatar, Button, Card, Chip, Row, Screen, SectionTitle } from '@/components/ui';
 import { ExportFile, findExisting, importFile, parseExport } from '@/data/backup';
 import { QRScannerModal } from '@/components/QRScannerModal';
 import { pickTextFile } from '@/lib/files';
@@ -9,12 +9,10 @@ import { money } from '@/lib/format';
 import { colors } from '@/lib/theme';
 import { confirm, errorMessage, notify } from '@/lib/dialog';
 import { useApp } from '@/lib/app';
-import { createGroup, listGroups } from '@/data/repo';
 
 export default function ImportScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ invite?: string }>();
-  const { suspendLock, profileName } = useApp();
+  const { suspendLock } = useApp();
   const [file, setFile] = useState<ExportFile | null>(null);
   const [fileName, setFileName] = useState('');
   const [existing, setExisting] = useState<Record<string, number>>({});
@@ -22,15 +20,8 @@ export default function ImportScreen() {
   const [onDuplicate, setOnDuplicate] = useState<'replace' | 'copy'>('replace');
   const [eraseFirst, setEraseFirst] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [inviteUrl, setInviteUrl] = useState(params.invite ? decodeURIComponent(params.invite) : '');
-  const [joining, setJoining] = useState(false);
+  const [inviteUrl, setInviteUrl] = useState('');
   const [showScanner, setShowScanner] = useState(false);
-
-  useEffect(() => {
-    if (params.invite) {
-      setInviteUrl(decodeURIComponent(params.invite));
-    }
-  }, [params.invite]);
 
   const handleJoinInvite = () => {
     const raw = inviteUrl.trim();
@@ -99,7 +90,6 @@ export default function ImportScreen() {
           <Button
             title="Join Group"
             onPress={handleJoinInvite}
-            loading={joining}
             disabled={!inviteUrl.trim()}
             style={{ flex: 1 }}
             testID="join-invite-btn"

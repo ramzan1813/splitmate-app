@@ -166,7 +166,7 @@ const LIST: [string, string, string?][] = [
   ['ZWG', 'Zimbabwe Gold'],
 ];
 
-export const CURRENCY_LIST: Currency[] = LIST.map(([code, name, symbol]) => ({ code, name, symbol: symbol ?? `${code} ` }));
+const CURRENCY_LIST: Currency[] = LIST.map(([code, name, symbol]) => ({ code, name, symbol: symbol ?? `${code} ` }));
 export const CURRENCIES = CURRENCY_LIST.map((c) => c.code);
 /** Shown first in pickers; the rest are found by searching. */
 export const POPULAR_CURRENCIES = ['PKR', 'USD', 'EUR', 'GBP', 'INR', 'AED', 'SAR', 'CAD', 'AUD', 'JPY', 'CNY', 'BDT', 'TRY', 'MYR', 'SGD'];

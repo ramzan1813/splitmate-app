@@ -1,38 +1,85 @@
 // Mobile Synchronization Engine
 // Orchestrates: Local Mutation -> SQLite -> Outbox -> Push -> Backend -> Pull -> Transactional SQLite Application.
+//
+// Source of truth: the server. Each group has a server-assigned, gapless change sequence; the
+// device keeps a cursor (sync_state.last_server_sequence) advanced in the same SQLite
+// transaction that applies the changes. Entities are identified by uid and carry a server
+// version; updates/deletes send expectedVersion and the server answers CONFLICT on mismatch.
+//
+// Triggers (no polling, no timers): app start, app returning to the foreground, opening a group,
+// pull-to-refresh, and every committed local write (signalLocalChange). A failed push leaves
+// the mutations pending; the next trigger retries them, and the server deduplicates by
+// clientMutationId. Conflicts and rejections stay in the outbox until the user resolves them.
 import { DB, getDb } from './db';
-import { getDeviceId, getIdentity } from '../lib/identity';
+import { getDeviceId, getIdentity, getServerUrl } from '../lib/identity';
+import { money } from '../lib/format';
 import {
-  clearAcknowledgedOutboxMutations,
+  discardUnresolvedOutboxMutations,
+  enqueueOutboxMutation,
+  getOutboxCount,
   getPendingOutboxMutations,
   markOutboxMutationConflict,
   markOutboxMutationFailed,
   markOutboxMutationInFlight,
   removeOutboxMutation,
+  requeueOutboxMutations,
+  resetInFlightOutboxMutations,
 } from './outbox';
 import {
   getSyncState,
+  hasUploadMarker,
   initSyncState,
+  resetAllSyncBindings,
+  resetServerSequence,
   setSyncStatus,
+  setUploadMarker,
   updateServerSequence,
 } from './syncState';
 import {
   GroupBootstrapResponse,
+  OutboxMutation,
   PullChangesResponse,
   PushMutationsRequest,
   PushMutationsResponse,
   RealtimeNotification,
   ServerChange,
-  SyncStatus,
 } from './types';
-import { listGroups } from './repo';
+import { addMember, buildTxSyncPayload, newUid, setMe } from './repo';
+import { recordSyncNotification } from './sync';
+
+// ---------- Transport ----------
+
+/** The server answered with an HTTP error status. */
+export class SyncHttpError extends Error {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = 'SyncHttpError';
+  }
+}
+
+/** The server could not be reached (offline, DNS, refused, timed out). */
+export class SyncNetworkError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SyncNetworkError';
+  }
+}
+
+const isNotFound = (err: unknown) => err instanceof SyncHttpError && err.status === 404;
 
 export interface SyncTransport {
   push(request: PushMutationsRequest): Promise<PushMutationsResponse>;
   pull(groupUid: string, afterSequence: number, limit?: number): Promise<PullChangesResponse>;
   bootstrap(groupUid: string): Promise<GroupBootstrapResponse>;
+  /** Identifies the server the cursors belong to; a change resets them. Optional for test transports. */
+  serverId?(): Promise<string>;
 }
 
+/** A source of "changes available" signals (e.g. push notifications) that triggers a sync. */
 export interface RealtimeClient {
   connect(): void;
   disconnect(): void;
@@ -42,127 +89,96 @@ export interface RealtimeClient {
   onNotification(handler: (notification: RealtimeNotification) => void): () => void;
 }
 
-export class MemoryRealtimeClient implements RealtimeClient {
-  private connected = true;
-  private subscribedGroups = new Set<string>();
-  private handlers = new Set<(notification: RealtimeNotification) => void>();
-  private unsubscribers = new Map<string, () => void>();
+// A request that never answers would keep the group in 'syncing' forever; failing it surfaces
+// the problem as an offline/error state and the next trigger retries.
+const REQUEST_TIMEOUT_MS = 20_000;
 
-  constructor(private hub: { subscribe(groupUid: string, cb: (notif: RealtimeNotification) => void): () => void }) {}
-
-  connect(): void {
-    this.connected = true;
-    for (const groupUid of this.subscribedGroups) {
-      this.attach(groupUid);
-    }
-  }
-
-  disconnect(): void {
-    this.connected = false;
-    for (const unsub of this.unsubscribers.values()) {
-      unsub();
-    }
-    this.unsubscribers.clear();
-  }
-
-  isConnected(): boolean {
-    return this.connected;
-  }
-
-  subscribeGroup(groupUid: string): void {
-    this.subscribedGroups.add(groupUid);
-    if (this.connected) {
-      this.attach(groupUid);
-    }
-  }
-
-  unsubscribeGroup(groupUid: string): void {
-    this.subscribedGroups.delete(groupUid);
-    const unsub = this.unsubscribers.get(groupUid);
-    if (unsub) {
-      unsub();
-      this.unsubscribers.delete(groupUid);
-    }
-  }
-
-  private attach(groupUid: string) {
-    if (this.unsubscribers.has(groupUid)) return;
-    const unsub = this.hub.subscribe(groupUid, (notif) => {
-      if (!this.connected) return;
-      for (const h of this.handlers) {
-        try {
-          h(notif);
-        } catch {}
-      }
-    });
-    this.unsubscribers.set(groupUid, unsub);
-  }
-
-  onNotification(handler: (notification: RealtimeNotification) => void): () => void {
-    this.handlers.add(handler);
-    return () => {
-      this.handlers.delete(handler);
-    };
-  }
-}
-
-/** Default HTTP Sync Transport for mobile production environment */
+/** HTTP transport for the SplitMate sync server. Reads the server URL from settings on every call. */
 export class HttpSyncTransport implements SyncTransport {
-  private baseUrl: string;
+  constructor(private resolveBaseUrl: () => Promise<string> = getServerUrl) {}
 
-  constructor(baseUrl?: string) {
-    this.baseUrl = (baseUrl || 'https://splitmate-api.example.com').replace(/\/+$/, '');
+  async serverId(): Promise<string> {
+    return this.resolveBaseUrl();
   }
 
-  public setBaseUrl(url: string) {
-    this.baseUrl = url.replace(/\/+$/, '');
-  }
-
-  async push(request: PushMutationsRequest): Promise<PushMutationsResponse> {
-    const res = await fetch(`${this.baseUrl}/sync/push`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
-    if (!res.ok) {
-      throw new Error(`Push failed with HTTP ${res.status}`);
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const base = (await this.resolveBaseUrl()).replace(/\/+$/, '');
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : undefined;
+    const timer = controller ? setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS) : undefined;
+    let res: Response;
+    try {
+      res = await fetch(`${base}${path}`, {
+        ...init,
+        headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
+        signal: controller?.signal,
+      });
+    } catch (err) {
+      const reason = err instanceof Error && err.name === 'AbortError' ? 'request timed out' : err instanceof Error ? err.message : String(err);
+      throw new SyncNetworkError(`Cannot reach server ${base}: ${reason}`);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-    return res.json();
+    if (!res.ok) {
+      let body: { error?: string; message?: string } | null = null;
+      try {
+        body = await res.json();
+      } catch {}
+      throw new SyncHttpError(res.status, body?.error || `HTTP_${res.status}`, body?.message || `Server returned HTTP ${res.status}`);
+    }
+    return (await res.json()) as T;
   }
 
-  async pull(groupUid: string, afterSequence: number, limit = 100): Promise<PullChangesResponse> {
-    const res = await fetch(`${this.baseUrl}/sync/changes/${groupUid}?after=${afterSequence}&limit=${limit}`, {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!res.ok) {
-      throw new Error(`Pull failed with HTTP ${res.status}`);
-    }
-    return res.json();
+  push(request: PushMutationsRequest): Promise<PushMutationsResponse> {
+    return this.request('/sync/push', { method: 'POST', body: JSON.stringify(request) });
   }
 
-  async bootstrap(groupUid: string): Promise<GroupBootstrapResponse> {
-    const res = await fetch(`${this.baseUrl}/sync/bootstrap/${groupUid}`, {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!res.ok) {
-      throw new Error(`Bootstrap failed with HTTP ${res.status}`);
-    }
-    return res.json();
+  pull(groupUid: string, afterSequence: number, limit = 100): Promise<PullChangesResponse> {
+    return this.request(`/sync/changes/${encodeURIComponent(groupUid)}?after=${afterSequence}&limit=${limit}`);
+  }
+
+  bootstrap(groupUid: string): Promise<GroupBootstrapResponse> {
+    return this.request(`/sync/bootstrap/${encodeURIComponent(groupUid)}`);
   }
 }
 
-type SyncChangeListener = (groupUid: string) => void;
+// ---------- Status ----------
+
+export type SyncPhase = 'syncing' | 'synced' | 'pending' | 'offline' | 'error' | 'conflict' | 'never';
+
+export interface GroupSyncStatus {
+  phase: SyncPhase;
+  /** Local changes not yet accepted by the server. */
+  pending: number;
+  /** Changes the server refused (version conflict or rejection), waiting for the user. */
+  unresolved: number;
+  lastSyncAt: string | null;
+  error: string | null;
+}
+
+export interface SyncResult {
+  pushed: number;
+  pulled: number;
+  conflicts: number;
+}
+
+const ZERO: SyncResult = { pushed: 0, pulled: 0, conflicts: 0 };
+const MAX_MUTATIONS_PER_PUSH = 200; // server limit
+const PULL_PAGE_SIZE = 100;
+const SERVER_BINDING_SETTING = 'sync.server_binding';
+
+type GroupListener = (groupUid: string) => void;
+
+const normName = (s: string | null | undefined) => (s ?? '').trim().toLowerCase();
 
 export class SyncEngine {
   private transport: SyncTransport;
   private realtimeClient?: RealtimeClient;
   private realtimeUnsub?: () => void;
   private customDb?: DB;
-  private isSyncing = new Map<string, boolean>();
-  private retryBackoff = new Map<string, number>(); // ms
-  private listeners = new Set<SyncChangeListener>();
+  private inFlight = new Map<string, Promise<SyncResult>>();
+  private rerunRequested = new Set<string>();
+  private listeners = new Set<GroupListener>();
+  private statusListeners = new Set<GroupListener>();
   private onlineStatus = true;
 
   constructor(transport?: SyncTransport, realtime?: RealtimeClient, db?: DB) {
@@ -199,7 +215,7 @@ export class SyncEngine {
       try {
         await this.handleRealtimeNotification(notif);
       } catch {
-        // Ignored; cursor synchronization will catch up on next sync
+        // Status already records the failure; the next trigger catches up from the cursor.
       }
     });
   }
@@ -209,20 +225,13 @@ export class SyncEngine {
   }
 
   /**
-   * Processes an incoming realtime notification.
-   * Realtime notifications mean "changes may be available" — they do NOT carry data.
-   * Pulls incremental changes strictly after lastServerSequence and applies them transactionally to SQLite.
+   * A notification means "changes may be available" — it carries no data. Runs a normal sync
+   * cycle (push first, so pending local edits are never overwritten before they are sent).
    */
   public async handleRealtimeNotification(notification: RealtimeNotification): Promise<number> {
-    if (!this.onlineStatus) {
-      return 0;
-    }
-
-    const pulled = await this.pullRemoteChanges(notification.groupUid);
-    if (pulled > 0) {
-      this.notify(notification.groupUid);
-    }
-    return pulled;
+    if (!this.onlineStatus) return 0;
+    const result = await this.syncGroup(notification.groupUid);
+    return result.pulled;
   }
 
   public setOnline(online: boolean) {
@@ -231,7 +240,7 @@ export class SyncEngine {
     if (online) {
       this.realtimeClient?.connect();
       if (!prev) {
-        // Reconnected: trigger cursor synchronization across all groups to catch up on any missed changes
+        // Reconnected: catch up every group from its cursor.
         this.syncAllGroups().catch(() => {});
       }
     } else {
@@ -243,384 +252,601 @@ export class SyncEngine {
     return this.onlineStatus;
   }
 
-  public subscribe(listener: SyncChangeListener): () => void {
+  /** Called when a group's local data changed because of pulled server changes. */
+  public subscribe(listener: GroupListener): () => void {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
     };
   }
 
-  private notify(groupUid: string) {
-    for (const l of this.listeners) {
+  /** Called whenever a group's sync status may have changed. */
+  public subscribeStatus(listener: GroupListener): () => void {
+    this.statusListeners.add(listener);
+    return () => {
+      this.statusListeners.delete(listener);
+    };
+  }
+
+  private emit(set: Set<GroupListener>, groupUid: string) {
+    for (const l of set) {
       try {
         l(groupUid);
       } catch {}
     }
   }
 
-  /** Synchronizes all local groups sequentially */
-  public async syncAllGroups(): Promise<Record<string, { pushed: number; pulled: number; conflicts: number }>> {
-    const results: Record<string, { pushed: number; pulled: number; conflicts: number }> = {};
-    const groups = await listGroups();
-    for (const g of groups) {
-      if (g.uid) {
-        try {
-          results[g.uid] = await this.syncGroup(g.uid);
-        } catch {
-          results[g.uid] = { pushed: 0, pulled: 0, conflicts: 0 };
-        }
+  public isSyncing(groupUid: string): boolean {
+    return this.inFlight.has(groupUid);
+  }
+
+  public async getGroupSyncStatus(groupUid: string): Promise<GroupSyncStatus> {
+    const db = await this.getEngineDb();
+    const state = await getSyncState(groupUid, db);
+    const counts = await getOutboxCount(groupUid, db);
+    const pending = counts.pending + counts.sending;
+    const unresolved = counts.conflict + counts.failed;
+    const base = { pending, unresolved, lastSyncAt: state?.lastSyncAt ?? null, error: state?.errorDetail ?? null };
+    if (this.inFlight.has(groupUid)) return { ...base, phase: 'syncing' };
+    if (unresolved > 0) return { ...base, phase: 'conflict' };
+    if (state?.syncStatus === 'offline') return { ...base, phase: 'offline' };
+    if (state?.syncStatus === 'error') return { ...base, phase: 'error' };
+    if (pending > 0) return { ...base, phase: 'pending' };
+    if (state?.lastSyncAt) return { ...base, phase: 'synced' };
+    return { ...base, phase: 'never' };
+  }
+
+  /** Synchronizes every local group (including deleted ones with unsent deletes), one at a time. */
+  public async syncAllGroups(): Promise<Record<string, SyncResult>> {
+    const db = await this.getEngineDb();
+    const rows = await db.getAllAsync<{ uid: string }>(
+      `SELECT uid FROM groups WHERE uid != '' UNION SELECT DISTINCT group_uid AS uid FROM outbox_mutations`,
+      []
+    );
+    const results: Record<string, SyncResult> = {};
+    for (const { uid } of rows) {
+      try {
+        results[uid] = await this.syncGroup(uid);
+      } catch {
+        results[uid] = { ...ZERO };
       }
     }
     return results;
   }
 
-  /** Full sync cycle for a group: Push Outbox -> Pull Server Changes -> Apply Transactionally to SQLite */
-  public async syncGroup(groupUid: string): Promise<{ pushed: number; pulled: number; conflicts: number }> {
+  /**
+   * Full sync cycle for a group: upload backfill (once) -> push outbox -> pull changes.
+   * A call made while a cycle is running joins it and schedules one more cycle afterwards,
+   * so a write committed mid-sync is still pushed.
+   */
+  public syncGroup(groupUid: string): Promise<SyncResult> {
+    const running = this.inFlight.get(groupUid);
+    if (running) {
+      this.rerunRequested.add(groupUid);
+      return running;
+    }
+    const run = (async () => {
+      const total = { ...ZERO };
+      do {
+        this.rerunRequested.delete(groupUid);
+        const r = await this.runCycle(groupUid);
+        total.pushed += r.pushed;
+        total.pulled += r.pulled;
+        total.conflicts += r.conflicts;
+      } while (this.rerunRequested.has(groupUid));
+      return total;
+    })().finally(() => {
+      this.inFlight.delete(groupUid);
+      this.rerunRequested.delete(groupUid);
+      this.emit(this.statusListeners, groupUid);
+    });
+    this.inFlight.set(groupUid, run);
+    this.emit(this.statusListeners, groupUid);
+    return run;
+  }
+
+  private async runCycle(groupUid: string): Promise<SyncResult> {
     const db = await this.getEngineDb();
+    const deviceId = await getDeviceId();
+    if (!(await getSyncState(groupUid, db))) await initSyncState(groupUid, deviceId, db);
 
     if (!this.onlineStatus) {
       await setSyncStatus(groupUid, 'offline', null, db);
-      return { pushed: 0, pulled: 0, conflicts: 0 };
+      return { ...ZERO };
     }
 
-    if (this.isSyncing.get(groupUid)) {
-      return { pushed: 0, pulled: 0, conflicts: 0 };
-    }
-
-    this.isSyncing.set(groupUid, true);
     await setSyncStatus(groupUid, 'syncing', null, db);
-
-    let pushed = 0;
-    let conflicts = 0;
-    let pulled = 0;
-
     try {
-      const deviceId = await getDeviceId();
-      let state = await getSyncState(groupUid, db);
-      if (!state) {
-        state = await initSyncState(groupUid, deviceId, db);
-      }
-
+      await this.ensureServerBinding(db);
+      await this.ensureUploaded(groupUid, db);
       this.realtimeClient?.subscribeGroup(groupUid);
 
-      // 1. Push pending local outbox mutations
-      const pushRes = await this.pushPendingMutations(groupUid, deviceId);
-      pushed = pushRes.accepted;
-      conflicts = pushRes.conflicts;
+      const push = await this.pushPendingMutations(groupUid, deviceId);
+      const pulled = await this.pullRemoteChanges(groupUid);
 
-      // 2. Pull remote server changes
-      pulled = await this.pullRemoteChanges(groupUid);
-
-      // Reset backoff on successful sync
-      this.retryBackoff.set(groupUid, 0);
-      await setSyncStatus(groupUid, conflicts > 0 ? 'conflict' : 'idle', null, db);
-
-      if (pushed > 0 || pulled > 0) {
-        this.notify(groupUid);
-      }
-
-      return { pushed, pulled, conflicts };
-    } catch (err: any) {
-      // Calculate exponential backoff
-      const currentDelay = this.retryBackoff.get(groupUid) || 1000;
-      const nextDelay = Math.min(currentDelay * 2, 30000);
-      this.retryBackoff.set(groupUid, nextDelay);
-
-      const errorMessage = err?.message || 'Synchronization failed';
-      await setSyncStatus(groupUid, 'error', errorMessage, db);
+      const counts = await getOutboxCount(groupUid, db);
+      await setSyncStatus(groupUid, counts.conflict + counts.failed > 0 ? 'conflict' : 'idle', null, db);
+      if (pulled > 0) this.emit(this.listeners, groupUid);
+      return { pushed: push.accepted, pulled, conflicts: push.conflicts };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await setSyncStatus(groupUid, err instanceof SyncNetworkError ? 'offline' : 'error', message, db);
       throw err;
-    } finally {
-      this.isSyncing.set(groupUid, false);
     }
   }
 
-  /** Flushes pending mutations from the local outbox to the server */
-  public async pushPendingMutations(groupUid: string, deviceId: string): Promise<{ accepted: number; conflicts: number; rejected: number }> {
-    const db = await this.getEngineDb();
-    const pending = await getPendingOutboxMutations(groupUid, db);
-    if (pending.length === 0) {
-      return { accepted: 0, conflicts: 0, rejected: 0 };
+  /** Cursors and upload markers belong to one server; switching servers re-syncs from scratch. */
+  private async ensureServerBinding(db: DB) {
+    if (!this.transport.serverId) return;
+    const current = await this.transport.serverId();
+    const row = await db.getFirstAsync<{ value: string }>('SELECT value FROM settings WHERE key = ?', [SERVER_BINDING_SETTING]);
+    if (row?.value === current) return;
+    if (row) await resetAllSyncBindings(db);
+    await db.runAsync('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [
+      SERVER_BINDING_SETTING,
+      current,
+    ]);
+  }
+
+  /**
+   * Groups created before the sync engine (or synced only through the old relay) have data the
+   * server has never seen. Compare with the server once and queue whatever it is missing.
+   */
+  private async ensureUploaded(groupUid: string, db: DB) {
+    if (await hasUploadMarker(groupUid, db)) return;
+
+    const group = await db.getFirstAsync<{
+      id: number;
+      name: string;
+      description: string;
+      currency: string;
+      permission_model: string;
+      creator_id: string;
+      creator_name: string;
+      is_deleted: number;
+    }>('SELECT * FROM groups WHERE uid = ?', [groupUid]);
+    const queuedCreate = await db.getFirstAsync<{ id: number }>(
+      `SELECT id FROM outbox_mutations WHERE group_uid = ? AND entity_type = 'group' AND operation = 'create' LIMIT 1`,
+      [groupUid]
+    );
+    if (!group || queuedCreate) {
+      await setUploadMarker(groupUid, db);
+      return;
     }
 
-    const mutationIds = pending.map((m) => m.clientMutationId);
-    await markOutboxMutationInFlight(mutationIds, db);
+    let snapshot: GroupBootstrapResponse | null = null;
+    try {
+      snapshot = await this.transport.bootstrap(groupUid);
+    } catch (err) {
+      if (!isNotFound(err)) throw err;
+    }
+
+    await db.withTransactionAsync(async () => {
+      if (!snapshot) {
+        // The server has never seen this group. Its current local state supersedes any queued edits.
+        await db.runAsync('DELETE FROM outbox_mutations WHERE group_uid = ?', [groupUid]);
+        if (!group.is_deleted) await this.queueFullUpload(db, groupUid, group);
+      } else {
+        await this.queueMissingUploads(db, groupUid, group.id, snapshot);
+      }
+      await setUploadMarker(groupUid, db);
+    });
+  }
+
+  private async queueFullUpload(
+    db: DB,
+    groupUid: string,
+    group: { id: number; name: string; description: string; currency: string; permission_model: string; creator_id: string; creator_name: string }
+  ) {
+    const enqueue = (m: Omit<Parameters<typeof enqueueOutboxMutation>[0], 'clientMutationId' | 'groupUid' | 'expectedVersion' | 'operation'>) =>
+      enqueueOutboxMutation({ ...m, clientMutationId: `mut_${newUid()}`, groupUid, operation: 'create', expectedVersion: 0 }, db);
+
+    await enqueue({
+      entityType: 'group',
+      entityUid: groupUid,
+      payload: {
+        uid: groupUid,
+        name: group.name,
+        description: group.description,
+        currency: group.currency,
+        permissionModel: group.permission_model,
+        creatorId: group.creator_id,
+        creatorName: group.creator_name,
+      },
+    });
+    const members = await db.getAllAsync<{ uid: string; name: string; is_me: number }>(
+      'SELECT uid, name, is_me FROM members WHERE group_id = ? AND is_deleted = 0 ORDER BY id',
+      [group.id]
+    );
+    for (const m of members) {
+      await enqueue({ entityType: 'member', entityUid: m.uid, payload: { uid: m.uid, name: m.name, isMe: !!m.is_me } });
+    }
+    const txs = await db.getAllAsync<{ id: number }>('SELECT id FROM transactions WHERE group_id = ? AND is_deleted = 0 ORDER BY id', [group.id]);
+    for (const t of txs) {
+      const payload = await buildTxSyncPayload(db, t.id);
+      await enqueue({ entityType: 'transaction', entityUid: payload.txUid, payload });
+    }
+    // Every entity is created at server version 1; later edits must expect that.
+    await db.runAsync('UPDATE groups SET server_version = 1 WHERE id = ?', [group.id]);
+    await db.runAsync('UPDATE members SET server_version = 1 WHERE group_id = ?', [group.id]);
+    await db.runAsync('UPDATE transactions SET server_version = 1 WHERE group_id = ?', [group.id]);
+  }
+
+  /** The server already has the group (another member uploaded it): send only what it lacks. */
+  private async queueMissingUploads(db: DB, groupUid: string, groupId: number, snapshot: GroupBootstrapResponse) {
+    const queuedCreates = new Set(
+      (
+        await db.getAllAsync<{ entity_uid: string }>(`SELECT entity_uid FROM outbox_mutations WHERE group_uid = ? AND operation = 'create'`, [groupUid])
+      ).map((r) => r.entity_uid)
+    );
+    const serverMembersByName = new Map(snapshot.members.map((m) => [normName(m.name), m]));
+    const serverNameByUid = new Map(snapshot.members.map((m) => [m.uid, m.name]));
+
+    const members = await db.getAllAsync<{ id: number; uid: string; name: string; is_me: number }>(
+      'SELECT id, uid, name, is_me FROM members WHERE group_id = ? AND is_deleted = 0 ORDER BY id',
+      [groupId]
+    );
+    for (const m of members) {
+      const onServer = serverMembersByName.get(normName(m.name));
+      if (onServer) {
+        // Same person, server identity wins so later renames/deletes target the right row.
+        await db.runAsync('UPDATE members SET uid = ?, server_version = ? WHERE id = ?', [onServer.uid, onServer.serverVersion, m.id]);
+      } else if (!queuedCreates.has(m.uid)) {
+        await enqueueOutboxMutation(
+          {
+            clientMutationId: `mut_${newUid()}`,
+            groupUid,
+            entityType: 'member',
+            entityUid: m.uid,
+            operation: 'create',
+            expectedVersion: 0,
+            payload: { uid: m.uid, name: m.name, isMe: !!m.is_me },
+          },
+          db
+        );
+      }
+    }
+
+    const serverTxs = new Map(snapshot.transactions.map((t) => [t.uid, t]));
+    const txs = await db.getAllAsync<{ id: number; uid: string }>('SELECT id, uid FROM transactions WHERE group_id = ? AND is_deleted = 0 ORDER BY id', [groupId]);
+    for (const t of txs) {
+      const payload = await buildTxSyncPayload(db, t.id);
+      const remote = serverTxs.get(payload.txUid);
+      if (!remote) {
+        if (!queuedCreates.has(payload.txUid)) {
+          await enqueueOutboxMutation(
+            {
+              clientMutationId: `mut_${newUid()}`,
+              groupUid,
+              entityType: 'transaction',
+              entityUid: payload.txUid,
+              operation: 'create',
+              expectedVersion: 0,
+              payload,
+            },
+            db
+          );
+        }
+        continue;
+      }
+      // Both copies exist. The server's copy is authoritative and will be pulled; if this
+      // device's copy differs, say so instead of replacing it silently.
+      const localSplits = payload.splits.map((s) => `${normName(s.memberName)}:${s.share}`).sort().join('|');
+      const remoteSplits = remote.splits.map((s) => `${normName(serverNameByUid.get(s.memberUid ?? ''))}:${s.share}`).sort().join('|');
+      const differs =
+        remote.amount !== payload.amount ||
+        remote.title !== payload.title ||
+        remote.date !== payload.date ||
+        normName(serverNameByUid.get(remote.paidByMemberUid ?? '')) !== normName(payload.paidByName) ||
+        remoteSplits !== localSplits;
+      if (differs) {
+        await recordSyncNotification(db, {
+          groupUid,
+          authorName: 'SplitMate',
+          title: 'Kept the server version',
+          message: `Your copy of "${payload.title}" (${payload.amount / 100}) differed from the group's shared copy (${remote.amount / 100}). The shared copy was kept.`,
+        });
+      }
+    }
+  }
+
+  /** Flushes pending mutations from the local outbox to the server, in order. */
+  public async pushPendingMutations(groupUid: string, deviceId: string): Promise<{ accepted: number; conflicts: number; rejected: number }> {
+    const db = await this.getEngineDb();
+    await resetInFlightOutboxMutations(groupUid, db);
+    const pending = await getPendingOutboxMutations(groupUid, db);
+    const totals = { accepted: 0, conflicts: 0, rejected: 0 };
+    if (pending.length === 0) return totals;
 
     const identity = await getIdentity();
-    const pushReq: PushMutationsRequest = {
-      groupUid,
-      deviceId,
-      actorId: identity.id,
-      actorName: identity.name,
-      mutations: pending.map((m) => ({
-        clientMutationId: m.clientMutationId,
-        entityType: m.entityType,
-        entityUid: m.entityUid,
-        operation: m.operation,
-        expectedVersion: m.expectedVersion,
-        payload: m.payload,
-      })),
-    };
+    for (let i = 0; i < pending.length; i += MAX_MUTATIONS_PER_PUSH) {
+      const batch = pending.slice(i, i + MAX_MUTATIONS_PER_PUSH);
+      const ids = batch.map((m) => m.clientMutationId);
+      await markOutboxMutationInFlight(ids, db);
 
-    let accepted = 0;
-    let conflicts = 0;
-    let rejected = 0;
+      let resp: PushMutationsResponse;
+      try {
+        resp = await this.transport.push({
+          groupUid,
+          deviceId,
+          actorId: identity.id,
+          actorName: identity.name,
+          mutations: batch.map((m) => ({
+            clientMutationId: m.clientMutationId,
+            entityType: m.entityType,
+            entityUid: m.entityUid,
+            operation: m.operation,
+            expectedVersion: m.expectedVersion,
+            payload: m.payload,
+          })),
+        });
+      } catch (err) {
+        // Transient: keep them queued (in order) for the next trigger.
+        await requeueOutboxMutations(ids, err instanceof Error ? err.message : 'Push failed', db);
+        throw err;
+      }
 
-    try {
-      const resp = await this.transport.push(pushReq);
+      const byId = new Map(batch.map((m) => [m.clientMutationId, m]));
+      const answered = new Set<string>();
       for (const res of resp.results) {
+        const mutation = byId.get(res.clientMutationId);
+        if (!mutation) continue;
+        answered.add(res.clientMutationId);
         if (res.status === 'ACCEPTED') {
-          accepted++;
-          // Update entity server version if higher
-          if (res.serverVersion) {
-            await this.updateLocalEntityVersion(db, groupUid, res.entityUid, res.serverVersion);
-          }
+          totals.accepted++;
+          if (res.serverVersion) await this.updateLocalEntityVersion(db, groupUid, res.entityUid, res.serverVersion);
           await removeOutboxMutation(res.clientMutationId, db);
+        } else if (res.status === 'CONFLICT' && (await this.adoptExistingMember(db, mutation, res.error, res.message))) {
+          totals.accepted++;
         } else if (res.status === 'CONFLICT') {
-          conflicts++;
+          totals.conflicts++;
           await markOutboxMutationConflict(res.clientMutationId, res.message || res.error || 'Conflict detected', db);
         } else {
-          rejected++;
+          totals.rejected++;
           await markOutboxMutationFailed(res.clientMutationId, res.message || res.error || 'Mutation rejected', db);
         }
       }
-    } catch (err: any) {
-      for (const id of mutationIds) {
-        await markOutboxMutationFailed(id, err?.message || 'Network error during push', db);
-      }
-      throw err;
+      const unanswered = ids.filter((id) => !answered.has(id));
+      await requeueOutboxMutations(unanswered, 'Server did not answer this mutation', db);
     }
-
-    return { accepted, conflicts, rejected };
+    return totals;
   }
 
-  /** Pulls changes strictly after lastServerSequence and applies them transactionally to SQLite */
+  /**
+   * Another device already added a member with this name. Members are identified by name within
+   * a group, so this is the same person: adopt the server's uid instead of keeping a conflict.
+   */
+  private async adoptExistingMember(db: DB, mutation: OutboxMutation, code?: string, message?: string): Promise<boolean> {
+    if (mutation.entityType !== 'member' || mutation.operation !== 'create' || code !== 'DUPLICATE_MEMBER_NAME') return false;
+    const serverUid = /\bas (\S+)$/.exec(message ?? '')?.[1];
+    if (!serverUid) return false;
+    await db.withTransactionAsync(async () => {
+      await db.runAsync('UPDATE members SET uid = ? WHERE uid = ?', [serverUid, mutation.entityUid]);
+      await db.runAsync('UPDATE outbox_mutations SET entity_uid = ? WHERE entity_uid = ?', [serverUid, mutation.entityUid]);
+      await removeOutboxMutation(mutation.clientMutationId, db);
+    });
+    return true;
+  }
+
+  /** Pulls changes after the cursor, page by page, each page applied in one SQLite transaction. */
   public async pullRemoteChanges(groupUid: string): Promise<number> {
     const db = await this.getEngineDb();
     const deviceId = await getDeviceId();
-    let state = await getSyncState(groupUid, db);
-    if (!state) {
-      state = await initSyncState(groupUid, deviceId, db);
-    }
+    const myId = (await getIdentity()).id;
+    let applied = 0;
+    let cursorReset = false;
 
-    const afterSequence = state.lastServerSequence;
-    const delta = await this.transport.pull(groupUid, afterSequence, 100);
-
-    if (!delta.changes || delta.changes.length === 0) {
-      return 0;
-    }
-
-    let appliedCount = 0;
-
-    // Transactional application: all changes or none
-    await db.withTransactionAsync(async () => {
-      for (const change of delta.changes) {
-        await this.applySingleServerChange(db, groupUid, change);
-        appliedCount++;
+    for (;;) {
+      const state = (await getSyncState(groupUid, db)) ?? (await initSyncState(groupUid, deviceId, db));
+      const after = state.lastServerSequence;
+      let delta: PullChangesResponse;
+      try {
+        delta = await this.transport.pull(groupUid, after, PULL_PAGE_SIZE);
+      } catch (err) {
+        // The server has less history than our cursor (e.g. its database was reset): replay from 0.
+        if (!cursorReset && err instanceof SyncHttpError && err.code === 'CURSOR_AHEAD') {
+          cursorReset = true;
+          await resetServerSequence(groupUid, 0, db);
+          continue;
+        }
+        throw err;
       }
 
-      // Advance server sequence cursor only after all mutations are safely applied
-      await updateServerSequence(groupUid, delta.latestServerSequence, undefined, db);
-    });
+      if (delta.changes.length === 0) {
+        await updateServerSequence(groupUid, delta.latestServerSequence, undefined, db);
+        break;
+      }
 
-    return appliedCount;
+      // Replaying history from the start (first sync, server switch) should not flood notifications.
+      const notify = after > 0;
+      await db.withTransactionAsync(async () => {
+        for (const change of delta.changes) {
+          await this.applyServerChange(db, groupUid, change, notify && change.actorId !== myId);
+        }
+        // Advance the cursor only together with the applied changes.
+        await updateServerSequence(groupUid, delta.latestServerSequence, undefined, db);
+      });
+      applied += delta.changes.length;
+      if (!delta.hasMore) break;
+    }
+    return applied;
   }
 
-  private async applySingleServerChange(db: DB, groupUid: string, change: ServerChange): Promise<void> {
+  private async applyServerChange(db: DB, groupUid: string, change: ServerChange, notify: boolean): Promise<void> {
     const nowIso = new Date().toISOString();
+    const at = change.createdAt || nowIso;
     const isDelete = change.operation === 'delete';
+    const p = (change.payload ?? {}) as any;
+    const note = async (authorName: string, title: string, message: string) => {
+      if (notify) await recordSyncNotification(db, { groupUid, authorName, title, message });
+    };
 
-    // 1. Group Change
     if (change.entityType === 'group') {
-      const p = change.payload as any;
+      const existing = await db.getFirstAsync<{ id: number }>('SELECT id FROM groups WHERE uid = ?', [groupUid]);
       if (isDelete) {
-        await db.runAsync('UPDATE groups SET is_deleted = 1, deleted_at = ?, server_version = ? WHERE uid = ?', [change.createdAt || nowIso, change.entityVersion, groupUid]);
+        await db.runAsync('UPDATE groups SET is_deleted = 1, deleted_at = ?, server_version = ? WHERE uid = ?', [at, change.entityVersion, groupUid]);
+        await note('', 'Group deleted', 'The group creator deleted this group.');
+      } else if (existing) {
+        await db.runAsync(
+          `UPDATE groups SET
+             name = COALESCE(?, name), description = COALESCE(?, description), currency = COALESCE(?, currency),
+             permission_model = COALESCE(?, permission_model), server_version = ?, is_deleted = 0, deleted_at = NULL, updated_at = ?
+           WHERE id = ?`,
+          [p.name ?? null, p.description ?? null, p.currency ?? null, p.permissionModel ?? null, change.entityVersion, nowIso, existing.id]
+        );
+        if (change.operation === 'update') await note('', 'Group updated', 'Group settings were changed.');
       } else {
         await db.runAsync(
-          `INSERT INTO groups (uid, name, description, currency, permission_model, creator_id, creator_name, sync_key, server_version, is_deleted, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-           ON CONFLICT(uid) DO UPDATE SET
-             name = COALESCE(excluded.name, groups.name),
-             description = COALESCE(excluded.description, groups.description),
-             currency = COALESCE(excluded.currency, groups.currency),
-             permission_model = COALESCE(excluded.permission_model, groups.permission_model),
-             server_version = excluded.server_version,
-             is_deleted = 0,
-             deleted_at = NULL,
-             updated_at = excluded.updated_at`,
+          `INSERT INTO groups (uid, name, description, currency, permission_model, creator_id, creator_name, server_version, is_deleted, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
           [
             groupUid,
             p.name || 'Group',
             p.description || '',
             p.currency || 'USD',
             p.permissionModel || 'collaborative',
-            change.actorId,
+            p.creatorId || change.actorId,
             p.creatorName || '',
-            p.syncKey || '',
             change.entityVersion,
-            change.createdAt || nowIso,
+            at,
             nowIso,
           ]
         );
+        // It came from the server, so there is nothing to upload.
+        await setUploadMarker(groupUid, db);
       }
+      return;
     }
 
-    // 2. Member Change
-    else if (change.entityType === 'member') {
-      const p = change.payload as any;
-      const groupRow = await db.getFirstAsync<{ id: number }>('SELECT id FROM groups WHERE uid = ?', [groupUid]);
-      if (!groupRow) return;
+    const groupRow = await db.getFirstAsync<{ id: number; currency: string }>('SELECT id, currency FROM groups WHERE uid = ?', [groupUid]);
+    if (!groupRow) throw new Error(`Change ${change.sequence} references group ${groupUid}, which is not on this device`);
 
+    if (change.entityType === 'member') {
+      const byUid = await db.getFirstAsync<{ id: number; name: string }>('SELECT id, name FROM members WHERE uid = ? AND group_id = ?', [
+        change.entityUid,
+        groupRow.id,
+      ]);
       if (isDelete) {
-        await db.runAsync('UPDATE members SET is_deleted = 1, deleted_at = ?, server_version = ? WHERE uid = ? AND group_id = ?', [
-          change.createdAt || nowIso,
-          change.entityVersion,
+        if (byUid) {
+          await db.runAsync('UPDATE members SET is_deleted = 1, deleted_at = ?, server_version = ? WHERE id = ?', [at, change.entityVersion, byUid.id]);
+          await note('', 'Member removed', `${byUid.name} was removed from the group.`);
+        }
+        return;
+      }
+      const name = p.newName || p.name;
+      const existing =
+        byUid ??
+        (await db.getFirstAsync<{ id: number; name: string }>(
+          'SELECT id, name FROM members WHERE group_id = ? AND is_deleted = 0 AND LOWER(TRIM(name)) = LOWER(TRIM(?))',
+          [groupRow.id, p.name]
+        ));
+      if (existing) {
+        await db.runAsync('UPDATE members SET uid = ?, name = ?, server_version = ?, is_deleted = 0, deleted_at = NULL WHERE id = ?', [
           change.entityUid,
-          groupRow.id,
+          name,
+          change.entityVersion,
+          existing.id,
         ]);
+        if (change.operation === 'update' && existing.name !== name) await note('', 'Member renamed', `${existing.name} is now ${name}.`);
       } else {
-        const existing =
-          (await db.getFirstAsync<{ id: number; is_me: number }>('SELECT id, is_me FROM members WHERE uid = ? AND group_id = ?', [
-            change.entityUid,
-            groupRow.id,
-          ])) ||
-          (await db.getFirstAsync<{ id: number; is_me: number }>('SELECT id, is_me FROM members WHERE group_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?))', [
-            groupRow.id,
-            p.name,
-          ]));
-
-        if (existing) {
-          await db.runAsync(
-            'UPDATE members SET uid = ?, name = ?, server_version = ?, is_deleted = 0, deleted_at = NULL WHERE id = ?',
-            [change.entityUid, p.newName || p.name, change.entityVersion, existing.id]
-          );
-        } else {
-          await db.runAsync(
-            'INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, 0, ?, 0, ?)',
-            [groupRow.id, change.entityUid, p.name, change.entityVersion, change.createdAt || nowIso]
-          );
-        }
+        await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, 0, ?, 0, ?)', [
+          groupRow.id,
+          change.entityUid,
+          name,
+          change.entityVersion,
+          at,
+        ]);
+        await note('', 'Member added', `${name} joined the group.`);
       }
+      return;
     }
 
-    // 3. Transaction Change
-    else if (change.entityType === 'transaction') {
-      const p = change.payload as any;
-      const groupRow = await db.getFirstAsync<{ id: number }>('SELECT id FROM groups WHERE uid = ?', [groupUid]);
-      if (!groupRow) return;
-
-      if (isDelete) {
-        const tx = await db.getFirstAsync<{ id: number }>('SELECT id FROM transactions WHERE uid = ? AND group_id = ?', [change.entityUid, groupRow.id]);
-        if (tx) {
-          await db.runAsync('UPDATE transactions SET is_deleted = 1, deleted_at = ?, server_version = ? WHERE id = ?', [
-            change.createdAt || nowIso,
-            change.entityVersion,
-            tx.id,
-          ]);
-          await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [tx.id]);
-        }
-      } else {
-        // Resolve payer member
-        const members = await db.getAllAsync<{ id: number; name: string; uid: string }>('SELECT id, name, uid FROM members WHERE group_id = ? AND is_deleted = 0', [groupRow.id]);
-        const memberUidMap = new Map(members.map((m) => [m.uid, m.id]));
-        const memberNameMap = new Map(members.map((m) => [m.name.toLowerCase().trim(), m.id]));
-
-        let payerId = p.paidByMemberUid ? memberUidMap.get(p.paidByMemberUid) : undefined;
-        if (!payerId && p.paidByName) {
-          payerId = memberNameMap.get(p.paidByName.toLowerCase().trim());
-        }
-        if (!payerId) {
-          const newMemUid = p.paidByMemberUid || `mem_${Date.now()}`;
-          const r = await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, 0, 1, 0, ?)', [
-            groupRow.id,
-            newMemUid,
-            p.paidByName || 'Member',
-            nowIso,
-          ]);
-          payerId = r.lastInsertRowId;
-          memberUidMap.set(newMemUid, payerId);
-          memberNameMap.set((p.paidByName || 'Member').toLowerCase().trim(), payerId);
-        }
-
-        const existingTx = await db.getFirstAsync<{ id: number }>('SELECT id FROM transactions WHERE uid = ? AND group_id = ?', [change.entityUid, groupRow.id]);
-
-        let txId: number;
-        if (existingTx) {
-          txId = existingTx.id;
-          await db.runAsync(
-            `UPDATE transactions
-             SET type = ?, title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, author_id = ?, author_name = ?, server_version = ?, is_deleted = 0, deleted_at = NULL, updated_at = ?
-             WHERE id = ?`,
-            [
-              p.type || 'expense',
-              p.title,
-              p.amount,
-              payerId,
-              p.splitType || 'equal',
-              p.category || 'General',
-              p.note || '',
-              p.date || nowIso.slice(0, 10),
-              p.authorId || change.actorId,
-              p.authorName || '',
-              change.entityVersion,
-              nowIso,
-              txId,
-            ]
-          );
-          await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [txId]);
-        } else {
-          const ins = await db.runAsync(
-            `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, server_version, is_deleted, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-            [
-              groupRow.id,
-              change.entityUid,
-              p.type || 'expense',
-              p.title,
-              p.amount,
-              payerId,
-              p.splitType || 'equal',
-              p.category || 'General',
-              p.note || '',
-              p.date || nowIso.slice(0, 10),
-              p.authorId || change.actorId,
-              p.authorName || '',
-              change.entityVersion,
-              change.createdAt || nowIso,
-              nowIso,
-            ]
-          );
-          txId = ins.lastInsertRowId;
-        }
-
-        // Apply splits
-        if (Array.isArray(p.splits)) {
-          for (const s of p.splits) {
-            let sMemberId = s.memberUid ? memberUidMap.get(s.memberUid) : undefined;
-            if (!sMemberId && s.memberName) {
-              sMemberId = memberNameMap.get(s.memberName.toLowerCase().trim());
-            }
-            if (!sMemberId) {
-              const newMemUid = s.memberUid || `mem_${Date.now()}`;
-              const r = await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, 0, 1, 0, ?)', [
-                groupRow.id,
-                newMemUid,
-                s.memberName || 'Member',
-                nowIso,
-              ]);
-              sMemberId = r.lastInsertRowId;
-              memberUidMap.set(newMemUid, sMemberId);
-              memberNameMap.set((s.memberName || 'Member').toLowerCase().trim(), sMemberId);
-            }
-            await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [
-              txId,
-              sMemberId,
-              s.value ?? 1,
-              s.share ?? 0,
-            ]);
-          }
-        }
+    // Transactions
+    const existingTx = await db.getFirstAsync<{ id: number; title: string }>('SELECT id, title FROM transactions WHERE uid = ? AND group_id = ?', [
+      change.entityUid,
+      groupRow.id,
+    ]);
+    if (isDelete) {
+      if (existingTx) {
+        await db.runAsync('UPDATE transactions SET is_deleted = 1, deleted_at = ?, server_version = ? WHERE id = ?', [at, change.entityVersion, existingTx.id]);
+        await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [existingTx.id]);
+        await note('', 'Transaction deleted', `"${existingTx.title}" was deleted.`);
       }
+      return;
     }
+
+    const resolveMember = async (uid: string | undefined, name: string | undefined): Promise<number> => {
+      if (uid) {
+        const m = await db.getFirstAsync<{ id: number }>('SELECT id FROM members WHERE uid = ? AND group_id = ?', [uid, groupRow.id]);
+        if (m) return m.id;
+      }
+      if (name) {
+        const m = await db.getFirstAsync<{ id: number }>(
+          'SELECT id FROM members WHERE group_id = ? AND is_deleted = 0 AND LOWER(TRIM(name)) = LOWER(TRIM(?))',
+          [groupRow.id, name]
+        );
+        if (m) return m.id;
+      }
+      // The server always logs member creation before use; this is a guard for older payloads.
+      const r = await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, 0, 1, 0, ?)', [
+        groupRow.id,
+        uid || `mem_${newUid()}`,
+        name || 'Member',
+        nowIso,
+      ]);
+      return r.lastInsertRowId;
+    };
+
+    const payerId = await resolveMember(p.paidByMemberUid, p.paidByName);
+    const values = [
+      p.type || 'expense',
+      p.title,
+      p.amount,
+      payerId,
+      p.splitType || 'equal',
+      p.category || 'General',
+      p.note || '',
+      p.date || nowIso.slice(0, 10),
+      p.authorId || change.actorId,
+      p.authorName || '',
+      p.updatedById || '',
+      p.updatedByName || '',
+      p.updatedTs || 0,
+      change.entityVersion,
+    ];
+    let txId: number;
+    if (existingTx) {
+      txId = existingTx.id;
+      await db.runAsync(
+        `UPDATE transactions
+         SET type = ?, title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, author_id = ?, author_name = ?,
+             updated_by_id = ?, updated_by_name = ?, updated_ts = ?, server_version = ?, is_deleted = 0, deleted_at = NULL, updated_at = ?
+         WHERE id = ?`,
+        [...values, nowIso, txId]
+      );
+      await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [txId]);
+    } else {
+      const ins = await db.runAsync(
+        `INSERT INTO transactions (type, title, amount, paid_by, split_type, category, note, date, author_id, author_name,
+                                   updated_by_id, updated_by_name, updated_ts, server_version, group_id, uid, is_deleted, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [...values, groupRow.id, change.entityUid, at, nowIso]
+      );
+      txId = ins.lastInsertRowId;
+    }
+    for (const s of Array.isArray(p.splits) ? p.splits : []) {
+      const memberId = await resolveMember(s.memberUid, s.memberName);
+      await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [
+        txId,
+        memberId,
+        s.value ?? 1,
+        s.share ?? 0,
+      ]);
+    }
+
+    const amount = typeof p.amount === 'number' ? money(p.amount, groupRow.currency) : '';
+    if (existingTx) await note(p.updatedByName || '', 'Transaction edited', `${p.updatedByName || 'Someone'} edited "${p.title}" (${amount}).`);
+    else await note(p.authorName || '', 'Transaction added', `${p.authorName || 'Someone'} added "${p.title}" (${amount}).`);
   }
 
   private async updateLocalEntityVersion(db: DB, groupUid: string, entityUid: string, version: number) {
@@ -630,6 +856,150 @@ export class SyncEngine {
       await db.runAsync('UPDATE members SET server_version = ? WHERE uid = ?', [version, entityUid]);
       await db.runAsync('UPDATE transactions SET server_version = ? WHERE uid = ?', [version, entityUid]);
     }
+  }
+
+  // ---------- Joining and conflict resolution ----------
+
+  /** Fetches the server's current copy of a group (for the join preview). */
+  public fetchGroupSnapshot(groupUid: string): Promise<GroupBootstrapResponse> {
+    return this.transport.bootstrap(groupUid);
+  }
+
+  /**
+   * Writes a server snapshot into SQLite as the group's complete state (replacing any local copy)
+   * and moves the cursor to the snapshot's sequence. Returns the local group id.
+   */
+  private async writeSnapshot(db: DB, snap: GroupBootstrapResponse, deviceId: string): Promise<number> {
+    const nowIso = new Date().toISOString();
+    const g = snap.group;
+    const local = await db.getFirstAsync<{ id: number }>('SELECT id FROM groups WHERE uid = ?', [snap.groupUid]);
+    let groupId: number;
+    let me: { uid: string; name: string } | null = null;
+    if (local) {
+      groupId = local.id;
+      me = await db.getFirstAsync<{ uid: string; name: string }>('SELECT uid, name FROM members WHERE group_id = ? AND is_me = 1', [groupId]);
+      await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id IN (SELECT id FROM transactions WHERE group_id = ?)', [groupId]);
+      await db.runAsync('DELETE FROM transactions WHERE group_id = ?', [groupId]);
+      await db.runAsync('DELETE FROM members WHERE group_id = ?', [groupId]);
+      await db.runAsync(
+        `UPDATE groups SET name = ?, description = ?, currency = ?, permission_model = ?, creator_id = ?, creator_name = ?,
+                server_version = ?, is_deleted = 0, deleted_at = NULL, updated_at = ? WHERE id = ?`,
+        [g.name, g.description ?? '', g.currency, g.permissionModel, g.creatorId, g.creatorName, g.serverVersion, nowIso, groupId]
+      );
+    } else {
+      const r = await db.runAsync(
+        `INSERT INTO groups (uid, name, description, currency, permission_model, creator_id, creator_name, server_version, is_deleted, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [g.uid, g.name, g.description ?? '', g.currency, g.permissionModel, g.creatorId, g.creatorName, g.serverVersion, g.createdAt || nowIso, nowIso]
+      );
+      groupId = r.lastInsertRowId;
+    }
+
+    const memberIds = new Map<string, number>();
+    for (const m of snap.members) {
+      const isMe = me ? m.uid === me.uid || normName(m.name) === normName(me.name) : false;
+      const r = await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)', [
+        groupId,
+        m.uid,
+        m.name,
+        isMe ? 1 : 0,
+        m.serverVersion,
+        nowIso,
+      ]);
+      memberIds.set(m.uid, r.lastInsertRowId);
+    }
+    const memberId = (uid: string | undefined, what: string) => {
+      const id = uid ? memberIds.get(uid) : undefined;
+      if (!id) throw new Error(`Server snapshot is inconsistent: ${what} references unknown member ${uid}`);
+      return id;
+    };
+    for (const t of snap.transactions) {
+      const r = await db.runAsync(
+        `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name,
+                                   updated_by_id, updated_by_name, updated_ts, server_version, is_deleted, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [
+          groupId,
+          t.uid,
+          t.type,
+          t.title,
+          t.amount,
+          memberId(t.paidByMemberUid, `"${t.title}" payer`),
+          t.splitType,
+          t.category,
+          t.note ?? '',
+          t.date,
+          t.authorId ?? '',
+          t.authorName ?? '',
+          t.updatedById ?? '',
+          t.updatedByName ?? '',
+          t.updatedTs ?? 0,
+          t.serverVersion,
+          t.createdAt || nowIso,
+          t.updatedAt || nowIso,
+        ]
+      );
+      for (const s of t.splits) {
+        await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [
+          r.lastInsertRowId,
+          memberId(s.memberUid, `"${t.title}" split`),
+          s.value,
+          s.share,
+        ]);
+      }
+    }
+
+    await initSyncState(snap.groupUid, deviceId, db);
+    await resetServerSequence(snap.groupUid, snap.serverSequence, db);
+    await updateServerSequence(snap.groupUid, snap.serverSequence, undefined, db);
+    await setUploadMarker(snap.groupUid, db);
+    return groupId;
+  }
+
+  /**
+   * Joins a group from the server's snapshot and binds "me" to the chosen member name
+   * (adding a new member when the name is not in the group). Returns the local group id.
+   */
+  public async joinGroup(snapshot: GroupBootstrapResponse, myName: string): Promise<number> {
+    const db = await this.getEngineDb();
+    const deviceId = await getDeviceId();
+    let groupId = 0;
+    await db.withTransactionAsync(async () => {
+      groupId = await this.writeSnapshot(db, snapshot, deviceId);
+    });
+    const chosen = snapshot.members.find((m) => normName(m.name) === normName(myName));
+    if (chosen) {
+      const row = await db.getFirstAsync<{ id: number }>('SELECT id FROM members WHERE group_id = ? AND uid = ?', [groupId, chosen.uid]);
+      await setMe(groupId, row!.id);
+    } else {
+      await setMe(groupId, await addMember(groupId, myName));
+    }
+    this.emit(this.listeners, snapshot.groupUid);
+    this.syncGroup(snapshot.groupUid).catch(() => {});
+    return groupId;
+  }
+
+  /**
+   * Explicit user decision after a conflict or rejection: drop this device's refused changes and
+   * replace the local copy of the group with the server's. Refuses while unsent changes remain,
+   * so nothing that has not reached the server is lost.
+   */
+  public async acceptServerVersion(groupUid: string): Promise<void> {
+    await this.syncGroup(groupUid);
+    const db = await this.getEngineDb();
+    const counts = await getOutboxCount(groupUid, db);
+    if (counts.pending + counts.sending > 0) {
+      throw new Error('Some changes have not reached the server yet. Try again when you are online.');
+    }
+    const snapshot = await this.transport.bootstrap(groupUid);
+    const deviceId = await getDeviceId();
+    await db.withTransactionAsync(async () => {
+      await discardUnresolvedOutboxMutations(groupUid, db);
+      await this.writeSnapshot(db, snapshot, deviceId);
+    });
+    await setSyncStatus(groupUid, 'idle', null, db);
+    this.emit(this.listeners, groupUid);
+    this.emit(this.statusListeners, groupUid);
   }
 }
 

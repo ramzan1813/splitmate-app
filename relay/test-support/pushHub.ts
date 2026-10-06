@@ -30,7 +30,7 @@ export class ExpoPushHub {
   respond = (req: OutboundRequest): Response => {
     if (!req.url.includes('exp.host')) return defaultOutboundResponse(req);
     if (!this.online) return new Response('unavailable', { status: 503 });
-    const messages = JSON.parse(req.body) as Array<{ data: ChangesAvailableEvent }>;
+    const messages = JSON.parse(req.body) as { data: ChangesAvailableEvent }[];
     for (const m of messages) {
       for (const cb of this.listeners.get(m.data.groupUid) ?? []) cb(m.data);
     }

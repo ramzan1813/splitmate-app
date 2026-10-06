@@ -1,48 +1,68 @@
-// On-device cryptographic account identity management.
-// No cloud signup needed; user identities are generated on-device with private keys.
-import { getSetting, setSetting } from '../data/repo';
-import { generateRandomHex, sha256Hex } from './crypto';
+// On-device identity: a random user id and device id generated on first use (no sign-up),
+// plus the sync server URL. The user id is what the server records as a change's author.
+import { getSetting, setSetting } from '../data/settings';
 
 export interface UserIdentity {
-  id: string; // e.g., usr_9a4f2b...
+  id: string; // e.g. usr_9a4f2b...
   name: string;
-  publicKey: string;
-  secretKey: string;
-  relayUrl: string;
+  /** Base URL of the SplitMate sync server, e.g. https://splitmate-relay.rn45819.workers.dev */
+  serverUrl: string;
 }
 
-// EXPO_PUBLIC_RELAY_URL is inlined at build time (e.g. the local Docker relay); production builds leave it unset.
-export const DEFAULT_RELAY_URL = process.env.EXPO_PUBLIC_RELAY_URL || 'wss://splitmate-relay.rn45819.workers.dev/ws';
+function randomHex(byteCount: number): string {
+  const bytes = new Uint8Array(byteCount);
+  if (typeof globalThis.crypto?.getRandomValues === 'function') {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    // Hermes has no Web Crypto; these ids are identifiers, not secrets.
+    for (let i = 0; i < byteCount; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Accepts what users (or older app versions) stored and returns a plain HTTP(S) base URL.
+ * Older builds saved the WebSocket relay address (wss://host/ws), so map that to https://host.
+ */
+export function normalizeServerUrl(url: string): string {
+  return url
+    .trim()
+    .replace(/^ws(s)?:\/\//i, 'http$1://')
+    .replace(/\/ws\/?$/i, '')
+    .replace(/\/+$/, '');
+}
+
+// EXPO_PUBLIC_SERVER_URL is inlined at build time (e.g. the local Docker server); production builds leave it unset.
+export const DEFAULT_SERVER_URL = normalizeServerUrl(process.env.EXPO_PUBLIC_SERVER_URL || 'https://splitmate-relay.rn45819.workers.dev');
+
+// Setting key kept from the relay era so a custom URL saved by an older build still applies.
+const SERVER_URL_SETTING = 'sync.relay_url';
+
+export async function getServerUrl(): Promise<string> {
+  const custom = normalizeServerUrl((await getSetting(SERVER_URL_SETTING)) ?? '');
+  return custom || DEFAULT_SERVER_URL;
+}
+
+/** Saves a custom server URL; an empty string restores the default. */
+export async function updateServerUrl(url: string): Promise<void> {
+  const normalized = normalizeServerUrl(url);
+  if (normalized && !/^https?:\/\/[^/\s]+/i.test(normalized)) {
+    throw new Error('Server URL must start with http:// or https://');
+  }
+  await setSetting(SERVER_URL_SETTING, normalized === DEFAULT_SERVER_URL ? '' : normalized);
+}
 
 export async function getIdentity(): Promise<UserIdentity> {
   let id = await getSetting('profile.id');
-  let secret = await getSetting('profile.secret');
-  let name = (await getSetting('profile.name')) || 'Me';
-  const customRelay = (await getSetting('sync.relay_url'))?.trim();
-  const relayUrl = customRelay && customRelay.length > 0 ? customRelay : DEFAULT_RELAY_URL;
-
-  if (!id || !secret) {
-    secret = generateRandomHex(32);
-    const pubHash = await sha256Hex(secret);
-    id = `usr_${pubHash.slice(0, 16)}`;
+  if (!id) {
+    id = `usr_${randomHex(8)}`;
     await setSetting('profile.id', id);
-    await setSetting('profile.secret', secret);
-    await setSetting('profile.pubkey', pubHash);
   }
-
-  const pubKey = (await getSetting('profile.pubkey')) || (await sha256Hex(secret));
-
   return {
     id,
-    name,
-    publicKey: pubKey,
-    secretKey: secret,
-    relayUrl,
+    name: (await getSetting('profile.name')) || 'Me',
+    serverUrl: await getServerUrl(),
   };
-}
-
-export async function updateRelayUrl(url: string): Promise<void> {
-  await setSetting('sync.relay_url', url.trim());
 }
 
 export async function setAccountName(name: string): Promise<void> {
@@ -53,10 +73,8 @@ export async function setAccountName(name: string): Promise<void> {
 export async function getDeviceId(): Promise<string> {
   let deviceId = await getSetting('sync.device_id');
   if (!deviceId) {
-    const rnd = generateRandomHex(16);
-    deviceId = `dev_${rnd}`;
+    deviceId = `dev_${randomHex(16)}`;
     await setSetting('sync.device_id', deviceId);
   }
   return deviceId;
 }
-

@@ -1,8 +1,8 @@
 // Export / import of groups as JSON files (for sharing a group and for full backups).
 // Imported files are untrusted input: everything is validated before touching the database.
 import { getDb } from './db';
-import { getGroup, getMembers, getTransactions, CURRENCIES, LIMITS, newUid } from './repo';
-import { computeShares } from './logic';
+import { getGroup, getMembers, getTransactions, LIMITS, newUid } from './repo';
+import { CURRENCIES } from '../lib/currencies';
 import { AppError, SplitType } from './types';
 
 export const FORMAT = 'splitmate';
@@ -11,7 +11,7 @@ export const FORMAT = 'splitmate';
  * editing or writing a file by hand. Version 2 stores money as normal amounts (1500 or 1500.5).
  * Version 1 files are still read as cents so old backups restore correctly.
  */
-export const FORMAT_VERSION = 2;
+const FORMAT_VERSION = 2;
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_GROUPS = 500;
 const MAX_MEMBERS = 500;
