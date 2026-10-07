@@ -36,7 +36,7 @@ expo-env.d.ts
 passwords.txt
 
 # agent scratch
-.agents
+agents
 
 # debug
 npm-debug.*
