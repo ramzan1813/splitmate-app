@@ -2,7 +2,7 @@
 import { Pressable, Text, View } from 'react-native';
 import { Avatar, Card, Row } from './ui';
 import { Transaction } from '@/data/types';
-import { money, prettyDate } from '@/lib/format';
+import { money, txWhen } from '@/lib/format';
 import { categoryIcon, colors } from '@/lib/theme';
 
 interface Props {
@@ -46,7 +46,7 @@ function ExpenseCard({ t, currency: cur, myMemberId, memberName, memberIndex }: 
             <Text style={{ fontWeight: '800', fontSize: 17, color: colors.text }} numberOfLines={2}>
               {t.title}
             </Text>
-            <Text style={{ color: colors.muted, fontSize: 13, marginTop: 3 }}>📅 {prettyDate(t.date)}</Text>
+            <Text style={{ color: colors.muted, fontSize: 13, marginTop: 3 }}>📅 {txWhen(t.date, t.createdTs)}</Text>
           </View>
           <Text style={{ fontWeight: '900', fontSize: 20, color: colors.text, marginLeft: 8 }}>{money(t.amount, cur)}</Text>
         </Row>
@@ -54,6 +54,8 @@ function ExpenseCard({ t, currency: cur, myMemberId, memberName, memberIndex }: 
         <Row style={{ flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
           <Tag text={t.category} />
           <Tag text={`${SPLIT_LABELS[t.splitType]} · ${t.splits.length} ${t.splits.length === 1 ? 'person' : 'people'}`} />
+          {t.authorName ? <Tag text={`Added by ${t.authorName}`} /> : null}
+          {t.updatedByName ? <Tag text={`Edited by ${t.updatedByName}`} highlight /> : null}
         </Row>
 
         <Row style={{ marginTop: 12 }}>
@@ -127,7 +129,7 @@ function PaymentCard({ t, currency: cur, myMemberId, memberName, memberIndex }: 
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
             <Text style={{ fontWeight: '800', fontSize: 17, color: colors.text }}>Payment</Text>
-            <Text style={{ color: colors.muted, fontSize: 13, marginTop: 3 }}>📅 {prettyDate(t.date)}</Text>
+            <Text style={{ color: colors.muted, fontSize: 13, marginTop: 3 }}>📅 {txWhen(t.date, t.createdTs)}</Text>
           </View>
           <Text style={{ fontWeight: '900', fontSize: 20, color: colors.positive, marginLeft: 8 }}>{money(t.amount, cur)}</Text>
         </Row>
@@ -148,6 +150,11 @@ function PaymentCard({ t, currency: cur, myMemberId, memberName, memberIndex }: 
           </Row>
         </Row>
 
+        <Row style={{ flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+          <Tag text="Payment" />
+          {t.authorName ? <Tag text={`Recorded by ${t.authorName}`} /> : null}
+          {t.updatedByName ? <Tag text={`Edited by ${t.updatedByName}`} highlight /> : null}
+        </Row>
         {t.title && t.title !== 'Payment' ? <Text style={{ color: colors.text, marginTop: 10 }}>{t.title}</Text> : null}
         {t.note ? (
           <Text style={{ color: colors.muted, fontStyle: 'italic', marginTop: 8 }} numberOfLines={3}>
@@ -167,10 +174,19 @@ function PaymentCard({ t, currency: cur, myMemberId, memberName, memberIndex }: 
   );
 }
 
-function Tag({ text }: { text: string }) {
+function Tag({ text, highlight }: { text: string; highlight?: boolean }) {
   return (
-    <View style={{ backgroundColor: colors.bg, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 3, borderWidth: 1, borderColor: colors.border }}>
-      <Text style={{ fontSize: 12, fontWeight: '600', color: colors.muted }}>{text}</Text>
+    <View
+      style={{
+        backgroundColor: highlight ? colors.primaryLight : colors.bg,
+        borderRadius: 12,
+        paddingHorizontal: 9,
+        paddingVertical: 3,
+        borderWidth: 1,
+        borderColor: highlight ? colors.primary : colors.border,
+      }}
+    >
+      <Text style={{ fontSize: 12, fontWeight: '600', color: highlight ? colors.primaryDark : colors.muted }}>{text}</Text>
     </View>
   );
 }

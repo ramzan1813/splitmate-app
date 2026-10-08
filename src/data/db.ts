@@ -11,7 +11,7 @@ export interface DB {
   withTransactionAsync(task: () => Promise<void>): Promise<void>;
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 8;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -60,6 +60,110 @@ const MIGRATIONS: Record<number, string> = {
     CREATE INDEX IF NOT EXISTS idx_tx_group ON transactions(group_id);
     CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
     CREATE INDEX IF NOT EXISTS idx_splits_member ON transaction_splits(member_id);
+  `,
+  2: `
+    ALTER TABLE groups ADD COLUMN sync_key TEXT NOT NULL DEFAULT '';
+    ALTER TABLE transactions ADD COLUMN uid TEXT NOT NULL DEFAULT '';
+    ALTER TABLE transactions ADD COLUMN author_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE transactions ADD COLUMN author_name TEXT NOT NULL DEFAULT '';
+    ALTER TABLE transactions ADD COLUMN updated_ts INTEGER NOT NULL DEFAULT 0;
+
+    CREATE TABLE IF NOT EXISTS sync_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT NOT NULL UNIQUE,
+      group_uid TEXT NOT NULL,
+      author_id TEXT NOT NULL,
+      author_name TEXT NOT NULL,
+      timestamp INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      synced INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sync_events_group ON sync_events(group_uid);
+    CREATE INDEX IF NOT EXISTS idx_sync_events_synced ON sync_events(synced);
+
+    CREATE TABLE IF NOT EXISTS sync_notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_uid TEXT NOT NULL,
+      author_name TEXT NOT NULL,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      read INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sync_notif_group ON sync_notifications(group_uid);
+  `,
+  3: `
+    ALTER TABLE groups ADD COLUMN permission_model TEXT NOT NULL DEFAULT 'collaborative';
+    ALTER TABLE groups ADD COLUMN creator_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE groups ADD COLUMN creator_name TEXT NOT NULL DEFAULT '';
+    ALTER TABLE transactions ADD COLUMN updated_by_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE transactions ADD COLUMN updated_by_name TEXT NOT NULL DEFAULT '';
+  `,
+  4: `
+    ALTER TABLE groups ADD COLUMN server_version INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE groups ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE groups ADD COLUMN deleted_at TEXT;
+
+    ALTER TABLE members ADD COLUMN uid TEXT NOT NULL DEFAULT '';
+    ALTER TABLE members ADD COLUMN server_version INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE members ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE members ADD COLUMN deleted_at TEXT;
+
+    ALTER TABLE transactions ADD COLUMN server_version INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE transactions ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE transactions ADD COLUMN deleted_at TEXT;
+
+    CREATE TABLE IF NOT EXISTS outbox_mutations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_mutation_id TEXT UNIQUE NOT NULL,
+      group_uid TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_uid TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      expected_version INTEGER NOT NULL DEFAULT 0,
+      payload TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      error_message TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_outbox_group_status ON outbox_mutations(group_uid, status);
+    CREATE INDEX IF NOT EXISTS idx_outbox_mutation_id ON outbox_mutations(client_mutation_id);
+
+    CREATE TABLE IF NOT EXISTS sync_state (
+      group_uid TEXT PRIMARY KEY NOT NULL,
+      device_id TEXT NOT NULL,
+      last_server_sequence INTEGER NOT NULL DEFAULT 0,
+      last_sync_at TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'idle',
+      error_detail TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `,
+  // Rows created before v4 have no uid; the server identifies every entity by uid.
+  5: `
+    UPDATE members SET uid = 'mem_' || lower(hex(randomblob(12))) WHERE uid = '';
+    UPDATE transactions SET uid = 'tx_' || lower(hex(randomblob(12))) WHERE uid = '';
+  `,
+  // The encrypted WebSocket relay's event log; the outbox replaced it.
+  6: `
+    DROP INDEX IF EXISTS idx_sync_events_group;
+    DROP INDEX IF EXISTS idx_sync_events_synced;
+    DROP TABLE IF EXISTS sync_events;
+  `,
+  // When each transaction was created (epoch ms, creating phone's clock); set once, synced, never edited.
+  // Backfill matches the server's: a never-edited transaction's updated_ts is still its creation time.
+  7: `
+    ALTER TABLE transactions ADD COLUMN created_ts INTEGER;
+    UPDATE transactions SET created_ts = updated_ts WHERE updated_by_id = '' AND updated_ts > 0;
+  `,
+  // A group being removed from this phone: 'leave' (member; local only) or 'delete' (admin; erased
+  // on the server). It is hidden at once and erased locally after its queued changes are sent.
+  8: `
+    ALTER TABLE groups ADD COLUMN removal TEXT;
   `,
 };
 

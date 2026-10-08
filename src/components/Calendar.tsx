@@ -47,7 +47,7 @@ export function DateField({ label, value, onChange, testID }: { label?: string; 
   );
 }
 
-export function CalendarModal({ visible, value, onSelect, onClose }: { visible: boolean; value: string; onSelect: (iso: string) => void; onClose: () => void }) {
+function CalendarModal({ visible, value, onSelect, onClose }: { visible: boolean; value: string; onSelect: (iso: string) => void; onClose: () => void }) {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
       <Pressable onPress={onClose} style={{ flex: 1, backgroundColor: 'rgba(17,24,39,0.45)', justifyContent: 'center', padding: 20 }}>

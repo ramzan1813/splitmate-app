@@ -9,17 +9,34 @@ dist/
 web-build/
 expo-env.d.ts
 
-# Native
+# generated native projects (npx expo prebuild)
+/android
+/ios
 .kotlin/
 *.orig.*
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
 
 # Metro
 .metro-health-check*
+
+# Cloudflare Workers (relay/)
+.wrangler/
+
+# secrets and local env - never commit
+.env
+.env*.local
+.dev.vars
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+*.base64.txt
+passwords.txt
+
+# agent scratch
+agents
 
 # debug
 npm-debug.*
@@ -28,24 +45,6 @@ yarn-error.*
 
 # macOS
 .DS_Store
-*.pem
-
-# local env files
-.env*.local
 
 # typescript
 *.tsbuildinfo
-
-# generated native folders
-/ios
-/android
-
-# signing secrets - never commit
-*.jks
-*.keystore
-*.p12
-*.base64.txt
-passwords.txt
-# generated native projects
-/android
-/ios

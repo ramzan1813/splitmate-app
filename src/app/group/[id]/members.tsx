@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { Avatar, Button, Card, Field, Loading, Row, Screen, SectionTitle } from '@/components/ui';
 import { useGroup } from '@/lib/useGroup';
-import { addMember, deleteMember, renameMember, setMe } from '@/data/repo';
+import { addMember, deleteMember, mergeMembers, renameMember, setMe } from '@/data/repo';
 import { exportGroup } from '@/data/backup';
 import { Member } from '@/data/types';
 import { money } from '@/lib/format';
@@ -20,10 +20,14 @@ export default function Members() {
   const [name, setName] = useState('');
   const [editing, setEditing] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
+  const [mergingFrom, setMergingFrom] = useState<Member | null>(null);
   const [sharing, setSharing] = useState(false);
 
   if (!data) return <Loading />;
   const cur = data.group.currency;
+  // "Me" is chosen when creating or joining the group. Only a group with nobody marked as me
+  // (an older group, or "me" removed on another phone) offers a one-time choice here.
+  const canChooseMe = data.myMemberId === null;
 
   const run = async (fn: () => Promise<unknown>, title = 'Could not save') => {
     try {
@@ -48,6 +52,30 @@ export default function Members() {
     run(() => deleteMember(gid, m.id), 'Could not remove');
   };
 
+  const chooseMe = async (m: Member) => {
+    const ok = await confirm('This is me', `Mark ${m.name} as you in this group? You can’t change this later.`, 'This is me');
+    if (ok) run(() => setMe(gid, m.id));
+  };
+
+  const handleMerge = async (target: Member) => {
+    if (!mergingFrom) return;
+    const srcName = mergingFrom.name;
+    const tgtName = target.name;
+    const ok = await confirm(
+      'Merge Members',
+      `Merge "${srcName}" into "${tgtName}"?\n\nAll past transactions, paid amounts, and split shares belonging to ${srcName} will be transferred to ${tgtName}, and ${srcName} will be removed.`,
+      'Merge',
+      false
+    );
+    if (!ok) return;
+
+    run(async () => {
+      await mergeMembers(gid, mergingFrom.id, target.id);
+      setMergingFrom(null);
+      notify('Members Merged', `Consolidated ${srcName} into ${tgtName}.`);
+    }, 'Could not merge members');
+  };
+
   const share = async () => {
     setSharing(true);
     try {
@@ -63,6 +91,44 @@ export default function Members() {
 
   return (
     <Screen style={{ maxWidth: 640, width: '100%', alignSelf: 'center' }}>
+      {/* Merge Selection Modal / View */}
+      {mergingFrom && (
+        <Card style={{ backgroundColor: colors.primaryLight, borderWidth: 1.5, borderColor: colors.primary, marginBottom: 16 }}>
+          <Text style={{ fontWeight: '800', fontSize: 16, color: colors.primaryDark, marginBottom: 4 }}>
+            Merge “{mergingFrom.name}” into another member
+          </Text>
+          <Text style={{ color: colors.primaryDark, fontSize: 13, marginBottom: 12 }}>
+            Select the destination member. All expenses, payments, and splits for {mergingFrom.name} will be reassigned:
+          </Text>
+          <View style={{ gap: 8, marginBottom: 12 }}>
+            {data.members
+              .filter((m) => m.id !== mergingFrom.id)
+              .map((target, idx) => (
+                <Pressable
+                  key={target.id}
+                  onPress={() => handleMerge(target)}
+                  style={{
+                    backgroundColor: colors.card,
+                    padding: 12,
+                    borderRadius: 10,
+                    borderWidth: 1,
+                    borderColor: colors.border,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                  }}
+                >
+                  <Avatar name={target.name} index={memberIndex(target.id)} size={28} />
+                  <Text style={{ marginLeft: 10, fontWeight: '700', fontSize: 14, color: colors.text, flex: 1 }}>
+                    {target.name} {target.isMe ? '(you)' : ''}
+                  </Text>
+                  <Text style={{ color: colors.primary, fontWeight: '700', fontSize: 13 }}>Merge here →</Text>
+                </Pressable>
+              ))}
+          </View>
+          <Button small variant="ghost" title="Cancel Merge" onPress={() => setMergingFrom(null)} />
+        </Card>
+      )}
+
       <Card style={{ backgroundColor: colors.primaryLight }}>
         <Text style={{ fontWeight: '700', color: colors.primaryDark }}>Share this group</Text>
         <Text style={{ color: colors.primaryDark, marginTop: 4, fontSize: 13 }}>
@@ -70,6 +136,15 @@ export default function Members() {
         </Text>
         <Button small title="Share group file" onPress={share} loading={sharing} style={{ alignSelf: 'flex-start', marginTop: 10 }} testID="share-group-file" />
       </Card>
+
+      {canChooseMe && (
+        <Card style={{ backgroundColor: colors.primaryLight }} testID="choose-me-hint">
+          <Text style={{ fontWeight: '700', color: colors.primaryDark }}>Which member are you?</Text>
+          <Text style={{ color: colors.primaryDark, marginTop: 4, fontSize: 13 }}>
+            Tap “This is me” on your name. You can only choose once.
+          </Text>
+        </Card>
+      )}
 
       <SectionTitle>{data.members.length} members</SectionTitle>
       {data.members.map((m) => {
@@ -95,7 +170,7 @@ export default function Members() {
                 <Field label="Name" value={editName} onChangeText={setEditName} testID={`edit-name-${m.id}`} />
                 <Row style={{ gap: 10, flexWrap: 'wrap' }}>
                   <Button small title="Save name" onPress={() => run(async () => { await renameMember(gid, m.id, editName); setEditing(null); })} />
-                  <Button small variant="danger" title="Remove" onPress={() => remove(m)} />
+                  {!m.isMe && <Button small variant="danger" title="Remove" onPress={() => remove(m)} />}
                   <Button small variant="ghost" title="Cancel" onPress={() => setEditing(null)} />
                 </Row>
               </View>
@@ -112,14 +187,26 @@ export default function Members() {
                   }}
                   testID={`edit-member-${m.id}`}
                 />
-                <Button
-                  small
-                  variant="ghost"
-                  title={m.isMe ? 'Not me' : 'This is me'}
-                  style={{ paddingHorizontal: 0 }}
-                  onPress={() => run(() => setMe(gid, m.isMe ? null : m.id))}
-                  testID={`set-me-${m.id}`}
-                />
+                {canChooseMe && (
+                  <Button
+                    small
+                    variant="ghost"
+                    title="This is me"
+                    style={{ paddingHorizontal: 0 }}
+                    onPress={() => chooseMe(m)}
+                    testID={`set-me-${m.id}`}
+                  />
+                )}
+                {data.members.length > 1 && !m.isMe && (
+                  <Button
+                    small
+                    variant="ghost"
+                    title="Merge"
+                    style={{ paddingHorizontal: 0 }}
+                    onPress={() => setMergingFrom(m)}
+                    testID={`merge-member-${m.id}`}
+                  />
+                )}
               </Row>
             )}
           </Card>

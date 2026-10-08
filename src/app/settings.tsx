@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Platform, Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Platform, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Button, Card, Field, Row, Screen, SectionTitle } from '@/components/ui';
 import { PinPad } from '@/components/PinPad';
@@ -12,6 +12,11 @@ import { safeFileName, shareFile } from '@/lib/files';
 import { todayISO } from '@/lib/format';
 import { colors } from '@/lib/theme';
 import { confirm, errorMessage, notify } from '@/lib/dialog';
+import { DEFAULT_SERVER_URL, getIdentity, normalizeServerUrl, updateServerUrl, UserIdentity } from '@/lib/identity';
+import { syncEngine } from '@/data/syncEngine';
+import Constants from 'expo-constants';
+import { getSyncNotifications, markNotificationsRead } from '@/data/sync';
+import { SyncNotification } from '@/data/types';
 
 type PinStep = null | 'verify-change' | 'verify-remove' | 'new' | 'confirm';
 
@@ -24,11 +29,58 @@ export default function AppSettings() {
   const [first, setFirst] = useState('');
   const [pinMsg, setPinMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const [identity, setIdentity] = useState<UserIdentity | null>(null);
+  const [serverUrl, setServerUrl] = useState('');
+  const [serverCheck, setServerCheck] = useState('');
+  const [notifications, setNotifications] = useState<SyncNotification[]>([]);
+
+  useEffect(() => {
+    getIdentity().then((id) => {
+      setIdentity(id);
+      setServerUrl(id.serverUrl);
+    });
+    getSyncNotifications().then(setNotifications);
+  }, []);
 
   const saveName = async () => {
     if (!name.trim()) return notify('Name required');
     await setProfileName(name);
     notify('Saved', 'Your name was updated. New groups will use it.');
+  };
+
+  /** Switching servers re-syncs every group with the new server, uploading what it lacks. */
+  const applyServerUrl = async (next: string) => {
+    const target = normalizeServerUrl(next) || DEFAULT_SERVER_URL;
+    if (target === identity?.serverUrl) return notify('No change', `Already using ${target}`);
+    const ok = await confirm(
+      'Change server?',
+      `SplitMate will sync with ${target}.\n\nYour groups will be re-synced with that server, and any group it doesn't have will be uploaded to it.`,
+      'Change server'
+    );
+    if (!ok) return;
+    try {
+      await updateServerUrl(target);
+    } catch (e) {
+      return notify('Invalid URL', errorMessage(e));
+    }
+    const updated = await getIdentity();
+    setIdentity(updated);
+    setServerUrl(updated.serverUrl);
+    setServerCheck('');
+    syncEngine.syncAllGroups().catch(() => {});
+    notify('Server changed', `Now syncing with ${updated.serverUrl}`);
+  };
+
+  const testServer = async () => {
+    const base = normalizeServerUrl(serverUrl) || DEFAULT_SERVER_URL;
+    setServerCheck('Checking…');
+    try {
+      const res = await fetch(`${base}/health/db`);
+      const body = await res.json().catch(() => null);
+      setServerCheck(res.ok ? '✓ Server and database reachable' : `✗ Server answered ${res.status}: ${body?.message ?? body?.error ?? 'error'}`);
+    } catch (e) {
+      setServerCheck(`✗ Cannot reach ${base}: ${errorMessage(e)}`);
+    }
   };
 
   const startPin = (s: PinStep) => {
@@ -99,7 +151,6 @@ export default function AppSettings() {
     await eraseAllData();
     await removePin();
     await refreshPin();
-    // go back to the home screen first, then clear the name so the welcome screen shows
     if (Platform.OS === 'web') {
       window.location.replace('/');
       return;
@@ -120,6 +171,70 @@ export default function AppSettings() {
       <SectionTitle>Your name</SectionTitle>
       <Field value={name} onChangeText={setName} testID="profile-name" />
       <Button title="Save name" variant="outline" small onPress={saveName} style={{ alignSelf: 'flex-start' }} />
+
+      {/* User id the server records as the author of this phone's changes */}
+      <SectionTitle>Your user ID</SectionTitle>
+      <Card>
+        <Text style={{ fontSize: 13, color: colors.muted, marginBottom: 6 }}>Created on this phone; no sign-up needed. Group permissions use it to tell members apart.</Text>
+        <Text style={{ fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 14, fontWeight: '700', color: colors.text }}>
+          {identity?.id || '…'}
+        </Text>
+      </Card>
+
+      {/* Sync server */}
+      <SectionTitle>Server</SectionTitle>
+      <Card>
+        <Text style={{ color: colors.muted, fontSize: 13, marginBottom: 8 }}>
+          The SplitMate server your groups sync with. To test server changes, point this at your development server (for example
+          http://localhost:8787 on web, or http://&lt;your PC’s IP&gt;:8787 on a phone).
+        </Text>
+        <Text style={{ color: colors.text, fontSize: 12, fontWeight: '700', marginBottom: 4 }}>Server URL</Text>
+        <TextInput
+          value={serverUrl}
+          onChangeText={setServerUrl}
+          placeholder={DEFAULT_SERVER_URL}
+          placeholderTextColor="#9CA3AF"
+          style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 8, fontSize: 13, backgroundColor: '#fff', marginBottom: 10 }}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+          testID="server-url"
+        />
+        <Row style={{ gap: 8, flexWrap: 'wrap' }}>
+          <Button small variant="outline" title="Save" onPress={() => applyServerUrl(serverUrl)} />
+          <Button small variant="outline" title="Test connection" onPress={testServer} />
+          {identity?.serverUrl !== DEFAULT_SERVER_URL && (
+            <Button small variant="ghost" title="Reset to default" onPress={() => applyServerUrl(DEFAULT_SERVER_URL)} />
+          )}
+        </Row>
+        {!!serverCheck && <Text style={{ color: colors.muted, fontSize: 12, marginTop: 8 }}>{serverCheck}</Text>}
+      </Card>
+
+      {/* Sync Notifications */}
+      {notifications.length > 0 && (
+        <>
+          <Row style={{ justifyContent: 'space-between', alignItems: 'center', marginTop: 16, marginBottom: 8 }}>
+            <SectionTitle>Sync Notifications</SectionTitle>
+            <Button
+              small
+              variant="ghost"
+              title="Clear"
+              onPress={async () => {
+                await markNotificationsRead();
+                setNotifications([]);
+              }}
+            />
+          </Row>
+          <Card>
+            {notifications.slice(0, 5).map((n) => (
+              <View key={n.id} style={{ paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+                <Text style={{ fontWeight: '700', fontSize: 13 }}>{n.title}</Text>
+                <Text style={{ color: colors.muted, fontSize: 12 }}>{n.message}</Text>
+              </View>
+            ))}
+          </Card>
+        </>
+      )}
 
       <SectionTitle>App lock</SectionTitle>
       <Card>
@@ -166,13 +281,13 @@ export default function AppSettings() {
       <SectionTitle>Privacy</SectionTitle>
       <Card>
         <Text style={{ color: colors.muted, fontSize: 13 }}>
-          SplitMate works fully offline and never sends your data anywhere. It has no account, no ads and no analytics, and doesn’t ask for contacts, location, camera, microphone or storage permissions. Data is stored in the app’s private SQLite database and is removed if you uninstall the app — export a backup first.
+          SplitMate works offline and keeps your data in the app’s private SQLite database. Groups are synced through the server set above, which stores each group’s name, members and transactions so other members’ phones can download them. There are no user accounts, ads or telemetry. The camera is used only to scan invite QR codes; SplitMate never asks for contacts, location or microphone access.
         </Text>
       </Card>
 
       <SectionTitle>Danger zone</SectionTitle>
       <Button title="Erase all data" variant="danger" onPress={erase} />
-      <Text style={{ color: colors.muted, textAlign: 'center', marginTop: 20, fontSize: 12 }}>SplitMate 1.1.0 · offline edition</Text>
+      <Text style={{ color: colors.muted, textAlign: 'center', marginTop: 20, fontSize: 12 }}>SplitMate {Constants.expoConfig?.version ?? ''}</Text>
     </Screen>
   );
 }

@@ -1,7 +1,7 @@
 // Pure money logic. All money values are integer cents.
 import { AppError, MemberStat, Member, Settlement, SplitType, Transaction } from './types';
 
-export const SPLIT_TYPES: SplitType[] = ['equal', 'unequal', 'percent', 'shares'];
+const SPLIT_TYPES: SplitType[] = ['equal', 'unequal', 'percent', 'shares'];
 
 /**
  * Distribute `total` cents across weights using largest-remainder,
@@ -89,6 +89,20 @@ export function memberStats(members: Pick<Member, 'id' | 'name'>[], transactions
   }
   for (const s of stats.values()) s.balance = s.totalPaid + s.paymentsMade - s.totalBenefit - s.paymentsReceived;
   return [...stats.values()];
+}
+
+/**
+ * Group cash position: payments count as money coming in, expenses as money going out.
+ * balance = totalPayments - totalExpenses, so it is negative when more was spent than paid in.
+ */
+export function groupCashTotals(transactions: Pick<Transaction, 'type' | 'amount'>[]) {
+  let totalExpenses = 0;
+  let totalPayments = 0;
+  for (const t of transactions) {
+    if (t.type === 'expense') totalExpenses += t.amount;
+    else totalPayments += t.amount;
+  }
+  return { totalExpenses, totalPayments, balance: totalPayments - totalExpenses };
 }
 
 /** Settlement plan: repeatedly match the largest debtor with the largest creditor. */

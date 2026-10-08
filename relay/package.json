@@ -1,0 +1,27 @@
+{
+  "name": "splitmate-relay",
+  "version": "3.0.0",
+  "description": "SplitMate sync API: Express on Cloudflare Workers + Postgres, webhooks and Expo push",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "migrate": "node --experimental-strip-types scripts/migrate.ts",
+    "cf-typegen": "wrangler types",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.4",
+    "@types/pg": "^8.23.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.147.0"
+  },
+  "private": true,
+  "dependencies": {
+    "express": "^5.2.1",
+    "pg": "^8.23.1"
+  }
+}

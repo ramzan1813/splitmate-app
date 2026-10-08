@@ -1,6 +1,6 @@
 // Optional 4-digit app lock. Only a salted SHA-256 hash of the PIN is stored, never the PIN itself.
 import * as Crypto from 'expo-crypto';
-import { getSetting, setSetting } from '@/data/repo';
+import { getSetting, setSetting } from '@/data/settings';
 
 const HASH_KEY = 'pin.hash';
 const SALT_KEY = 'pin.salt';
@@ -16,7 +16,7 @@ async function hash(pin: string, salt: string) {
   return h;
 }
 
-export const isValidPin = (pin: string) => /^\d{4}$/.test(pin);
+const isValidPin = (pin: string) => /^\d{4}$/.test(pin);
 
 export async function isPinEnabled() {
   return !!(await getSetting(HASH_KEY));

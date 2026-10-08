@@ -1,6 +1,10 @@
-# SplitMate — offline edition
+# SplitMate
 
-A single, self-contained mobile app for sharing and splitting group expenses. There's **no server, no account and no internet** — the app's own data layer stores everything in an on-device **SQLite** database (`expo-sqlite`).
+Offline-first group expense splitting for Android (and the web), with multi-phone sync.
+
+Every phone keeps its own copy of the data in on-device **SQLite** and works fully offline. Edits are queued in an
+outbox and synced through the **SplitMate sync server** (Express on Cloudflare Workers + Postgres) whenever the
+phone is online.
 
 Built with Expo SDK 57 (React Native 0.86, TypeScript, Expo Router).
 
@@ -8,109 +12,129 @@ Built with Expo SDK 57 (React Native 0.86, TypeScript, Expo Router).
 
 | Area | What you get |
 |---|---|
-| Groups & members | Groups with a currency. Friends are just names, and you mark which member is you. |
-| Expenses | Split **equally, unequally, by percentage or by shares**, with live validation. Each expense has a category, date and note. |
-| Payments | One-to-one payments, plus **Settle up** suggestions you can record in one tap. |
-| Balances | Paid, share, payments sent and received, and net balance per person. |
-| Charts | Pie chart per group (share, paid or category). |
-| **Insights dashboard** | Where your money goes: totals, change vs the previous period, per-day average, plain-language findings, spending by category and month, who's spending (paid vs share), what each person spends on, day of week, and biggest expenses. Filter by period (this month, 30 days, 3 months, this year, all time) and by group. |
-| Reports | A report screen you can print or save as PDF, and an **Excel (.xlsx) export** created on the phone. |
-| Sharing | **Share a group as a file** (WhatsApp, email, Drive). A friend imports it, picks their name, and gets updates by re-importing. |
-| Backup | **Export a full backup** and restore it on a new phone, merging or replacing what's there. |
-| Privacy | **Optional 4-digit PIN** (salted hash, lockout after wrong tries). No analytics, no ads, and no contacts, location, camera, microphone or storage permissions. |
+| **Groups & members** | 160+ currencies, invite by QR code or link. You pick which member you are when you create or join a group, and it stays fixed after that. Members can **leave** a group (removed from their phone only; they can rejoin); the admin can **delete** it for everyone. |
+| **Expenses & splits** | Split equally, unequally, by percentage or by shares, with live validation. Categories, dates, notes, and who added or last edited each entry. Each entry shows the date and the time it was added; entries on the same day are listed newest first. |
+| **Group overview** | Total spending plus a **group balance** (payments − expenses, negative when overspent). Swipe left/right to move between Expenses, Balances, Settle up and Chart. |
+| **Payments & settle up** | One-to-one payments and minimal-transfer settle-up suggestions. |
+| **Insights & reports** | Spending trends, category and per-person breakdowns, printable/PDF reports and Excel (.xlsx) export, all generated on the phone. |
+| **Permissions** | Per group: **Admin only**, **Contributor** (members add and edit their own entries) or **Collaborative** (anyone edits; only the author or admin deletes). Enforced by the server. |
+| **Offline-first sync** | Writes go to SQLite and an outbox first. The app pushes and pulls on launch, on returning to the foreground, when a group opens, on pull-to-refresh and after every edit. Concurrent edits are detected with entity versions; refused changes are kept and shown, never dropped silently. |
+| **Sync status** | Each group shows *Synced*, *Syncing*, *N pending*, *Offline*, *Sync error* or *N not synced*; tap it to sync now or resolve refused changes. |
+| **Configurable server** | Settings → Server sets the sync server URL, so a phone or the web app can talk to a local development server. |
+| **Backup & restore** | JSON backup of every group, validated import. |
+| **Privacy** | No accounts, ads or analytics. Optional 4-digit PIN lock (salted hash, lockout). |
 
-## Run it on your computer (development)
+## How sync works
 
-You need Node.js 22.13+ (https://nodejs.org). No admin rights are needed.
-
-```bash
-cd splitmate-app
-npm install
-npm test            # 13 data-layer tests (splits, balances, import, samples, currencies, insights, Excel)
-npx expo start      # then press "w" for the browser, or scan the QR code with Expo Go
+```text
+phone A ──POST /sync/push──▶ sync server ──▶ Postgres
+                                  │ (Expo push / webhooks: "changes available")
+phone B ──GET /sync/changes/:group?after=<cursor>──▶ sync server
 ```
 
-To lint, run `npx expo lint`. It installs ESLint the first time, which is why ESLint isn't in the default install. Expo's lint config still needs ESLint 9, so you'll see one deprecation notice for it. That's a development tool only and isn't part of the app.
+- **Source of truth:** the server. Each phone holds a replica plus an outbox of unsent mutations.
+- **Identity & versions:** groups, members and transactions have client-assigned uids and a server version;
+  updates send `expectedVersion`, and a stale one is refused as a conflict.
+- **Ordering:** each group has a gapless server sequence; a phone stores its cursor and advances it in the same
+  SQLite transaction that applies the changes.
+- **Retries:** failed pushes stay queued and are retried on the next sync; the server deduplicates by
+  `clientMutationId`.
+- **Old data:** groups created before the sync engine are uploaded on their first sync.
+- **Creation time:** set once by the phone that adds a transaction, stored by the server and sent to every phone,
+  so all members see the same time and order. Edits never change it.
+- **Leave / delete:** leaving is local only (unsent changes are pushed first). The admin's delete is queued like any
+  change; the server then erases every record of the group, and a phone that has synced the group before treats the
+  server's `GROUP_NOT_FOUND` as "deleted" and erases its copy too.
+- **Hidden rows:** rows marked `is_display = false` in the database are never returned by the server; phones keep
+  what they already downloaded.
 
-> The browser version uses SQLite compiled to WebAssembly, and `metro.config.js` already sets the headers it needs.
+The full contract (endpoints, conflict codes, notifications) is in [relay/README.md](relay/README.md).
+Engineering rules for sync changes are in [AGENTS.md](AGENTS.md).
 
-## Get the APK (installable app)
+## Run it locally
 
-The repository includes a GitHub Actions workflow that builds a **signed release APK** for free.
+Requires Node.js 22.13+.
 
-1. Create a new **private** repository on GitHub and upload the contents of the `splitmate-app` folder. This works with drag-and-drop on the website or with GitHub Desktop, and needs no admin rights.
-   The `.gitignore` already keeps keystores, `node_modules` and generated native folders out of the repo.
-2. Add your signing key as repository secrets (see **SIGNING.md**). It takes 2 minutes and is strongly recommended.
-3. Go to **Actions → Build Android APK → Run workflow**.
-4. After about 15–20 minutes, open the finished run and download **splitmate-apk** under **Artifacts**. Unzip it to get `SplitMate-<version>.apk`, plus a `.sha256` checksum.
+```bash
+npm install
+npm install --prefix relay   # server packages; the test suite starts the server in-process
+npm test                     # unit, server and client-sync tests (in-memory SQLite + PGlite)
+npm run typecheck
+npm run lint
+npm start                    # Expo dev server (press "w" for web)
+```
 
-The workflow also runs the type check and unit tests, so a broken build never produces an APK.
+After `npm install` adds or removes packages, restart the dev server with `npx expo start -c`; a running
+Metro can keep a stale module map and fail with "Unable to resolve module".
 
-### Installing on your phone, and the "unknown app" warnings
+To run the app against a local sync server instead of production, start the server (`cd relay && npm run dev`)
+and set **Settings → Server** to `http://localhost:8787` (web) or `http://<your PC's IP>:8787` (phone dev build).
+Release APKs only allow `https://` servers (`usesCleartextTraffic` is off).
 
-Any APK that doesn't come from the Play Store triggers these screens on Android. This is expected:
+### Docker (server + web app)
 
-1. **"Install unknown apps"**: Android asks you to allow the app you opened the APK with (Files, Chrome, WhatsApp…). Allow it once, and you can turn it off again afterwards.
-2. **Play Protect "Unknown app" or "App scan recommended"**: tap **More details → Install anyway**, or **Scan app**. This appears because the developer (you) isn't registered with Google, not because something is wrong with the app.
+```bash
+docker compose up --build -d                              # server on :8787, web app on :8081
+docker compose --profile migrate run --rm --build migrate # apply database migrations
+docker compose down
+```
 
-What this project does to keep those warnings to a minimum, and keep the app trustworthy:
+The server reads `relay/.dev.vars` (`DATABASE_URL`, `ADMIN_API_KEY`); see [relay/README.md](relay/README.md).
+`relay/.dev.vars` points at the shared **development** database: run migrations and tests against it, never against
+production.
 
-- **Signed with your own release key**, not the public debug key. Updates install over the old version without losing data, and the signature stays consistent, which is what Play Protect looks at.
-- **No dangerous permissions.** Storage, media, microphone and overlay permissions are explicitly removed, and plain-HTTP (cleartext) traffic is disabled.
-- A current target SDK (from Expo SDK 57), no obfuscated native code, and no network calls.
-- The `.sha256` file lets you verify the APK you downloaded is the one GitHub built.
+Without `EXPO_PUBLIC_SERVER_URL`, the web app syncs with the **production** server. For local testing start it with
+`EXPO_PUBLIC_SERVER_URL=http://127.0.0.1:8787 npx expo start --web` (sample groups created on first launch are uploaded
+to whichever server the app uses).
 
-The only way to remove the warnings completely is to publish through Google Play. A one-time $25 developer account lets you use **Internal testing** for up to 100 testers. The same keystore can be used there.
+## Deploying the server
 
-## Updating the app later
+The Worker is connected to this repo through Cloudflare's Git integration and deploys on push. Database
+migrations are not run by that deploy: after adding a file under `relay/migrations/`, run
+`npm --prefix relay run migrate` with the production `DATABASE_URL`, then check `GET /health/db`.
+Until the migrations run, the new server code fails every sync with HTTP 500 (for example
+`relation "visible_groups" does not exist`), so run them as part of every release that adds one.
 
-- Bump `expo.version` (e.g. `1.2.0`) and `expo.android.versionCode` (e.g. `3`) in `app.json`, and the version shown at the bottom of Settings (`src/app/settings.tsx`).
-- Add a `## <version>` section at the top of `CHANGELOG.md`. The release workflow uses it as the GitHub Release notes.
-- Commit, then push a tag matching the version to build and publish it: `git tag v1.2.0 && git push origin main v1.2.0`. (Plain commits don't trigger a build; you can also start one from **Actions → Run workflow**.)
-- Always build with **the same keystore**, or Android will refuse to install the update over the old one.
-- Data stays on the phone between updates. Uninstalling deletes it, so export a backup first.
+The Worker runs next to the database (`[placement] region` in [relay/wrangler.toml](relay/wrangler.toml)); keep
+that region in step with the database's region.
 
-## Security & dependency notes
+## Building the Android APK
 
-- `npm install` runs with **no warnings**. `npm audit` reports only `node-forge` (4 entries, one package). It's used by Expo's command-line tools for code-signing certificates on your computer, is **not included in the app**, and has no patched release yet. Re-run `npm audit` later and it will clear once Expo updates it.
-- `react-native-reanimated` and `react-native-worklets` are pinned to the versions Expo SDK 57 supports. `expo-router` was pulling in newer, incompatible ones, which can crash native builds.
-- `uuid` (used by build tooling) is overridden to the patched 11.x.
-- `decode-uri-component` (a DoS advisory, used by the router's URL parsing) is replaced by a small local, linear-time version in `vendor/`. The patched upstream release is ESM-only and would break the router.
-- Imported files are treated as untrusted. They're size-limited and strictly validated: types, member references, and splits must add up to the amount. All database writes use parameterised SQL.
-- The PIN is stored as a salted, iterated SHA-256 hash, never in plain text. After 5 wrong attempts the lock screen waits 30 seconds, doubling with each further miss.
+**GitHub Actions** ([build-apk.yml](.github/workflows/build-apk.yml)) builds a signed release APK when you:
+
+- push a commit whose message contains `[build]`, `[apk]` or `build:` → APK as a workflow artifact;
+- push a commit containing `[release]` or `release:`, push a `v*` tag, or run the workflow by hand → APK attached
+  to the GitHub Release `v<version>` (created, or its APK replaced if it already exists), with notes taken from the
+  matching `## <version>` section of [CHANGELOG.md](CHANGELOG.md).
+
+The version comes from `app.json` (`version`, `android.versionCode`). Signing secrets are described in
+[SIGNING.md](SIGNING.md).
+
+**EAS Build:** `npx eas-cli@latest login`, then `npm run build:apk`.
 
 ## Project structure
 
-```
+```text
 splitmate-app/
-  app.json                  App config (permissions, icons, plugins)
-  metro.config.js           Web support for SQLite (wasm + isolation headers)
-  plugins/withReleaseSigning.js   Signs release builds with your keystore
-  .github/workflows/build-apk.yml  Cloud APK build
-  vendor/decode-uri-component/     Safe local replacement (see notes)
-  src/
-    data/                   On-device "backend"
-      db.ts                 SQLite open + schema migrations
-      platform.ts           expo-sqlite adapter
-      repo.ts               Groups, members, transactions, settings
-      logic.ts              Split maths, balances, settle-up plan
-      insights.ts           Dashboard calculations
-      backup.ts             Export/import with validation
-      types.ts
-    app/                    Screens (Expo Router)
-      index.tsx             Groups
-      insights.tsx          Insights dashboard
-      settings.tsx          Name, PIN, backup/restore, erase
-      import.tsx            Import group / restore backup
-      group/new.tsx
-      group/[id]/index.tsx       Expenses · Balances · Settle up · Chart
-      group/[id]/expense.tsx     Add/edit expense
-      group/[id]/payment.tsx     Add/edit payment
-      group/[id]/members.tsx     Members, "this is me", share file
-      group/[id]/report.tsx      Report, print/PDF, Excel
-      group/[id]/settings.tsx    Edit/delete group
-      group/[id]/transaction/[tid].tsx
-    components/             UI kit, charts, PIN pad, lock/welcome
-    lib/                    Formatting, files, PIN, Excel writer, report
-  tests/                    Node tests for the data layer (real SQLite)
+├── app.json, eas.json            # Expo app config and EAS build profiles
+├── plugins/withReleaseSigning.js # injects the release keystore into the generated Android project
+├── src/
+│   ├── app/                      # screens (Expo Router)
+│   ├── components/               # UI kit, charts, calendar, QR code and scanner
+│   ├── data/
+│   │   ├── db.ts                 # SQLite schema and migrations
+│   │   ├── platform.ts           # expo-sqlite adapter (serializes transactions)
+│   │   ├── repo.ts               # groups, members, transactions; every write also queues an outbox mutation
+│   │   ├── outbox.ts             # outbox queue (pending / sending / failed / conflict)
+│   │   ├── syncState.ts          # per-group server cursor, status, upload marker
+│   │   ├── syncEngine.ts         # push, pull, backfill, join, conflict resolution
+│   │   ├── sync.ts               # change notifications and the local-change signal
+│   │   ├── settings.ts           # key/value app settings
+│   │   ├── logic.ts, insights.ts # split math, balances, group balance, settle-up, analytics
+│   │   └── backup.ts, samples.ts # backup import/export, sample groups
+│   └── lib/                      # identity and server URL, PIN, formatting, swipe-tab rules, reports, Excel writer
+├── relay/                        # sync server (Cloudflare Worker) — see relay/README.md
+├── tests/                        # node:test suites
+├── docker-compose.yml, Dockerfile.web, docker/  # local server + web stack
+└── vendor/decode-uri-component/  # linear-time replacement (fixes a DoS advisory), forced via package.json "overrides"
 ```

@@ -65,6 +65,53 @@ const btnVariants = {
   ghost: { bg: 'transparent', fg: colors.primary, border: 'transparent' },
 };
 
+export function HeaderButton({
+  title,
+  icon,
+  onPress,
+  testID,
+  accessibilityLabel,
+  highlight,
+}: {
+  title?: string;
+  icon?: string;
+  onPress?: () => void;
+  testID?: string;
+  accessibilityLabel?: string;
+  highlight?: boolean;
+}) {
+  const isIconOnly = !title && !!icon;
+
+  return (
+    <Pressable
+      testID={testID}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || title}
+      onPress={onPress}
+      hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+      style={({ pressed }) => [
+        {
+          backgroundColor: highlight ? 'rgba(255, 255, 255, 0.28)' : 'rgba(255, 255, 255, 0.16)',
+          borderWidth: 1,
+          borderColor: highlight ? 'rgba(255, 255, 255, 0.45)' : 'rgba(255, 255, 255, 0.25)',
+          paddingHorizontal: isIconOnly ? 8 : 10,
+          paddingVertical: 5,
+          borderRadius: 14,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minHeight: 30,
+          minWidth: isIconOnly ? 32 : undefined,
+        },
+        pressed && { backgroundColor: 'rgba(255, 255, 255, 0.4)', transform: [{ scale: 0.95 }] },
+      ]}
+    >
+      {icon ? <Text style={{ color: '#fff', fontSize: 13, marginRight: title ? 4 : 0 }}>{icon}</Text> : null}
+      {title ? <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>{title}</Text> : null}
+    </Pressable>
+  );
+}
+
 export function Field({ label, error, ...props }: TextInputProps & { label?: string; error?: string }) {
   return (
     <View style={{ marginBottom: 14 }}>
@@ -211,11 +258,7 @@ export const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 14,
     marginBottom: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 1,
+    boxShadow: '0px 2px 6px rgba(0, 0, 0, 0.05)',
   },
   avatar: { alignItems: 'center', justifyContent: 'center' },
   chip: {

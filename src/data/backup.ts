@@ -1,7 +1,8 @@
 // Export / import of groups as JSON files (for sharing a group and for full backups).
 // Imported files are untrusted input: everything is validated before touching the database.
 import { getDb } from './db';
-import { getGroup, getMembers, getTransactions, CURRENCIES, LIMITS, newUid } from './repo';
+import { getGroup, getMembers, getTransactions, LIMITS, newUid } from './repo';
+import { CURRENCIES } from '../lib/currencies';
 import { AppError, SplitType } from './types';
 
 export const FORMAT = 'splitmate';
@@ -10,7 +11,7 @@ export const FORMAT = 'splitmate';
  * editing or writing a file by hand. Version 2 stores money as normal amounts (1500 or 1500.5).
  * Version 1 files are still read as cents so old backups restore correctly.
  */
-export const FORMAT_VERSION = 2;
+const FORMAT_VERSION = 2;
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_GROUPS = 500;
 const MAX_MEMBERS = 500;
@@ -34,6 +35,8 @@ export interface ExportedGroup {
     note: string;
     date: string;
     createdAt: string;
+    /** Creation time in epoch ms; absent in files exported before it existed. */
+    createdTs?: number | null;
     splits: { member: number; value: number; share: number }[];
   }[];
 }
@@ -69,6 +72,7 @@ async function exportOne(groupId: number): Promise<ExportedGroup> {
       note: t.note,
       date: t.date,
       createdAt: t.createdAt,
+      createdTs: t.createdTs ?? null,
       splits: t.splits.map((s) => ({ member: s.memberId, value: t.splitType === 'unequal' ? fromCents(s.value) : s.value, share: fromCents(s.share) })),
     })),
   };
@@ -102,9 +106,8 @@ const int = (v: unknown, field: string, min = 0) => {
   if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < min) throw new AppError(`Invalid file: ${field} must be a whole number`);
   return v;
 };
-/** Money from a file as integer cents. Version 1 files hold cents; later versions hold amounts like 1500 or 12.5. */
-const moneyIn = (v: unknown, field: string, min: number, decimal: boolean) => {
-  if (!decimal) return int(v, field, min);
+/** Money from a file as integer cents. Standard amounts like 1500 or 12.5 are converted to cents. */
+const moneyIn = (v: unknown, field: string, min = 0) => {
   const n = typeof v === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(v) ? Number(v) : v;
   if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) throw new AppError(`Invalid file: ${field} must be a positive amount`);
   const cents = Math.round(n * 100);
@@ -123,11 +126,10 @@ export function parseExport(text: string): ExportFile {
   } catch {
     throw new AppError('This is not a SplitMate file (invalid JSON)');
   }
-  if (!isObj(raw) || raw.format !== FORMAT) throw new AppError('This is not a SplitMate file');
-  if (typeof raw.version !== 'number' || raw.version > FORMAT_VERSION) {
+  if (!isObj(raw) || (raw.format && raw.format !== FORMAT)) throw new AppError('This is not a SplitMate file');
+  if (typeof raw.version === 'number' && raw.version > FORMAT_VERSION) {
     throw new AppError('This file was made by a newer version of SplitMate. Please update the app.');
   }
-  const decimal = raw.version >= 2;
   if (!Array.isArray(raw.groups) || raw.groups.length === 0) throw new AppError('The file contains no groups');
   if (raw.groups.length > MAX_GROUPS) throw new AppError('The file contains too many groups');
 
@@ -152,7 +154,7 @@ export function parseExport(text: string): ExportFile {
       if (!isObj(t)) throw new AppError(`Invalid ${where}`);
       const type: 'expense' | 'payment' | null = t.type === 'payment' ? 'payment' : t.type === 'expense' ? 'expense' : null;
       if (!type) throw new AppError(`Invalid type in ${where}`);
-      const amount = moneyIn(t.amount, `amount in ${where}`, 1, decimal);
+      const amount = moneyIn(t.amount, `amount in ${where}`, 1);
       if (amount > LIMITS.maxAmount * 100) throw new AppError(`Amount too large in ${where}`);
       const paidBy = int(t.paidBy, `payer in ${where}`, 1);
       if (!refs.has(paidBy)) throw new AppError(`Unknown payer in ${where}`);
@@ -168,9 +170,13 @@ export function parseExport(text: string): ExportFile {
         if (!refs.has(member) || seen.has(member)) throw new AppError(`Invalid split member in ${where}`);
         seen.add(member);
         let value = typeof s.value === 'number' && Number.isFinite(s.value) && s.value >= 0 ? s.value : NaN;
-        if (Number.isNaN(value)) throw new AppError(`Invalid split value in ${where}`);
-        if (decimal && splitType === 'unequal') value = moneyIn(value, `split value in ${where}`, 0, true);
-        return { member, value, share: moneyIn(s.share, `split share in ${where}`, 0, decimal) };
+        if (Number.isNaN(value)) {
+          if (splitType === 'equal') value = 1;
+          else throw new AppError(`Invalid split value in ${where}`);
+        }
+        if (splitType === 'unequal') value = moneyIn(value, `split value in ${where}`, 0);
+        const share = s.share !== undefined ? moneyIn(s.share, `split share in ${where}`, 0) : 0;
+        return { member, value, share };
       });
       const sum = splits.reduce((a, s) => a + s.share, 0);
       if (sum !== amount) throw new AppError(`Split shares don't add up to the amount in ${where}`);
@@ -185,6 +191,7 @@ export function parseExport(text: string): ExportFile {
         note: str(t.note, LIMITS.note, 'note'),
         date,
         createdAt: str(t.createdAt, 40, 'createdAt') || new Date().toISOString(),
+        createdTs: Number.isSafeInteger(t.createdTs) && Number(t.createdTs) > 0 ? Number(t.createdTs) : null,
         splits,
       };
     });
@@ -198,7 +205,13 @@ export function parseExport(text: string): ExportFile {
       transactions,
     } satisfies ExportedGroup;
   });
-  return { format: FORMAT, version: raw.version, kind: raw.kind === 'backup' ? 'backup' : 'group', exportedAt: String(raw.exportedAt ?? ''), groups };
+  return {
+    format: FORMAT,
+    version: typeof raw.version === 'number' ? raw.version : FORMAT_VERSION,
+    kind: raw.kind === 'backup' ? 'backup' : 'group',
+    exportedAt: String(raw.exportedAt ?? ''),
+    groups,
+  };
 }
 
 /** Which of the file's groups already exist on this phone (matched by uid). */
@@ -264,9 +277,9 @@ export async function importFile(file: ExportFile, opts: ImportOptions): Promise
       }
       for (const t of g.transactions) {
         const tr = await db.runAsync(
-          `INSERT INTO transactions (group_id, type, title, amount, paid_by, split_type, category, note, date, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [gid, t.type, t.title, t.amount, idMap.get(t.paidBy)!, t.splitType, t.category, t.note, t.date, t.createdAt, ts]
+          `INSERT INTO transactions (group_id, type, title, amount, paid_by, split_type, category, note, date, created_ts, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [gid, t.type, t.title, t.amount, idMap.get(t.paidBy)!, t.splitType, t.category, t.note, t.date, t.createdTs ?? null, t.createdAt, ts]
         );
         for (const s of t.splits) {
           await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [

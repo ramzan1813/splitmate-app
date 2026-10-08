@@ -3,8 +3,11 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { AppState } from 'react-native';
 import '@/data/platform';
 import { getDb } from '@/data/db';
-import { getSetting, setSetting } from '@/data/repo';
+import { getSetting, setSetting } from '@/data/settings';
 import { isPinEnabled } from './pin';
+
+import { onLocalChange } from '@/data/sync';
+import { syncEngine } from '@/data/syncEngine';
 
 const LOCK_AFTER_MS = 60_000; // lock again after 1 minute in the background
 
@@ -41,11 +44,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setPinEnabled(pin);
         setLocked(pin);
         setReady(true);
+        // Catch up every group with the server (push queued edits, pull others' changes).
+        syncEngine.syncAllGroups().catch(() => {});
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
   }, []);
+
+  // Push each committed local write right away; if it fails it stays queued for the next trigger.
+  useEffect(() => onLocalChange((groupUid) => void syncEngine.syncGroup(groupUid).catch(() => {})), []);
+
+  useEffect(() => {
+    // Returning to the app is a sync trigger: other members may have changed things meanwhile.
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && ready) syncEngine.syncAllGroups().catch(() => {});
+    });
+    return () => sub.remove();
+  }, [ready]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
