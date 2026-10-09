@@ -58,3 +58,8 @@ env.*
 
 # typescript
 *.tsbuildinfo
+
+# graphify
+graphify-out/
+.graphify*
+
