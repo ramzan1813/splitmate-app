@@ -1,0 +1,281 @@
+{
+  "info": {
+    "_postman_id": "splitmate-backend-collection",
+    "name": "SplitMate Backend API",
+    "description": "Postman Collection for SplitMate Backend endpoints.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "groupUid",
+      "value": "grp_trip123",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Health DB Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/db",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "db"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Join / Invite",
+      "item": [
+        {
+          "name": "Join Group (Invite Link)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/join?uid={{groupUid}}&name=Trip%20to%20Paris&cur=EUR",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "join"
+              ],
+              "query": [
+                {
+                  "key": "uid",
+                  "value": "{{groupUid}}"
+                },
+                {
+                  "key": "name",
+                  "value": "Trip%20to%20Paris"
+                },
+                {
+                  "key": "cur",
+                  "value": "EUR"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Sync",
+      "item": [
+        {
+          "name": "Push Mutations - Create Group & Members",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"groupUid\": \"{{groupUid}}\",\n  \"deviceId\": \"dev_mobile_1\",\n  \"actorId\": \"user_alex\",\n  \"actorName\": \"Alex\",\n  \"mutations\": [\n    {\n      \"clientMutationId\": \"mut_g1\",\n      \"entityType\": \"group\",\n      \"entityUid\": \"{{groupUid}}\",\n      \"operation\": \"create\",\n      \"expectedVersion\": 0,\n      \"payload\": {\n        \"uid\": \"{{groupUid}}\",\n        \"name\": \"Trip to Paris\",\n        \"description\": \"Weekend getaway\",\n        \"currency\": \"EUR\",\n        \"permissionModel\": \"collaborative\"\n      }\n    },\n    {\n      \"clientMutationId\": \"mut_m1\",\n      \"entityType\": \"member\",\n      \"entityUid\": \"mem_alex_1\",\n      \"operation\": \"create\",\n      \"expectedVersion\": 0,\n      \"payload\": { \"name\": \"Alex\", \"isMe\": true }\n    },\n    {\n      \"clientMutationId\": \"mut_m2\",\n      \"entityType\": \"member\",\n      \"entityUid\": \"mem_sam_1\",\n      \"operation\": \"create\",\n      \"expectedVersion\": 0,\n      \"payload\": { \"name\": \"Sam\", \"isMe\": false }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/sync/push",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sync",
+                "push"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Push Mutations - Create Transaction",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"groupUid\": \"{{groupUid}}\",\n  \"deviceId\": \"dev_mobile_1\",\n  \"actorId\": \"user_alex\",\n  \"actorName\": \"Alex\",\n  \"mutations\": [\n    {\n      \"clientMutationId\": \"mut_tx1\",\n      \"entityType\": \"transaction\",\n      \"entityUid\": \"tx_museum_1\",\n      \"operation\": \"create\",\n      \"expectedVersion\": 0,\n      \"payload\": {\n        \"title\": \"Louvre Tickets\",\n        \"amount\": 4000,\n        \"paidByMemberUid\": \"mem_alex_1\",\n        \"splitType\": \"equal\",\n        \"category\": \"Entertainment\",\n        \"date\": \"2026-10-08\",\n        \"splits\": [\n          { \"memberUid\": \"mem_alex_1\", \"value\": 1, \"share\": 2000 },\n          { \"memberUid\": \"mem_sam_1\", \"value\": 1, \"share\": 2000 }\n        ]\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/sync/push",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sync",
+                "push"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bootstrap Group State",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/sync/bootstrap/{{groupUid}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sync",
+                "bootstrap",
+                "{{groupUid}}"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Pull All Changes (after=0)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/sync/changes/{{groupUid}}?after=0&limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sync",
+                "changes",
+                "{{groupUid}}"
+              ],
+              "query": [
+                {
+                  "key": "after",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Pull Changes (after=3)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/sync/changes/{{groupUid}}?after=3&limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sync",
+                "changes",
+                "{{groupUid}}"
+              ],
+              "query": [
+                {
+                  "key": "after",
+                  "value": "3"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Devices",
+      "item": [
+        {
+          "name": "Register Device",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"deviceId\": \"dev_mobile_1\",\n  \"userId\": \"user_alex\",\n  \"userName\": \"Alex\",\n  \"expoPushToken\": \"ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]\",\n  \"pushEnabled\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/devices/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "devices",
+                "register"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

@@ -866,7 +866,7 @@ export async function updateTransaction(groupId: number, txId: number, body: TxI
   const memberUids = new Map(members.map((m) => [m.id, m.uid]));
   const myMember = members.find((m) => m.isMe);
   const myDisplayName = myMember?.name || identity.name || 'Me';
-  const t = await validateTx(groupId, { ...body, type: existing.type });
+  const t = await validateTx(groupId, { date: existing.date, ...body, type: existing.type });
   const txUid = existing.uid || `tx_${txId}`;
   const updatedTs = Date.now();
   const payload: SyncTxPayload = {

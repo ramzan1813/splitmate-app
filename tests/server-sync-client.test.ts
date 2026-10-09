@@ -227,7 +227,7 @@ test('client sync: a write made while a sync is running is pushed by the same ca
 });
 
 test('client sync: every phone shows the same creation time and order, including offline adds and edits', async () => {
-  const tick = () => new Promise((r) => setTimeout(r, 5)); // distinct millisecond timestamps
+  const tick = () => new Promise((r) => setTimeout(r, 50)); // distinct millisecond timestamps
   const a = use(await device());
   const group = await repo.createGroup({ name: 'Times', myName: 'Alice', members: ['Bob'] });
   const [alice, bob] = await repo.getMembers(group.id);

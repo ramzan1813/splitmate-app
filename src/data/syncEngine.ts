@@ -878,7 +878,13 @@ export class SyncEngine {
       p.updatedTs || 0,
       change.entityVersion,
     ];
-    const createdTs = Number.isSafeInteger(p.createdTs) && p.createdTs > 0 ? (p.createdTs as number) : null;
+    const rawCreatedTs = p.createdTs;
+    const createdTs =
+      typeof rawCreatedTs === 'number' && Number.isSafeInteger(rawCreatedTs) && rawCreatedTs > 0
+        ? rawCreatedTs
+        : typeof rawCreatedTs === 'string' && /^\d+$/.test(rawCreatedTs) && Number(rawCreatedTs) > 0
+          ? Number(rawCreatedTs)
+          : null;
     let txId: number;
     if (existingTx) {
       txId = existingTx.id;
@@ -1000,8 +1006,8 @@ export class SyncEngine {
           t.authorName ?? '',
           t.updatedById ?? '',
           t.updatedByName ?? '',
-          t.updatedTs ?? 0,
-          t.createdTs ?? null,
+          t.updatedTs != null ? Number(t.updatedTs) : 0,
+          t.createdTs != null && Number(t.createdTs) > 0 ? Number(t.createdTs) : null,
           t.serverVersion,
           t.createdAt || nowIso,
           t.updatedAt || nowIso,

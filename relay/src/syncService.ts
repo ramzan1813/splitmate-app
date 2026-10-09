@@ -162,7 +162,7 @@ export async function getGroupBootstrap(db: Database, groupUid: string): Promise
         groupId: group.id,
         type: t.type,
         title: t.title,
-        amount: t.amount,
+        amount: Number(t.amount),
         paidBy: memberIdByUid.get(t.paid_by_member_uid) ?? 0,
         paidByMemberUid: t.paid_by_member_uid,
         splitType: t.split_type,
@@ -173,8 +173,8 @@ export async function getGroupBootstrap(db: Database, groupUid: string): Promise
         authorName: t.author_name,
         updatedById: t.updated_by_id ?? undefined,
         updatedByName: t.updated_by_name ?? undefined,
-        updatedTs: t.updated_ts,
-        createdTs: t.created_ts ?? null,
+        updatedTs: t.updated_ts != null ? Number(t.updated_ts) : 0,
+        createdTs: t.created_ts != null ? Number(t.created_ts) : null,
         serverVersion: t.server_version,
         isDeleted: t.is_deleted,
         createdAt: iso(t.created_at),
@@ -914,7 +914,15 @@ async function applyTransactionMutation(tx: Queryable, ctx: PushContext, mut: Pu
       await insertSplits(tx, mut.entityUid, splits);
     }
 
-    const serverSequence = await appendChange(tx, ctx, 'transaction', mut.entityUid, 'update', nextVersion, txChangePayload(p, payerMemberUid, splits, existing.created_ts ?? null));
+    const serverSequence = await appendChange(
+      tx,
+      ctx,
+      'transaction',
+      mut.entityUid,
+      'update',
+      nextVersion,
+      txChangePayload(p, payerMemberUid, splits, existing.created_ts != null ? Number(existing.created_ts) : null)
+    );
     return { serverVersion: nextVersion, serverSequence };
   }
 

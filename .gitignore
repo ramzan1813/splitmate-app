@@ -2,7 +2,7 @@
 
 # dependencies
 node_modules/
-
+.wrangler
 # Expo
 .expo/
 dist/
@@ -32,6 +32,7 @@ expo-env.d.ts
 *.key
 *.pem
 *.mobileprovision
+__pycache__
 *.base64.txt
 passwords.txt
 
@@ -45,6 +46,15 @@ yarn-error.*
 
 # macOS
 .DS_Store
+*.pem
+.venv
+.pytest_cache
+
+# local env files
+.env*.local
+.env
+env.*
+*.db
 
 # typescript
 *.tsbuildinfo
