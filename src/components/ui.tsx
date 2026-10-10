@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   StyleProp,
   StyleSheet,
@@ -230,6 +231,13 @@ export function SectionTitle({ children, style }: { children: React.ReactNode; s
 export function Row({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
   return <View style={[{ flexDirection: 'row', alignItems: 'center' }, style]}>{children}</View>;
 }
+
+/**
+ * Style for an area that switches tabs on horizontal swipes. On the web it tells the browser the
+ * page only scrolls vertically here, so a sideways swipe goes to the app instead of triggering the
+ * browser's swipe-to-go-back. Native apps don't need it.
+ */
+export const swipeArea: StyleProp<ViewStyle> = Platform.OS === 'web' ? ({ touchAction: 'pan-y' } as unknown as ViewStyle) : undefined;
 
 export const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },

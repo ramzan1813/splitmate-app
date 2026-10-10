@@ -12,6 +12,7 @@ Server operators: deploy the sync server from this version before releasing the 
 - **New name: EvenUp.** The app name, screens, invite page and backup files (`.evenup.json`) now say EvenUp. Invite links and QR codes you already shared keep working, and backups from earlier versions still import.
 - **New sync server.** The app syncs with `https://evenup.ramzankhan.shop`. You can still use another server: Settings → Server URL shows the current one, and *Reset to default* switches back.
 - **Select all / Unselect all.** When splitting an expense equally, one tap selects or clears every member. It shows how many are selected, e.g. *2 of 3*.
+- **Swipe through a member's activity.** On a member's page, swipe the *Activity & Transactions* list left or right to move between All, Paid, Shared and Payments, just like the tabs in a group. Tapping the tabs still works.
 
 ### Changed
 - **Settle only what's yours.** On *Settle up*, the **Settle** button (and *Record payment* in the breakdown) appears only on payments you make or receive. The group admin can settle any of them. Everyone can still open **Breakdown**.
@@ -24,6 +25,7 @@ Server operators: deploy the sync server from this version before releasing the 
 - **Sync stuck on one change.** An edit that changed only part of a transaction (e.g. just its title) could stop a group from syncing, or clear its splits. Such edits now change only what was edited.
 - **Server restored or replaced.** If the sync server lost recent history, a phone kept failing to sync that group, and expenses the server lost were never sent again. The phone now sends the server what it is missing, then catches up.
 - **Import failed with "Error finalizing statement"** for group files exported by older versions.
+- **Web: swiping right left the page.** In the web app, swiping right to change tabs could trigger the browser's *go back* and leave the group. Swipes now only switch tabs.
 
 ### Upgrading
 - Your data stays on your phone and is repaired automatically the first time this version opens.

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { Animated, Modal, PanResponder, Platform, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { Avatar, Button, Card, Empty, HeaderButton, Loading, Row, Segmented, SectionTitle } from '@/components/ui';
+import { Avatar, Button, Card, Empty, HeaderButton, Loading, Row, Segmented, SectionTitle, swipeArea } from '@/components/ui';
 import { PieChart } from '@/components/PieChart';
 import { TransactionCard } from '@/components/TransactionCard';
 import { QRCode } from '@/components/QRCode';
@@ -169,7 +169,7 @@ export default function GroupScreen() {
 
   return (
     <View style={{ flex: 1 }}>
-      <View style={{ flex: 1 }} {...swipe.panHandlers}>
+      <View style={[{ flex: 1 }, swipeArea]} {...swipe.panHandlers}>
         <ScrollView
           contentContainerStyle={{ padding: 16, paddingBottom: 120, maxWidth: 760, width: '100%', alignSelf: 'center' }}
           refreshControl={

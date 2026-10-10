@@ -1,14 +1,17 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
+import { Animated, PanResponder, Platform, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { Avatar, Button, Card, Empty, HeaderButton, Loading, Row, SectionTitle, Segmented } from '@/components/ui';
+import { Avatar, Button, Card, Empty, HeaderButton, Loading, Row, SectionTitle, Segmented, swipeArea } from '@/components/ui';
 import { TransactionCard } from '@/components/TransactionCard';
 import { useGroup } from '@/lib/useGroup';
 import { money } from '@/lib/format';
 import { categoryIcon, colorFor, colors } from '@/lib/theme';
 import { Transaction } from '@/data/types';
+import { dragOffset, isHorizontalSwipe, swipeDirection } from '@/lib/swipeTabs';
 
 type FilterTab = 'all' | 'paid' | 'shared' | 'payments';
+const FILTERS: FilterTab[] = ['all', 'paid', 'shared', 'payments'];
+const useNativeDriver = Platform.OS !== 'web';
 
 export default function MemberDashboardScreen() {
   const { id, memberId } = useLocalSearchParams<{ id: string; memberId: string }>();
@@ -168,6 +171,31 @@ export default function MemberDashboardScreen() {
       setSettlementMode('direct');
     };
   }, []);
+
+  // Swiping the activity list left/right moves between its filter tabs, like the group screen's tabs.
+  // Only clearly horizontal drags are claimed, so vertical scrolling and taps on cards still work.
+  const { width } = useWindowDimensions();
+  const [slide] = useState(() => new Animated.Value(0));
+  const swipe = useMemo(() => {
+    const index = FILTERS.indexOf(filter);
+    const springBack = () => Animated.spring(slide, { toValue: 0, useNativeDriver }).start();
+    return PanResponder.create({
+      onMoveShouldSetPanResponderCapture: (_, g) => isHorizontalSwipe(g.dx, g.dy),
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderMove: (_, g) => slide.setValue(dragOffset(FILTERS.length, index, g.dx)),
+      onPanResponderRelease: (_, g) => {
+        const dir = swipeDirection(FILTERS.length, index, g.dx, g.vx);
+        const next = FILTERS[index + dir];
+        if (!dir || !next) return springBack();
+        Animated.timing(slide, { toValue: -dir * width, duration: 140, useNativeDriver }).start(() => {
+          setFilter(next);
+          slide.setValue(dir * width);
+          Animated.timing(slide, { toValue: 0, duration: 180, useNativeDriver }).start();
+        });
+      },
+      onPanResponderTerminate: springBack,
+    });
+  }, [filter, slide, width]);
 
   if (!data || !member || !stat) {
     if (error) {
@@ -522,6 +550,7 @@ export default function MemberDashboardScreen() {
         </Row>
       )}
 
+      <View style={swipeArea} {...swipe.panHandlers} testID="member-activity-swipe">
       <Segmented<FilterTab>
         options={[
           { value: 'all', label: `All (${allInvolved.length})` },
@@ -533,6 +562,7 @@ export default function MemberDashboardScreen() {
         onChange={setFilter}
       />
 
+      <Animated.View style={{ transform: [{ translateX: slide }] }} testID="member-activity-content">
       {filteredTransactions.length === 0 ? (
         <Empty
           title="No transactions found"
@@ -559,6 +589,8 @@ export default function MemberDashboardScreen() {
           />
         ))
       )}
+      </Animated.View>
+      </View>
     </ScrollView>
   );
 }
