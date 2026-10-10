@@ -46,7 +46,7 @@
     "typecheck": "tsc --noEmit",
     "build:apk": "npx eas-cli@latest build -p android --profile preview",
     "build:apk:local": "npx expo prebuild -p android && cd android && gradlew assembleRelease",
-    "test": "tsx --env-file=tests/.env.test --test tests/*.test.ts",
+    "test": "tsx --env-file=tests/.env.test --test --test-concurrency=1 tests/*.test.ts",
     "lint": "expo lint"
   },
   "private": true,

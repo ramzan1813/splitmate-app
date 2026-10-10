@@ -2,7 +2,10 @@
 const escapeHtml = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
-export function renderJoinPage(params: URLSearchParams): string {
+export function renderJoinPage(params: URLSearchParams, serverBaseUrl?: string): string {
+  if (!params.has('server') && serverBaseUrl) {
+    params.set('server', serverBaseUrl);
+  }
   const groupName = escapeHtml(params.get('name') || 'SplitMate Group');
   const currency = escapeHtml(params.get('cur') || 'USD');
   const deepLink = `splitmate://join?${params.toString()}`;

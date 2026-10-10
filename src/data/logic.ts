@@ -124,3 +124,122 @@ export function suggestSettlements(stats: MemberStat[]): Settlement[] {
   }
   return result;
 }
+
+/**
+ * Calculates direct pairwise debts between members without multi-party debt simplification.
+ * For each pair of members (A, B):
+ * net(A -> B) = (expenses paid by B where A had a share) + (payments from B to A)
+ *             - (expenses paid by A where B had a share) - (payments from A to B).
+ * If net > 0, A owes B that amount.
+ */
+export function calculateDirectDebts(
+  members: Pick<Member, 'id'>[],
+  transactions: Pick<Transaction, 'type' | 'amount' | 'paidBy' | 'splits'>[]
+): Settlement[] {
+  const pairBalance = new Map<string, number>();
+
+  for (const t of transactions) {
+    if (t.type === 'expense') {
+      const payerId = t.paidBy;
+      for (const s of t.splits) {
+        if (s.memberId !== payerId && s.share > 0) {
+          const debtor = s.memberId;
+          const creditor = payerId;
+          const key = debtor < creditor ? `${debtor}:${creditor}` : `${creditor}:${debtor}`;
+          const current = pairBalance.get(key) || 0;
+          const sign = debtor < creditor ? 1 : -1;
+          pairBalance.set(key, current + sign * s.share);
+        }
+      }
+    } else if (t.type === 'payment') {
+      const payerId = t.paidBy;
+      for (const s of t.splits) {
+        const receiverId = s.memberId;
+        if (receiverId !== payerId && t.amount > 0) {
+          const key = payerId < receiverId ? `${payerId}:${receiverId}` : `${receiverId}:${payerId}`;
+          const current = pairBalance.get(key) || 0;
+          const sign = payerId < receiverId ? -1 : 1;
+          pairBalance.set(key, current + sign * t.amount);
+        }
+      }
+    }
+  }
+
+  const result: Settlement[] = [];
+  for (const [key, net] of pairBalance.entries()) {
+    if (net === 0) continue;
+    const [id1Str, id2Str] = key.split(':');
+    const id1 = Number(id1Str);
+    const id2 = Number(id2Str);
+    if (net > 0) {
+      result.push({ from: id1, to: id2, amount: net });
+    } else {
+      result.push({ from: id2, to: id1, amount: -net });
+    }
+  }
+
+  result.sort((a, b) => b.amount - a.amount || a.from - b.from || a.to - b.to);
+  return result;
+}
+
+export interface SettlementCause {
+  transaction: Pick<Transaction, 'id' | 'type' | 'title' | 'amount' | 'paidBy' | 'category' | 'date'>;
+  shareAmount: number;
+  impact: number; // positive = debtor owes more to creditor; negative = reduces debt
+}
+
+/**
+ * Returns transactions directly contributing to the balance between settlement.from and settlement.to.
+ */
+export function getSettlementCauses(
+  settlement: Settlement,
+  transactions: Pick<Transaction, 'id' | 'type' | 'title' | 'amount' | 'paidBy' | 'category' | 'date' | 'splits'>[]
+): { directCauses: SettlementCause[]; directTotal: number } {
+  const fromId = settlement.from;
+  const toId = settlement.to;
+  const directCauses: SettlementCause[] = [];
+
+  for (const t of transactions) {
+    if (t.type === 'expense') {
+      if (t.paidBy === toId) {
+        const sp = t.splits.find((s) => s.memberId === fromId);
+        if (sp && sp.share > 0) {
+          directCauses.push({
+            transaction: t,
+            shareAmount: sp.share,
+            impact: sp.share,
+          });
+        }
+      } else if (t.paidBy === fromId) {
+        const sp = t.splits.find((s) => s.memberId === toId);
+        if (sp && sp.share > 0) {
+          directCauses.push({
+            transaction: t,
+            shareAmount: sp.share,
+            impact: -sp.share,
+          });
+        }
+      }
+    } else if (t.type === 'payment') {
+      if (t.paidBy === fromId && t.splits.some((s) => s.memberId === toId)) {
+        directCauses.push({
+          transaction: t,
+          shareAmount: t.amount,
+          impact: -t.amount,
+        });
+      } else if (t.paidBy === toId && t.splits.some((s) => s.memberId === fromId)) {
+        directCauses.push({
+          transaction: t,
+          shareAmount: t.amount,
+          impact: t.amount,
+        });
+      }
+    }
+  }
+
+  directCauses.sort((a, b) => (b.transaction.date > a.transaction.date ? 1 : -1));
+  const directTotal = directCauses.reduce((acc, c) => acc + c.impact, 0);
+
+  return { directCauses, directTotal };
+}
+

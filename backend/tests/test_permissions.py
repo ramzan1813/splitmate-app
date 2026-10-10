@@ -150,3 +150,46 @@ async def test_contributor_permission_model(client: AsyncClient):
     )
     assert bob_edit_res.json()["results"][0]["status"] == "REJECTED"
     assert bob_edit_res.json()["results"][0]["error"] == "UNAUTHORIZED"
+
+    # 4. Peer Bob tries to add a member in CONTRIBUTOR mode -> REJECTED UNAUTHORIZED
+    bob_add_mem = await client.post(
+        "/sync/push",
+        json={
+            "groupUid": group_uid,
+            "deviceId": "dev_3",
+            "actorId": peer_bob,
+            "mutations": [
+                {
+                    "clientMutationId": "m_bob_add_mem",
+                    "entityType": "member",
+                    "entityUid": "mem_charlie",
+                    "operation": "create",
+                    "expectedVersion": 0,
+                    "payload": {"name": "Charlie"},
+                }
+            ],
+        },
+    )
+    assert bob_add_mem.json()["results"][0]["status"] == "REJECTED"
+    assert bob_add_mem.json()["results"][0]["error"] == "UNAUTHORIZED"
+
+    # 5. Admin adds a member in CONTRIBUTOR mode -> ACCEPTED
+    admin_add_mem = await client.post(
+        "/sync/push",
+        json={
+            "groupUid": group_uid,
+            "deviceId": "dev_1",
+            "actorId": admin_id,
+            "mutations": [
+                {
+                    "clientMutationId": "m_admin_add_mem",
+                    "entityType": "member",
+                    "entityUid": "mem_charlie",
+                    "operation": "create",
+                    "expectedVersion": 0,
+                    "payload": {"name": "Charlie"},
+                }
+            ],
+        },
+    )
+    assert admin_add_mem.json()["results"][0]["status"] == "ACCEPTED"

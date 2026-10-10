@@ -14,7 +14,8 @@ expo-env.d.ts
 /ios
 .kotlin/
 *.orig.*
-
+*.bat
+*.bak
 # Metro
 .metro-health-check*
 
@@ -23,6 +24,7 @@ expo-env.d.ts
 
 # secrets and local env - never commit
 .env
+.env.*
 .env*.local
 .dev.vars
 *.jks

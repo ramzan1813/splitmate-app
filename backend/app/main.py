@@ -53,3 +53,15 @@ app.include_router(health.router)
 app.include_router(join.router)
 app.include_router(sync.router)
 app.include_router(devices.router)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    logger.info(f"Starting server on http://{settings.HOST}:{settings.PORT}")
+    uvicorn.run(
+        "app.main:app",
+        host=settings.HOST,
+        port=settings.PORT,
+        reload=settings.DEBUG,
+    )

@@ -5,6 +5,8 @@ import { GroupSummary } from '@/data/types';
 import { GroupSyncStatus, syncEngine } from '@/data/syncEngine';
 import { errorMessage } from './dialog';
 
+import { onLocalChange } from '@/data/sync';
+
 /** Loads a group's full summary from the local database and keeps it current as sync pulls changes. */
 export function useGroup(id: string | number | undefined) {
   const [data, setData] = useState<GroupSummary | null>(null);
@@ -40,10 +42,22 @@ export function useGroup(id: string | number | undefined) {
     }, [refresh])
   );
 
+  useEffect(() => {
+    refresh();
+  }, [id, refresh]);
+
   useEffect(
     () =>
       syncEngine.subscribe((groupUid) => {
-        if (groupUidRef.current === groupUid) reload();
+        if (!groupUidRef.current || groupUidRef.current === groupUid) reload();
+      }),
+    [reload]
+  );
+
+  useEffect(
+    () =>
+      onLocalChange((groupUid) => {
+        if (!groupUidRef.current || groupUidRef.current === groupUid) reload();
       }),
     [reload]
   );

@@ -1,6 +1,6 @@
 // All reads/writes of app data. Money is stored as integer cents.
 import { DB, getDb, Param } from './db';
-import { computeShares, groupCashTotals, memberStats, suggestSettlements } from './logic';
+import { calculateDirectDebts, computeShares, groupCashTotals, memberStats, suggestSettlements } from './logic';
 import { AppError, Group, GroupListItem, GroupSummary, Member, Split, Transaction, TxInput, TxType } from './types';
 import { CATEGORIES } from '../lib/theme';
 import { CURRENCIES } from '../lib/currencies';
@@ -67,6 +67,7 @@ interface MemberRow {
   name: string;
   is_me: number;
   uid?: string;
+  user_id?: string | null;
   server_version?: number;
   is_deleted?: number;
   deleted_at?: string | null;
@@ -78,6 +79,7 @@ const mapMember = (m: MemberRow): Member => ({
   isMe: Boolean(m.is_me),
   uid: m.uid || `mem_${m.id}`,
   memberUid: m.uid || `mem_${m.id}`,
+  userId: m.user_id ?? undefined,
   serverVersion: m.server_version ?? 1,
   isDeleted: Boolean(m.is_deleted),
   deletedAt: m.deleted_at ?? undefined,
@@ -116,6 +118,7 @@ export function getGroupPermissions(group: Group, currentUserId: string) {
     return {
       isCreator,
       canAdd: isCreator,
+      canAddMember: isCreator,
       canEditTx: (_tx?: { authorId?: string }) => isCreator,
       canDeleteTx: (_tx?: { authorId?: string }) => isCreator,
     };
@@ -125,6 +128,7 @@ export function getGroupPermissions(group: Group, currentUserId: string) {
     return {
       isCreator,
       canAdd: true,
+      canAddMember: isCreator,
       canEditTx: (tx?: { authorId?: string }) => isCreator || (Boolean(tx?.authorId) && tx?.authorId === currentUserId),
       canDeleteTx: (tx?: { authorId?: string }) => isCreator || (Boolean(tx?.authorId) && tx?.authorId === currentUserId),
     };
@@ -134,6 +138,7 @@ export function getGroupPermissions(group: Group, currentUserId: string) {
   return {
     isCreator,
     canAdd: true,
+    canAddMember: true,
     canEditTx: (_tx?: { authorId?: string }) => true,
     canDeleteTx: (tx?: { authorId?: string }) => isCreator || (Boolean(tx?.authorId) && tx?.authorId === currentUserId),
   };
@@ -258,7 +263,76 @@ export async function listGroups(): Promise<GroupListItem[]> {
   return out;
 }
 
+export async function deduplicateGroupTransactions(groupId: number, dbInstance?: DB): Promise<number> {
+  const db = dbInstance ?? (await getDb());
+  const group = await db.getFirstAsync<{ uid: string }>('SELECT uid FROM groups WHERE id = ?', [groupId]);
+  if (!group) return 0;
+
+  const txs = await db.getAllAsync<TxRow>(
+    'SELECT * FROM transactions WHERE group_id = ? AND is_deleted = 0 ORDER BY id ASC',
+    [groupId]
+  );
+  if (txs.length <= 1) return 0;
+
+  // Group transactions by signature: type + title + amount + date + paid_by + (created_ts or created_at minute)
+  const clusters = new Map<string, TxRow[]>();
+  for (const t of txs) {
+    const tsKey = t.created_ts ? String(t.created_ts) : (t.created_at ? t.created_at.slice(0, 16) : '');
+    const key = `${t.type}|${t.title.trim().toLowerCase()}|${t.amount}|${t.date}|${t.paid_by}|${tsKey}`;
+    const list = clusters.get(key) || [];
+    list.push(t);
+    clusters.set(key, list);
+  }
+
+  let removedCount = 0;
+  for (const list of clusters.values()) {
+    if (list.length <= 1) continue;
+
+    // Pick the best transaction:
+    // 1. One with author_name (original attributed transaction)
+    // 2. Highest server_version or lowest id
+    list.sort((a, b) => {
+      const aAuthor = Boolean(a.author_name);
+      const bAuthor = Boolean(b.author_name);
+      if (aAuthor !== bAuthor) return aAuthor ? -1 : 1;
+      return (b.server_version ?? 0) - (a.server_version ?? 0) || a.id - b.id;
+    });
+
+    const keep = list[0]!;
+    const duplicates = list.slice(1);
+
+    for (const dup of duplicates) {
+      if (dup.uid && dup.server_version && dup.server_version > 0) {
+        await db.runAsync('UPDATE transactions SET is_deleted = 1, deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [dup.id]);
+        await enqueueOutboxMutation(
+          {
+            clientMutationId: `mut_${newUid()}`,
+            groupUid: group.uid,
+            entityType: 'transaction',
+            entityUid: dup.uid,
+            operation: 'delete',
+            expectedVersion: dup.server_version,
+            payload: { txUid: dup.uid, authorId: dup.author_id },
+          },
+          db
+        );
+      } else {
+        await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [dup.id]);
+        await db.runAsync('DELETE FROM transactions WHERE id = ?', [dup.id]);
+      }
+      removedCount++;
+    }
+  }
+
+  if (removedCount > 0) {
+    signalLocalChange(group.uid);
+  }
+
+  return removedCount;
+}
+
 export async function getGroupSummary(id: number): Promise<GroupSummary> {
+  await deduplicateGroupTransactions(id);
   const group = await getGroup(id);
   const members = await getMembers(id);
   const transactions = await getTransactions(id);
@@ -277,6 +351,7 @@ export async function getGroupSummary(id: number): Promise<GroupSummary> {
     members,
     stats,
     settlements: suggestSettlements(stats),
+    directSettlements: calculateDirectDebts(members, transactions),
     totals: {
       totalExpenses: cash.totalExpenses,
       totalPayments: cash.totalPayments,
@@ -291,6 +366,7 @@ export async function getGroupSummary(id: number): Promise<GroupSummary> {
     myIdentityId: identity.id,
     isCreator: perms.isCreator,
     canAdd: perms.canAdd,
+    canAddMember: perms.canAddMember,
     transactions,
   };
 }
@@ -325,7 +401,7 @@ export async function createGroup(input: {
     );
     gid = r.lastInsertRowId;
     const myMemberUid = `mem_${newUid()}`;
-    await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, 1, 1, 0, ?)', [gid, myMemberUid, myName, ts]);
+    await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, user_id, server_version, is_deleted, created_at) VALUES (?, ?, ?, 1, ?, 1, 0, ?)', [gid, myMemberUid, myName, creatorId, ts]);
 
     // Enqueue group create mutation into local outbox
     await enqueueOutboxMutation(
@@ -358,14 +434,14 @@ export async function createGroup(input: {
         entityUid: myMemberUid,
         operation: 'create',
         expectedVersion: 0,
-        payload: { uid: myMemberUid, name: myName, isMe: true },
+        payload: { uid: myMemberUid, name: myName, userId: creatorId, isMe: true },
       },
       db
     );
 
     for (const n of others) {
       const otherUid = `mem_${newUid()}`;
-      await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, 0, 1, 0, ?)', [gid, otherUid, n, ts]);
+      await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, user_id, server_version, is_deleted, created_at) VALUES (?, ?, ?, 0, NULL, 1, 0, ?)', [gid, otherUid, n, ts]);
       await enqueueOutboxMutation(
         {
           clientMutationId: `mut_${newUid()}`,
@@ -374,7 +450,7 @@ export async function createGroup(input: {
           entityUid: otherUid,
           operation: 'create',
           expectedVersion: 0,
-          payload: { uid: otherUid, name: n, isMe: false },
+          payload: { uid: otherUid, name: n, userId: null, isMe: false },
         },
         db
       );
@@ -630,8 +706,14 @@ export async function leaveGroup(id: number) {
 }
 
 // ---------- members ----------
-export async function addMember(groupId: number, rawName: string) {
+export async function addMember(groupId: number, rawName: string, userId?: string | null) {
   const group = await getGroup(groupId);
+  const identity = await getIdentity();
+  const perms = getGroupPermissions(group, identity.id);
+  if (!perms.canAddMember) {
+    throw new AppError('Only the group admin can add members in this group.');
+  }
+
   const name = clean(rawName, LIMITS.name);
   if (!name) throw new AppError('Member name is required');
   const db = await getDb();
@@ -640,7 +722,13 @@ export async function addMember(groupId: number, rawName: string) {
   let memberId = 0;
 
   await db.withTransactionAsync(async () => {
-    const r = await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, 0, 1, 0, ?)', [groupId, memberUid, name, ts]);
+    const r = await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, user_id, server_version, is_deleted, created_at) VALUES (?, ?, ?, 0, ?, 1, 0, ?)', [
+      groupId,
+      memberUid,
+      name,
+      userId ?? null,
+      ts,
+    ]);
     memberId = r.lastInsertRowId;
     await touch(groupId);
 
@@ -652,7 +740,7 @@ export async function addMember(groupId: number, rawName: string) {
         entityUid: memberUid,
         operation: 'create',
         expectedVersion: 0,
-        payload: { uid: memberUid, name },
+        payload: { uid: memberUid, name, userId: userId ?? null, isMe: false },
       },
       db
     );
@@ -713,9 +801,10 @@ export async function setMe(groupId: number, memberId: number) {
   const current = await db.getFirstAsync<{ id: number }>('SELECT id FROM members WHERE group_id = ? AND is_me = 1 AND is_deleted = 0', [groupId]);
   if (current?.id === memberId) return;
   if (current) throw new AppError('You have already chosen who you are in this group. This can’t be changed.');
+  const identity = await getIdentity();
   await db.withTransactionAsync(async () => {
     await db.runAsync('UPDATE members SET is_me = 0 WHERE group_id = ?', [groupId]);
-    await db.runAsync('UPDATE members SET is_me = 1 WHERE id = ?', [memberId]);
+    await db.runAsync('UPDATE members SET is_me = 1, user_id = ? WHERE id = ?', [identity.id, memberId]);
   });
 }
 

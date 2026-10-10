@@ -28,22 +28,24 @@ export interface SyncTxPayload {
 // ---------- Local change signal ----------
 
 type LocalChangeHandler = (groupUid: string) => void;
-let localChangeHandler: LocalChangeHandler | null = null;
+const localChangeHandlers = new Set<LocalChangeHandler>();
 
-/** Registers the single handler (the app's sync engine) for local outbox writes. */
+/** Registers a handler (sync engine, UI subscriptions) for local outbox writes. */
 export function onLocalChange(handler: LocalChangeHandler): () => void {
-  localChangeHandler = handler;
+  localChangeHandlers.add(handler);
   return () => {
-    if (localChangeHandler === handler) localChangeHandler = null;
+    localChangeHandlers.delete(handler);
   };
 }
 
 /** Called by the repository after a committed write that enqueued outbox mutations. */
 export function signalLocalChange(groupUid: string) {
-  try {
-    localChangeHandler?.(groupUid);
-  } catch {
-    // The mutation is durable in the outbox; the next sync trigger pushes it.
+  for (const handler of localChangeHandlers) {
+    try {
+      handler(groupUid);
+    } catch {
+      // The mutation is durable in the outbox; the next sync trigger pushes it.
+    }
   }
 }
 

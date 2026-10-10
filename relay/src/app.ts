@@ -112,7 +112,10 @@ export function createApp(deps: AppDeps) {
 
   app.get('/join', (req, res) => {
     const params = new URLSearchParams(req.query as Record<string, string>);
-    res.type('html').send(renderJoinPage(params));
+    const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
+    const host = (req.headers['x-forwarded-host'] as string) || req.headers.host;
+    const serverBaseUrl = host ? `${proto}://${host}` : undefined;
+    res.type('html').send(renderJoinPage(params, serverBaseUrl));
   });
 
   // --- Sync ------------------------------------------------------------------

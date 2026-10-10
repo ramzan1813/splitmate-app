@@ -8,36 +8,19 @@ import { GroupBootstrapResponse } from '@/data/types';
 import { useApp } from '@/lib/app';
 import { colors } from '@/lib/theme';
 import { errorMessage, notify } from '@/lib/dialog';
-
-/** Pulls the group uid out of the route params or a scanned/pasted invite (URL, query string or JSON). */
-function inviteGroupUid(params: { uid?: string; invite?: string }): string | null {
-  if (params.invite) {
-    const raw = decodeURIComponent(params.invite).trim();
-    if (raw.startsWith('{')) {
-      try {
-        const parsed = JSON.parse(raw);
-        if (typeof parsed.uid === 'string' && parsed.uid) return parsed.uid;
-      } catch {
-        // fall through to the uid param
-      }
-    } else {
-      const queryIdx = raw.indexOf('?');
-      const uid = new URLSearchParams(queryIdx !== -1 ? raw.slice(queryIdx + 1) : raw).get('uid');
-      if (uid) return uid;
-    }
-  }
-  return params.uid || null;
-}
+import { updateServerUrl } from '@/lib/identity';
+import { parseInviteData } from '@/lib/invite';
 
 export default function JoinScreen() {
   const router = useRouter();
   // Depend on the strings, not the params object: it is a new object on every render.
-  const { uid: uidParam, invite: inviteParam } = useLocalSearchParams<{ uid?: string; invite?: string }>();
+  const { uid: uidParam, invite: inviteParam, server: serverParam } = useLocalSearchParams<{ uid?: string; invite?: string; server?: string }>();
   const { profileName } = useApp();
   const [loading, setLoading] = useState(true);
   const [joining, setJoining] = useState(false);
   const [snapshot, setSnapshot] = useState<GroupBootstrapResponse | null>(null);
   const [selectedMember, setSelectedMember] = useState('');
+  const [targetServerUrl, setTargetServerUrl] = useState<string | null>(null);
   const [error, setError] = useState('');
   const handled = useRef(false);
   const myDefaultName = profileName || 'Me';
@@ -46,19 +29,24 @@ export default function JoinScreen() {
     setLoading(true);
     setError('');
     try {
-      const uid = inviteGroupUid({ uid: uidParam, invite: inviteParam });
+      const inviteData = parseInviteData({ uid: uidParam, invite: inviteParam, server: serverParam });
+      const { uid, serverUrl } = inviteData;
+      setTargetServerUrl(serverUrl);
       if (!uid) {
         setError('Invalid or incomplete invite link. Please scan a valid SplitMate QR code or paste an invite link.');
         return;
       }
       const existing = (await listGroups()).find((g) => g.uid === uid);
       if (existing) {
+        if (serverUrl) {
+          await updateServerUrl(serverUrl);
+        }
         handled.current = true;
         syncEngine.syncGroup(uid).catch(() => {});
         router.replace(`/group/${existing.id}`);
         return;
       }
-      const snap = await syncEngine.fetchGroupSnapshot(uid);
+      const snap = await syncEngine.fetchGroupSnapshot(uid, serverUrl || undefined);
       const match = snap.members.find((m) => m.name.toLowerCase() === myDefaultName.toLowerCase());
       setSelectedMember(match?.name || myDefaultName);
       setSnapshot(snap);
@@ -71,7 +59,7 @@ export default function JoinScreen() {
     } finally {
       setLoading(false);
     }
-  }, [uidParam, inviteParam, router, myDefaultName]);
+  }, [uidParam, inviteParam, serverParam, router, myDefaultName]);
 
   useEffect(() => {
     if (!handled.current) load();
@@ -82,6 +70,9 @@ export default function JoinScreen() {
     try {
       handled.current = true;
       setJoining(true);
+      if (targetServerUrl) {
+        await updateServerUrl(targetServerUrl);
+      }
       const groupId = await syncEngine.joinGroup(snapshot, selectedMember.trim() || myDefaultName);
       router.replace(`/group/${groupId}`);
     } catch (e) {

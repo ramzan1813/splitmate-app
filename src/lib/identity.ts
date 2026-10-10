@@ -32,8 +32,8 @@ export function normalizeServerUrl(url: string): string {
     .replace(/\/+$/, '');
 }
 
-// EXPO_PUBLIC_SERVER_URL is inlined at build time (e.g. the local Docker server); production builds leave it unset.
-export const DEFAULT_SERVER_URL = normalizeServerUrl(process.env.EXPO_PUBLIC_SERVER_URL || 'https://splitmate-relay.rn45819.workers.dev');
+export const CLOUDFLARE_WORKER_URL = 'https://splitmate-relay.rn45819.workers.dev';
+export const DEFAULT_SERVER_URL = CLOUDFLARE_WORKER_URL;
 
 // Setting key kept from the relay era so a custom URL saved by an older build still applies.
 const SERVER_URL_SETTING = 'sync.relay_url';

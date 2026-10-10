@@ -52,8 +52,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     })();
   }, []);
 
-  // Push each committed local write right away; if it fails it stays queued for the next trigger.
-  useEffect(() => onLocalChange((groupUid) => void syncEngine.syncGroup(groupUid).catch(() => {})), []);
+  // Push each committed local write right away and notify local listeners immediately; if push fails it stays queued for the next trigger.
+  useEffect(
+    () =>
+      onLocalChange((groupUid) => {
+        syncEngine.notifyLocalChange(groupUid);
+        void syncEngine.syncGroup(groupUid).catch(() => {});
+      }),
+    []
+  );
 
   useEffect(() => {
     // Returning to the app is a sync trigger: other members may have changed things meanwhile.

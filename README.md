@@ -48,7 +48,20 @@ phone B ──GET /sync/changes/:group?after=<cursor>──▶ sync server
 - **Hidden rows:** rows marked `is_display = false` in the database are never returned by the server; phones keep
   what they already downloaded.
 
-The full contract (endpoints, conflict codes, notifications) is in [relay/README.md](relay/README.md).
+## Sync Servers & Backends
+
+SplitMate offers two backend deployment options:
+
+1. **Python FastAPI Backend (`backend/`)**:
+   - High-performance asynchronous backend with dual support for **PostgreSQL** and **SQLite**.
+   - Includes standalone [Dockerfile](backend/Dockerfile), [docker-compose.yml](backend/docker-compose.yml), and `.env` support.
+   - Comprehensive documentation and quickstart in [backend/README.md](backend/README.md).
+   - Database ERD and schema specification in [DATABASE_README.md](DATABASE_README.md).
+
+2. **Cloudflare Worker Relay (`relay/`)**:
+   - Edge server on Cloudflare Workers, backed by Postgres.
+   - Endpoints, conflict handling, and webhook contracts in [relay/README.md](relay/README.md).
+
 Engineering rules for sync changes are in [AGENTS.md](AGENTS.md).
 
 ## Run it locally
@@ -67,36 +80,28 @@ npm start                    # Expo dev server (press "w" for web)
 After `npm install` adds or removes packages, restart the dev server with `npx expo start -c`; a running
 Metro can keep a stale module map and fail with "Unable to resolve module".
 
-To run the app against a local sync server instead of production, start the server (`cd relay && npm run dev`)
-and set **Settings → Server** to `http://localhost:8787` (web) or `http://<your PC's IP>:8787` (phone dev build).
+To run the app against a local sync server instead of production, start the Python backend (`cd backend && uvicorn app.main:app --port 8080`) or Worker relay (`cd relay && npm run dev`), and set **Settings → Server** in the app to `http://localhost:8080` (or `8787` for relay).
 Release APKs only allow `https://` servers (`usesCleartextTraffic` is off).
 
-### Docker (server + web app)
+### Docker
 
+**Python Backend + PostgreSQL Stack:**
+```bash
+cd backend
+docker compose up --build -d                              # backend on :8080, postgres on :5432
+docker compose down
+```
+
+**Worker Relay + Web App Stack:**
 ```bash
 docker compose up --build -d                              # server on :8787, web app on :8081
 docker compose --profile migrate run --rm --build migrate # apply database migrations
 docker compose down
 ```
 
-The server reads `relay/.dev.vars` (`DATABASE_URL`, `ADMIN_API_KEY`); see [relay/README.md](relay/README.md).
-`relay/.dev.vars` points at the shared **development** database: run migrations and tests against it, never against
-production.
+## Database Architecture & ERD
 
-Without `EXPO_PUBLIC_SERVER_URL`, the web app syncs with the **production** server. For local testing start it with
-`EXPO_PUBLIC_SERVER_URL=http://127.0.0.1:8787 npx expo start --web` (sample groups created on first launch are uploaded
-to whichever server the app uses).
-
-## Deploying the server
-
-The Worker is connected to this repo through Cloudflare's Git integration and deploys on push. Database
-migrations are not run by that deploy: after adding a file under `relay/migrations/`, run
-`npm --prefix relay run migrate` with the production `DATABASE_URL`, then check `GET /health/db`.
-Until the migrations run, the new server code fails every sync with HTTP 500 (for example
-`relation "visible_groups" does not exist`), so run them as part of every release that adds one.
-
-The Worker runs next to the database (`[placement] region` in [relay/wrangler.toml](relay/wrangler.toml)); keep
-that region in step with the database's region.
+A dedicated, comprehensive database specification and ERD diagram is documented in [DATABASE_README.md](DATABASE_README.md). It outlines table columns, foreign key constraints, monotonic sequence generation, idempotency ledgers, and cascading `is_display` visibility views.
 
 ## Building the Android APK
 
@@ -104,7 +109,7 @@ that region in step with the database's region.
 
 - push a commit whose message contains `[build]`, `[apk]` or `build:` → APK as a workflow artifact;
 - push a commit containing `[release]` or `release:`, push a `v*` tag, or run the workflow by hand → APK attached
-  to the GitHub Release `v<version>` (created, or its APK replaced if it already exists), with notes taken from the
+  to the GitHub Release `v<version>`, with notes taken from the
   matching `## <version>` section of [CHANGELOG.md](CHANGELOG.md).
 
 The version comes from `app.json` (`version`, `android.versionCode`). Signing secrets are described in
@@ -118,6 +123,12 @@ The version comes from `app.json` (`version`, `android.versionCode`). Signing se
 splitmate-app/
 ├── app.json, eas.json            # Expo app config and EAS build profiles
 ├── plugins/withReleaseSigning.js # injects the release keystore into the generated Android project
+├── DATABASE_README.md            # Database schema, ERD diagram, and constraint specifications
+├── backend/                      # Python FastAPI sync backend (Postgres/SQLite, Docker, Compose)
+│   ├── app/                      # FastAPI routers, schemas, services, and db drivers
+│   ├── migrations/               # PostgreSQL and SQLite migrations
+│   ├── Dockerfile, docker-compose.yml # Containerization and stack definitions
+│   └── README.md                 # Backend setup and API guide
 ├── src/
 │   ├── app/                      # screens (Expo Router)
 │   ├── components/               # UI kit, charts, calendar, QR code and scanner
@@ -133,8 +144,8 @@ splitmate-app/
 │   │   ├── logic.ts, insights.ts # split math, balances, group balance, settle-up, analytics
 │   │   └── backup.ts, samples.ts # backup import/export, sample groups
 │   └── lib/                      # identity and server URL, PIN, formatting, swipe-tab rules, reports, Excel writer
-├── relay/                        # sync server (Cloudflare Worker) — see relay/README.md
+├── relay/                        # Cloudflare Worker sync server — see relay/README.md
 ├── tests/                        # node:test suites
-├── docker-compose.yml, Dockerfile.web, docker/  # local server + web stack
+├── docker-compose.yml, Dockerfile.web, docker/  # local Worker server + web stack
 └── vendor/decode-uri-component/  # linear-time replacement (fixes a DoS advisory), forced via package.json "overrides"
 ```

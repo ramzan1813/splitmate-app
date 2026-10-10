@@ -44,9 +44,11 @@ async def check_permission(
             if operation == "create" or (await is_author()):
                 return True, None
             return False, "In CONTRIBUTOR mode, you can only modify or delete your own transactions"
-        if operation == "create":
-            return True, None
-        return False, "Only the group creator can modify or remove members in CONTRIBUTOR mode"
+        if entity_type == "member":
+            if operation == "create":
+                return False, "Only the group creator can add members in CONTRIBUTOR mode"
+            return False, "Only the group creator can modify or remove members in CONTRIBUTOR mode"
+        return False, "Only the group creator can modify this entity in CONTRIBUTOR mode"
 
     # 3. COLLABORATIVE: Any member can create/edit transactions; only author/creator can delete
     if entity_type == "transaction":

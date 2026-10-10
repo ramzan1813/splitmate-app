@@ -45,13 +45,67 @@ test('identity: generates and persists on-device user account identity', async (
 
 test('qr: produces valid ISO-compliant QR matrix from universal join URL', async () => {
   const QRCodeLib = (await import('qrcode')).default;
-  const testUrl = 'https://splitmate-relay.rn45819.workers.dev/join?uid=grp_test_qr&name=Ski%20Trip&cur=USD';
+  const testUrl = 'https://splitmate-relay.rn45819.workers.dev/join?uid=grp_test_qr&name=Ski%20Trip&cur=USD&server=https%3A%2F%2Fsplitmate-relay.rn45819.workers.dev';
   const qr = QRCodeLib.create(testUrl, { errorCorrectionLevel: 'M' });
 
   assert.ok(qr.modules.size > 20);
   assert.ok(qr.modules.data.length > 0);
   // Top-left finder corner (0,0) must be black/1
   assert.equal(qr.modules.get(0, 0), 1);
+});
+
+test('invite: parseInviteData handles web tunnel URLs, deep links, JSON, and server query params', async () => {
+  const { parseInviteData, buildInviteLink } = await import('../src/lib/invite');
+
+  // 1. Web tunnel URL with explicit server query param
+  const tunnelWithServer = parseInviteData({
+    invite: encodeURIComponent('https://smart-tunnel.loca.lt/join?uid=grp_tunnel_1&name=Ski%20Trip&cur=EUR&server=https%3A%2F%2Fsmart-tunnel.loca.lt'),
+  });
+  assert.equal(tunnelWithServer.uid, 'grp_tunnel_1');
+  assert.equal(tunnelWithServer.serverUrl, 'https://smart-tunnel.loca.lt');
+  assert.equal(tunnelWithServer.name, 'Ski Trip');
+  assert.equal(tunnelWithServer.currency, 'EUR');
+
+  // 2. Web tunnel URL without server query param (infers host origin)
+  const tunnelWithoutServer = parseInviteData({
+    invite: 'http://192.168.1.15:8000/join?uid=grp_local_2&name=Flat%20Bills&cur=USD',
+  });
+  assert.equal(tunnelWithoutServer.uid, 'grp_local_2');
+  assert.equal(tunnelWithoutServer.serverUrl, 'http://192.168.1.15:8000');
+  assert.equal(tunnelWithoutServer.name, 'Flat Bills');
+  assert.equal(tunnelWithoutServer.currency, 'USD');
+
+  // 3. Custom scheme deep link
+  const deepLink = parseInviteData({
+    invite: 'splitmate://join?uid=grp_deep_3&name=Party&cur=GBP&server=https%3A%2F%2Fcustom-server.dev',
+  });
+  assert.equal(deepLink.uid, 'grp_deep_3');
+  assert.equal(deepLink.serverUrl, 'https://custom-server.dev');
+  assert.equal(deepLink.name, 'Party');
+  assert.equal(deepLink.currency, 'GBP');
+
+  // 4. Scanned JSON payload
+  const jsonPayload = parseInviteData({
+    invite: JSON.stringify({ uid: 'grp_json_4', name: 'Roadtrip', cur: 'CAD', server: 'http://10.0.0.5:8000' }),
+  });
+  assert.equal(jsonPayload.uid, 'grp_json_4');
+  assert.equal(jsonPayload.serverUrl, 'http://10.0.0.5:8000');
+  assert.equal(jsonPayload.name, 'Roadtrip');
+  assert.equal(jsonPayload.currency, 'CAD');
+
+  // 5. Route params fallback with server param
+  const routeParams = parseInviteData({
+    uid: 'grp_route_5',
+    server: 'https://dev-tunnel.ngrok.io',
+  });
+  assert.equal(routeParams.uid, 'grp_route_5');
+  assert.equal(routeParams.serverUrl, 'https://dev-tunnel.ngrok.io');
+
+  // 6. Plain UID string
+  const plainUid = parseInviteData({
+    invite: 'grp_plain_6',
+  });
+  assert.equal(plainUid.uid, 'grp_plain_6');
 });
 
 test('notifications: unread counter, retrieval, and mark all read', async () => {

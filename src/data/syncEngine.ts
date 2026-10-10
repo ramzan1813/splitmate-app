@@ -118,6 +118,7 @@ export class HttpSyncTransport implements SyncTransport {
       });
     } catch (err) {
       const reason = err instanceof Error && err.name === 'AbortError' ? 'request timed out' : err instanceof Error ? err.message : String(err);
+      console.warn(`[SyncTransport] Network error reaching ${base}${path}:`, reason);
       throw new SyncNetworkError(`Cannot reach server ${base}: ${reason}`);
     } finally {
       if (timer) clearTimeout(timer);
@@ -256,7 +257,7 @@ export class SyncEngine {
     return this.onlineStatus;
   }
 
-  /** Called when a group's local data changed because of pulled server changes. */
+  /** Called when a group's local data changed because of pulled server changes or local mutations. */
   public subscribe(listener: GroupListener): () => void {
     this.listeners.add(listener);
     return () => {
@@ -270,6 +271,11 @@ export class SyncEngine {
     return () => {
       this.statusListeners.delete(listener);
     };
+  }
+
+  /** Notify listeners that local data for a group has changed (e.g. from local committed mutation). */
+  public notifyLocalChange(groupUid: string) {
+    this.emit(this.listeners, groupUid);
   }
 
   private emit(set: Set<GroupListener>, groupUid: string) {
@@ -384,7 +390,7 @@ export class SyncEngine {
 
       const counts = await getOutboxCount(groupUid, db);
       await setSyncStatus(groupUid, counts.conflict + counts.failed > 0 ? 'conflict' : 'idle', null, db);
-      if (pulled > 0) this.emit(this.listeners, groupUid);
+      if (pulled > 0 || push.accepted > 0) this.emit(this.listeners, groupUid);
       return { pushed: push.accepted, pulled, conflicts: push.conflicts };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -572,10 +578,41 @@ export class SyncEngine {
     }
 
     const serverTxs = new Map(snapshot.transactions.map((t) => [t.uid, t]));
+    const claimedRemoteUids = new Set<string>();
     const txs = await db.getAllAsync<{ id: number; uid: string }>('SELECT id, uid FROM transactions WHERE group_id = ? AND is_deleted = 0 ORDER BY id', [groupId]);
     for (const t of txs) {
       const payload = await buildTxSyncPayload(db, t.id);
-      const remote = serverTxs.get(payload.txUid);
+      let remote = serverTxs.get(payload.txUid);
+
+      // If no match by exact UID, check if this is an imported or unlinked transaction
+      // that already exists on the server (matched by title, amount, date, payer, and creation timestamp)
+      if (!remote) {
+        for (const cand of snapshot.transactions) {
+          if (claimedRemoteUids.has(cand.uid)) continue;
+          const sameType = (cand.type || 'expense') === (payload.type || 'expense');
+          const sameTitle = normName(cand.title) === normName(payload.title);
+          const sameAmount = cand.amount === payload.amount;
+          const sameDate = cand.date === payload.date;
+          const candPayerName = normName(serverNameByUid.get(cand.paidByMemberUid ?? '') || '');
+          const samePayer = candPayerName === normName(payload.paidByName);
+          const candTs = cand.createdTs;
+          const localTs = payload.createdTs;
+          const sameTs = candTs && localTs ? Math.abs(candTs - localTs) < 2000 : true;
+
+          if (sameType && sameTitle && sameAmount && sameDate && samePayer && sameTs) {
+            remote = cand;
+            claimedRemoteUids.add(cand.uid);
+            await db.runAsync(
+              'UPDATE transactions SET uid = ?, server_version = ?, author_id = COALESCE(author_id, ?), author_name = COALESCE(author_name, ?) WHERE id = ?',
+              [cand.uid, cand.serverVersion, cand.authorId || null, cand.authorName || null, t.id]
+            );
+            break;
+          }
+        }
+      } else {
+        claimedRemoteUids.add(remote.uid);
+      }
+
       if (!remote) {
         if (!queuedCreates.has(payload.txUid)) {
           await enqueueOutboxMutation(
@@ -805,18 +842,20 @@ export class SyncEngine {
           [groupRow.id, p.name]
         ));
       if (existing) {
-        await db.runAsync('UPDATE members SET uid = ?, name = ?, server_version = ?, is_deleted = 0, deleted_at = NULL WHERE id = ?', [
+        await db.runAsync('UPDATE members SET uid = ?, name = ?, user_id = COALESCE(?, user_id), server_version = ?, is_deleted = 0, deleted_at = NULL WHERE id = ?', [
           change.entityUid,
           name,
+          p.userId ?? null,
           change.entityVersion,
           existing.id,
         ]);
         if (change.operation === 'update' && existing.name !== name) await note('', 'Member renamed', `${existing.name} is now ${name}.`);
       } else {
-        await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, 0, ?, 0, ?)', [
+        await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, user_id, server_version, is_deleted, created_at) VALUES (?, ?, ?, 0, ?, ?, 0, ?)', [
           groupRow.id,
           change.entityUid,
           name,
+          p.userId ?? null,
           change.entityVersion,
           at,
         ]);
@@ -826,10 +865,24 @@ export class SyncEngine {
     }
 
     // Transactions
-    const existingTx = await db.getFirstAsync<{ id: number; title: string }>('SELECT id, title FROM transactions WHERE uid = ? AND group_id = ?', [
+    let existingTx = await db.getFirstAsync<{ id: number; title: string }>('SELECT id, title FROM transactions WHERE uid = ? AND group_id = ?', [
       change.entityUid,
       groupRow.id,
     ]);
+    if (!existingTx && !isDelete) {
+      existingTx = await db.getFirstAsync<{ id: number; title: string }>(
+        `SELECT id, title FROM transactions
+         WHERE group_id = ? AND is_deleted = 0
+           AND (uid IS NULL OR uid = '' OR uid LIKE 'tx_%')
+           AND type = ? AND LOWER(TRIM(title)) = LOWER(TRIM(?))
+           AND amount = ? AND date = ?
+         ORDER BY id ASC LIMIT 1`,
+        [groupRow.id, p.type || 'expense', p.title, p.amount, p.date || nowIso.slice(0, 10)]
+      );
+      if (existingTx) {
+        await db.runAsync('UPDATE transactions SET uid = ? WHERE id = ?', [change.entityUid, existingTx.id]);
+      }
+    }
     if (isDelete) {
       if (existingTx) {
         await db.runAsync('UPDATE transactions SET is_deleted = 1, deleted_at = ?, server_version = ? WHERE id = ?', [at, change.entityVersion, existingTx.id]);
@@ -934,7 +987,11 @@ export class SyncEngine {
   // ---------- Joining and conflict resolution ----------
 
   /** Fetches the server's current copy of a group (for the join preview). */
-  public fetchGroupSnapshot(groupUid: string): Promise<GroupBootstrapResponse> {
+  public fetchGroupSnapshot(groupUid: string, customServerUrl?: string): Promise<GroupBootstrapResponse> {
+    if (customServerUrl) {
+      const tempTransport = new HttpSyncTransport(async () => customServerUrl);
+      return tempTransport.bootstrap(groupUid);
+    }
     return this.transport.bootstrap(groupUid);
   }
 
@@ -968,14 +1025,16 @@ export class SyncEngine {
       groupId = r.lastInsertRowId;
     }
 
+    const identity = await getIdentity();
     const memberIds = new Map<string, number>();
     for (const m of snap.members) {
       const isMe = me ? m.uid === me.uid || normName(m.name) === normName(me.name) : false;
-      const r = await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, server_version, is_deleted, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)', [
+      const r = await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, user_id, server_version, is_deleted, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)', [
         groupId,
         m.uid,
         m.name,
         isMe ? 1 : 0,
+        m.userId ?? (isMe ? identity.id : null),
         m.serverVersion,
         nowIso,
       ]);

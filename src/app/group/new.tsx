@@ -15,7 +15,7 @@ export default function NewGroup() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [currency, setCurrency] = useState('USD');
-  const [permissionModel, setPermissionModel] = useState<PermissionModel>('collaborative');
+  const [permissionModel, setPermissionModel] = useState<PermissionModel>('contributor');
   const [myName, setMyName] = useState(profileName || '');
   const [members, setMembers] = useState<string[]>(['']);
   const [saving, setSaving] = useState(false);
@@ -53,25 +53,6 @@ export default function NewGroup() {
       <SectionTitle>Group Access & Permissions</SectionTitle>
       <View style={{ gap: 8, marginBottom: 16 }}>
         <Pressable
-          onPress={() => setPermissionModel('collaborative')}
-          style={{
-            padding: 12,
-            borderRadius: 12,
-            borderWidth: 1.5,
-            borderColor: permissionModel === 'collaborative' ? colors.primary : colors.border,
-            backgroundColor: permissionModel === 'collaborative' ? colors.primaryLight : colors.card,
-          }}
-        >
-          <Row style={{ justifyContent: 'space-between', marginBottom: 2 }}>
-            <Text style={{ fontWeight: '700', fontSize: 15, color: colors.text }}>🤝 Collaborative (Default)</Text>
-            {permissionModel === 'collaborative' && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓</Text>}
-          </Row>
-          <Text style={{ color: colors.muted, fontSize: 13 }}>
-            Anyone can add & edit expenses. Deletes are only allowed by the creator of that expense (or group admin).
-          </Text>
-        </Pressable>
-
-        <Pressable
           onPress={() => setPermissionModel('contributor')}
           style={{
             padding: 12,
@@ -82,11 +63,30 @@ export default function NewGroup() {
           }}
         >
           <Row style={{ justifyContent: 'space-between', marginBottom: 2 }}>
-            <Text style={{ fontWeight: '700', fontSize: 15, color: colors.text }}>✍️ Contributor Mode</Text>
+            <Text style={{ fontWeight: '700', fontSize: 15, color: colors.text }}>✍️ Contributor Mode (Default)</Text>
             {permissionModel === 'contributor' && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓</Text>}
           </Row>
           <Text style={{ color: colors.muted, fontSize: 13 }}>
-            Members can add expenses and edit/delete their own transactions. Only the admin can edit or delete everyone’s transactions.
+            Members can add expenses and edit/delete their own transactions. Only the admin can add members or edit/delete everyone’s transactions.
+          </Text>
+        </Pressable>
+
+        <Pressable
+          onPress={() => setPermissionModel('collaborative')}
+          style={{
+            padding: 12,
+            borderRadius: 12,
+            borderWidth: 1.5,
+            borderColor: permissionModel === 'collaborative' ? colors.primary : colors.border,
+            backgroundColor: permissionModel === 'collaborative' ? colors.primaryLight : colors.card,
+          }}
+        >
+          <Row style={{ justifyContent: 'space-between', marginBottom: 2 }}>
+            <Text style={{ fontWeight: '700', fontSize: 15, color: colors.text }}>🤝 Collaborative</Text>
+            {permissionModel === 'collaborative' && <Text style={{ color: colors.primary, fontWeight: '800' }}>✓</Text>}
+          </Row>
+          <Text style={{ color: colors.muted, fontSize: 13 }}>
+            Anyone can add members and expenses. Deletes are only allowed by the creator of that expense (or group admin).
           </Text>
         </Pressable>
 

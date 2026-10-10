@@ -41,11 +41,15 @@ test('sync foundation: device ID is stable, persistent, and idempotent', async (
 test('sync foundation: schema migrations establish all required sync tables and columns', async () => {
   const db = await getDb();
   const v = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version', []);
-  assert.equal(v?.user_version, 8, 'Schema version must be 8');
+  assert.equal(v?.user_version, 9, 'Schema version must be 9');
 
   // Transactions carry their synced creation time
   const txCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(transactions)', []);
   assert.ok(txCols.some((c) => c.name === 'created_ts'));
+
+  // Members carry their linked user_id
+  const memCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(members)', []);
+  assert.ok(memCols.some((c) => c.name === 'user_id'));
 
   // Groups can be hidden while a leave/delete finishes syncing
   const groupCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(groups)', []);

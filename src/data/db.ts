@@ -11,7 +11,7 @@ export interface DB {
   withTransactionAsync(task: () => Promise<void>): Promise<void>;
 }
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -164,6 +164,10 @@ const MIGRATIONS: Record<number, string> = {
   // on the server). It is hidden at once and erased locally after its queued changes are sent.
   8: `
     ALTER TABLE groups ADD COLUMN removal TEXT;
+  `,
+  // Connected user identity on members table (real user vs dummy user)
+  9: `
+    ALTER TABLE members ADD COLUMN user_id TEXT;
   `,
 };
 

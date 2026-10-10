@@ -441,10 +441,11 @@ class SyncService:
             if same_name:
                 raise ConcurrencyError("DUPLICATE_MEMBER_NAME", f"A member named '{name}' already exists in this group as {same_name['member_uid']}", same_name.get("server_version", 1))
 
+            user_id = p.get("userId") or (actor_id if p.get("isMe") else None)
             await tx.execute(
                 "INSERT INTO group_members (member_uid, group_uid, name, user_id, role, server_version, is_deleted, created_at, updated_at) "
                 "VALUES ($1, $2, $3, $4, 'MEMBER', 1, false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-                [mut.entityUid, group_uid, name, p.get("userId") or actor_id],
+                [mut.entityUid, group_uid, name, user_id],
             )
             seq = await self._append_change(tx, group_uid, actor_id, device_id, "member", mut.entityUid, "create", 1, p)
             return 1, seq
@@ -459,9 +460,10 @@ class SyncService:
         next_ver = curr_ver + 1
         if mut.operation == "update":
             name = (p.get("newName") or p.get("name") or existing["name"]).strip()
+            user_id = p.get("userId") or existing.get("user_id")
             await tx.execute(
-                "UPDATE group_members SET name = $1, server_version = $2, updated_at = CURRENT_TIMESTAMP WHERE member_uid = $3",
-                [name, next_ver, mut.entityUid],
+                "UPDATE group_members SET name = $1, user_id = $2, server_version = $3, updated_at = CURRENT_TIMESTAMP WHERE member_uid = $4",
+                [name, user_id, next_ver, mut.entityUid],
             )
             seq = await self._append_change(tx, group_uid, actor_id, device_id, "member", mut.entityUid, "update", next_ver, p)
             return next_ver, seq

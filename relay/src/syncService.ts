@@ -664,9 +664,10 @@ async function applyMemberMutation(tx: Queryable, ctx: PushContext, mut: PushMut
     if (clash && clash.member_uid !== existing.member_uid) {
       throw conflict('DUPLICATE_MEMBER_NAME', `Member "${clash.name}" already exists in this group`, existing.server_version);
     }
+    const userId = isNonEmptyString(p.userId) ? p.userId : null;
     await tx.query(
-      'UPDATE group_members SET name = $1, server_version = $2, updated_at = now() WHERE member_uid = $3',
-      [newName, nextVersion, mut.entityUid]
+      'UPDATE group_members SET name = $1, user_id = COALESCE($2, user_id), server_version = $3, updated_at = now() WHERE member_uid = $4',
+      [newName, userId, nextVersion, mut.entityUid]
     );
     const serverSequence = await appendChange(tx, ctx, 'member', mut.entityUid, 'update', nextVersion, p);
     return { serverVersion: nextVersion, serverSequence };

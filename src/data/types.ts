@@ -31,6 +31,7 @@ export interface Member {
   name: string;
   isMe: boolean;
   memberUid?: string;
+  userId?: string | null;
   serverVersion?: number;
   isDeleted?: boolean;
   deletedAt?: string;
@@ -90,6 +91,7 @@ export interface GroupSummary {
   members: Member[];
   stats: MemberStat[];
   settlements: Settlement[];
+  directSettlements: Settlement[];
   /** groupBalance = totalPayments - totalExpenses (cents); negative when spending exceeds money paid in. */
   totals: { totalExpenses: number; totalPayments: number; groupBalance: number; expenseCount: number; paymentCount: number };
   categories: { name: string; amount: number }[];
@@ -97,6 +99,7 @@ export interface GroupSummary {
   myIdentityId: string;
   isCreator: boolean;
   canAdd: boolean;
+  canAddMember: boolean;
   transactions: Transaction[];
 }
 
@@ -215,7 +218,7 @@ export interface GroupBootstrapResponse {
     createdAt: string;
     updatedAt: string;
   };
-  members: { uid: string; name: string; serverVersion: number }[];
+  members: { uid: string; name: string; userId?: string | null; serverVersion: number }[];
   transactions: {
     uid: string;
     type: TxType;

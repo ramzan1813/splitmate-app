@@ -1,7 +1,7 @@
 import { ReactNode, useCallback, useMemo, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { Card, Chip, Empty, Loading, Row, SectionTitle } from '@/components/ui';
+import { Avatar, Card, Chip, Empty, Loading, Row, SectionTitle } from '@/components/ui';
 import { ColumnChart, HBarList, Legend, PairedBars, StackedBar, StatTile } from '@/components/Charts';
 import { getMembers, getTransactions, listGroups } from '@/data/repo';
 import { computeInsights, InsightGroup, Period, PERIODS } from '@/data/insights';
@@ -20,8 +20,11 @@ export default function InsightsScreen() {
   const [error, setError] = useState('');
   const [period, setPeriod] = useState<Period>('month');
   const [groupId, setGroupId] = useState<number | 'all'>(params.groupId ? Number(params.groupId) : 'all');
+  const [personId, setPersonId] = useState<number | 'all'>('all');
+  const [categoryFilter, setCategoryFilter] = useState<string | 'all'>('all');
   const [currency, setCurrency] = useState<string | null>(null);
   const [selCat, setSelCat] = useState<string | null>(null);
+  const [filterTab, setFilterTab] = useState<'groups' | 'categories' | 'members'>('groups');
 
   useFocusEffect(
     useCallback(() => {
@@ -59,9 +62,46 @@ export default function InsightsScreen() {
     return groups.filter((g) => g.currency === cur);
   }, [groups, groupId, currency, currencies]);
 
+  // Available categories across selected groups
+  const availableCategories = useMemo(() => {
+    const groupIds = new Set(selectedGroups.map((g) => g.id));
+    const cats = new Set<string>();
+    for (const t of txs) {
+      if (groupIds.has(t.groupId) && t.type === 'expense' && t.category) {
+        cats.add(t.category);
+      }
+    }
+    return Array.from(cats).sort();
+  }, [selectedGroups, txs]);
+
+  // Available members across selected groups
+  const availableMembers = useMemo(() => {
+    const map = new Map<number, { id: number; name: string; isMe: boolean }>();
+    for (const g of selectedGroups) {
+      for (const m of g.members) {
+        if (!map.has(m.id)) {
+          map.set(m.id, { id: m.id, name: m.name, isMe: m.isMe });
+        }
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => (a.isMe ? -1 : b.isMe ? 1 : a.name.localeCompare(b.name)));
+  }, [selectedGroups]);
+
+  // Filter transactions based on active person and category filters
+  const filteredTxs = useMemo(() => {
+    let list = txs;
+    if (categoryFilter !== 'all') {
+      list = list.filter((t) => t.category === categoryFilter);
+    }
+    if (personId !== 'all') {
+      list = list.filter((t) => t.paidBy === personId || t.splits.some((s) => s.memberId === personId));
+    }
+    return list;
+  }, [txs, categoryFilter, personId]);
+
   const cur = selectedGroups[0]?.currency ?? 'USD';
   const fmt = useCallback((c: number) => money(c, cur), [cur]);
-  const data = useMemo(() => (groups ? computeInsights(selectedGroups, txs, period, fmt) : null), [groups, selectedGroups, txs, period, fmt]);
+  const data = useMemo(() => (groups ? computeInsights(selectedGroups, filteredTxs, period, fmt) : null), [groups, selectedGroups, filteredTxs, period, fmt]);
 
   // category colours follow the category (by overall rank), never re-assigned when filtering
   const catColor = useMemo(() => {
@@ -85,60 +125,253 @@ export default function InsightsScreen() {
   const change = data.changePct;
   const changeText = change === null ? (period === 'all' ? 'all time' : 'no data before') : `${change > 0 ? '▲' : change < 0 ? '▼' : '■'} ${Math.abs(change)}% vs previous`;
 
+  const hasActiveFilters = groupId !== 'all' || personId !== 'all' || categoryFilter !== 'all';
+  const selectedMemberObj = availableMembers.find((m) => m.id === personId);
+  const selectedGroupObj = groups.find((g) => g.id === groupId);
+
+  // AI-Era smart financial health badge derivation
+  const financialHealth = (() => {
+    if (data.total === 0) return { label: 'No Activity', color: '#6B7280', bg: '#F3F4F6' };
+    if (data.myPaid > data.myShare * 1.5) return { label: '🛡️ Primary Funder', color: '#0F766E', bg: '#CCFBF1' };
+    if (data.myPaid < data.myShare * 0.7) return { label: '📥 Net Funded', color: '#B45309', bg: '#FEF3C7' };
+    if (data.changePct !== null && data.changePct > 50) return { label: '⚡ High Spending Spike', color: '#B91C1C', bg: '#FEE2E2' };
+    return { label: '⚖️ Well Balanced', color: '#15803D', bg: '#DCFCE7' };
+  })();
+
   return (
-    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40, maxWidth: 760, width: '100%', alignSelf: 'center' }}>
-      {/* Filters */}
-      <Card style={{ paddingBottom: 6 }}>
-        <FilterLabel>Period</FilterLabel>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+    <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 50, maxWidth: 760, width: '100%', alignSelf: 'center' }}>
+      {/* Modern Filter Deck */}
+      <Card style={{ padding: 16, marginBottom: 14 }}>
+        {/* Period Selector */}
+        <Row style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <FilterLabel>Time Horizon</FilterLabel>
+          {hasActiveFilters && (
+            <Pressable
+              onPress={() => {
+                setGroupId('all');
+                setPersonId('all');
+                setCategoryFilter('all');
+              }}
+              hitSlop={8}
+            >
+              <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primary }}>Reset Filters ✕</Text>
+            </Pressable>
+          )}
+        </Row>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, marginBottom: 12 }}>
           {PERIODS.map((p) => (
             <Chip key={p.value} label={p.label} active={period === p.value} onPress={() => setPeriod(p.value)} testID={`period-${p.value}`} />
           ))}
         </ScrollView>
-        <FilterLabel>Group</FilterLabel>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <Chip label="All groups" active={groupId === 'all'} onPress={() => setGroupId('all')} testID="ins-group-all" />
-          {groups.map((g) => (
-            <Chip key={g.id} label={g.name} active={groupId === g.id} onPress={() => setGroupId(g.id)} testID={`ins-group-${g.id}`} />
-          ))}
-        </ScrollView>
+
+        {/* Filter Dimension Navigation */}
+        <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 12 }}>
+          <Row style={{ gap: 8, marginBottom: 10 }}>
+            <FilterTabButton
+              label={`Groups (${groupId === 'all' ? 'All' : selectedGroupObj?.name || '1'})`}
+              active={filterTab === 'groups'}
+              onPress={() => setFilterTab('groups')}
+            />
+            <FilterTabButton
+              label={`Categories (${categoryFilter === 'all' ? 'All' : categoryFilter})`}
+              active={filterTab === 'categories'}
+              onPress={() => setFilterTab('categories')}
+            />
+            <FilterTabButton
+              label={`People (${personId === 'all' ? 'All' : selectedMemberObj?.name || '1'})`}
+              active={filterTab === 'members'}
+              onPress={() => setFilterTab('members')}
+            />
+          </Row>
+
+          {/* Sub-Filters Content */}
+          {filterTab === 'groups' && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+              <Chip label="🌐 All groups" active={groupId === 'all'} onPress={() => setGroupId('all')} testID="ins-group-all" />
+              {groups.map((g) => (
+                <Chip key={g.id} label={g.name} active={groupId === g.id} onPress={() => setGroupId(g.id)} testID={`ins-group-${g.id}`} />
+              ))}
+            </ScrollView>
+          )}
+
+          {filterTab === 'categories' && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+              <Chip label="📦 All Categories" active={categoryFilter === 'all'} onPress={() => setCategoryFilter('all')} />
+              {availableCategories.map((c) => (
+                <Chip key={c} label={`${categoryIcon(c)} ${c}`} active={categoryFilter === c} onPress={() => setCategoryFilter(c)} />
+              ))}
+            </ScrollView>
+          )}
+
+          {filterTab === 'members' && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+              <Chip label="👥 Everyone" active={personId === 'all'} onPress={() => setPersonId('all')} />
+              {availableMembers.map((m) => (
+                <Chip key={m.id} label={m.isMe ? `👤 You (${m.name})` : m.name} active={personId === m.id} onPress={() => setPersonId(m.id)} />
+              ))}
+            </ScrollView>
+          )}
+        </View>
+
+        {/* Multi-currency notice if applicable */}
         {groupId === 'all' && currencies.length > 1 && (
-          <>
-            <FilterLabel>Currency (groups in different currencies are shown separately)</FilterLabel>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <View style={{ marginTop: 12, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 }}>
+            <FilterLabel>Currency Scope</FilterLabel>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
               {currencies.map((c) => (
                 <Chip key={c} label={c} active={(currency ?? currencies[0]) === c} onPress={() => setCurrency(c)} />
               ))}
             </ScrollView>
-          </>
+          </View>
         )}
       </Card>
 
-      {/* Headline */}
-      <View style={{ backgroundColor: colors.primary, borderRadius: 18, padding: 18, marginBottom: 14 }} testID="ins-hero">
-        <Text style={{ color: colors.primaryLight, fontSize: 13, fontWeight: '600' }}>
-          Spent · {PERIODS.find((p) => p.value === period)?.label}
-          {groupId === 'all' ? ` · ${selectedGroups.length} group${selectedGroups.length === 1 ? '' : 's'}` : ''}
-        </Text>
-        <Text style={{ color: colors.white, fontSize: 32, fontWeight: '900', marginTop: 2 }} testID="ins-total">
+      {/* Active Filter Pill Badge */}
+      {hasActiveFilters && (
+        <View
+          style={{
+            backgroundColor: 'rgba(15, 118, 110, 0.08)',
+            borderColor: colors.primary,
+            borderWidth: 1,
+            borderRadius: 12,
+            paddingHorizontal: 12,
+            paddingVertical: 8,
+            marginBottom: 14,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <Text style={{ fontSize: 13, color: colors.primaryDark, fontWeight: '700' }}>
+            🎯 Scoped View: {groupId !== 'all' ? selectedGroupObj?.name : 'All Groups'}
+            {categoryFilter !== 'all' ? ` · ${categoryIcon(categoryFilter)} ${categoryFilter}` : ''}
+            {personId !== 'all' ? ` · 👤 ${selectedMemberObj?.name}` : ''}
+          </Text>
+          <Pressable
+            onPress={() => {
+              setGroupId('all');
+              setPersonId('all');
+              setCategoryFilter('all');
+            }}
+          >
+            <Text style={{ fontSize: 12, fontWeight: '800', color: colors.primary }}>Clear ✕</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {/* Headline Hero Card */}
+      <View style={{ backgroundColor: colors.primary, borderRadius: 20, padding: 20, marginBottom: 14 }} testID="ins-hero">
+        <Row style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text style={{ color: colors.primaryLight, fontSize: 13, fontWeight: '600' }}>
+            Spent · {PERIODS.find((p) => p.value === period)?.label}
+            {groupId === 'all' ? ` · ${selectedGroups.length} group${selectedGroups.length === 1 ? '' : 's'}` : ''}
+          </Text>
+          <View style={{ backgroundColor: financialHealth.bg, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 }}>
+            <Text style={{ color: financialHealth.color, fontSize: 11, fontWeight: '800' }}>{financialHealth.label}</Text>
+          </View>
+        </Row>
+        <Text style={{ color: colors.white, fontSize: 34, fontWeight: '900', marginTop: 4 }} testID="ins-total">
           {fmt(data.total)}
         </Text>
-        <Row style={{ flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+        <Row style={{ flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
           {change !== null && <HeroBadge text={changeText} />}
           <HeroBadge text={`${data.count} expense${data.count === 1 ? '' : 's'}`} />
+          {data.perDay > 0 && <HeroBadge text={`~${fmt(data.perDay)}/day`} />}
         </Row>
-        <Text style={{ color: colors.primaryLight, fontSize: 12, marginTop: 10 }}>
+        <Text style={{ color: colors.primaryLight, fontSize: 12, marginTop: 12 }}>
           📅 {prettyDate(data.from)} – {prettyDate(data.to)}
         </Text>
       </View>
 
+      {/* AI-Era Intelligence Copilot Card */}
+      <Card
+        style={{
+          backgroundColor: '#0F172A',
+          borderRadius: 18,
+          padding: 16,
+          marginBottom: 16,
+          borderWidth: 1,
+          borderColor: '#1E293B',
+        }}
+      >
+        <Row style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <Row style={{ alignItems: 'center', gap: 6 }}>
+            <Text style={{ fontSize: 16 }}>✨</Text>
+            <Text style={{ color: '#F8FAFC', fontWeight: '800', fontSize: 15, letterSpacing: 0.3 }}>
+              AI Financial Intelligence
+            </Text>
+          </Row>
+          <View style={{ backgroundColor: '#1E293B', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8 }}>
+            <Text style={{ color: '#94A3B8', fontSize: 11, fontWeight: '700' }}>SMART COPILOT</Text>
+          </View>
+        </Row>
+
+        {data.count === 0 ? (
+          <Text style={{ color: '#94A3B8', fontSize: 13, lineHeight: 18 }}>
+            No expenses recorded for this timeframe. Log new transactions or widen your filters to trigger AI pattern detection.
+          </Text>
+        ) : (
+          <View style={{ gap: 8 }}>
+            {/* Velocity & Burn Rate */}
+            <AIBullet
+              icon="⚡"
+              title="Daily Run Rate"
+              body={`Averaging ${fmt(data.perDay)}/day across this horizon. Average transaction size is ${fmt(data.average)}.`}
+            />
+
+            {/* Top Category Driver */}
+            {data.byCategory[0] && (
+              <AIBullet
+                icon={categoryIcon(data.byCategory[0].name)}
+                title="Primary Budget Driver"
+                body={`${data.byCategory[0].name} drives ${data.byCategory[0].pct}% of total spending (${fmt(data.byCategory[0].amount)}).`}
+              />
+            )}
+
+            {/* Fairness & Upfront Buffer */}
+            {data.hasMe && (
+              <AIBullet
+                icon="⚖️"
+                title="Your Financial Position"
+                body={
+                  data.myPaid > data.myShare
+                    ? `You are extending a net buffer of ${fmt(data.myPaid - data.myShare)} to other members. High liquidity provider.`
+                    : data.myPaid < data.myShare
+                      ? `Other members covered ${fmt(data.myShare - data.myPaid)} of your consumption. Settle-up recommended.`
+                      : 'Your contributions match your exact share. Perfectly balanced.'
+                }
+              />
+            )}
+
+            {/* Outlier Detection */}
+            {data.topExpenses[0] && data.count >= 2 && data.topExpenses[0].amount / (data.total || 1) >= 0.25 && (
+              <AIBullet
+                icon="🔍"
+                title="High Impact Outlier"
+                body={`"${data.topExpenses[0].title}" represents ${Math.round((data.topExpenses[0].amount / data.total) * 100)}% of all spending in this scope.`}
+              />
+            )}
+
+            {/* Settlement Optimization Notice */}
+            {data.settled.count > 0 && (
+              <AIBullet
+                icon="🤝"
+                title="Debt Liquidation"
+                body={`${data.settled.count} debt settlements completed, clearing ${fmt(data.settled.amount)} without circular payments.`}
+              />
+            )}
+          </View>
+        )}
+      </Card>
+
       {data.count === 0 ? (
-        <Empty title="No expenses in this period" subtitle="Try a longer period, like “All time”." />
+        <Empty title="No expenses in this scope" subtitle="Try expanding your period or resetting category and person filters." />
       ) : (
         <>
+          {/* Your Money Breakdown */}
           {data.hasMe && (
             <>
-              <SectionTitle>Your money</SectionTitle>
+              <SectionTitle>Your Money & Position</SectionTitle>
               <Card testID="ins-myshare">
                 <Row>
                   <MoneyCol label="You paid" value={fmt(data.myPaid)} />
@@ -155,11 +388,13 @@ export default function InsightsScreen() {
                     : data.myPaid < data.myShare
                       ? `Others paid ${fmt(data.myShare - data.myPaid)} of your share, so you owe that part.`
                       : 'You paid exactly your own share.'}
-                  {data.settled.count ? ` ${data.settled.count} settle-up payment${data.settled.count === 1 ? '' : 's'} (${fmt(data.settled.amount)}) in this period.` : ''}
+                  {data.settled.count ? ` ${data.settled.count} settle-up payment${data.settled.count === 1 ? '' : 's'} (${fmt(data.settled.amount)}) recorded in this period.` : ''}
                 </Text>
                 {data.total > 0 && (
                   <View style={{ marginTop: 10 }}>
-                    <Text style={{ fontSize: 12, color: colors.muted, marginBottom: 4 }}>Your share of all spending: {Math.round((data.myShare / data.total) * 100)}%</Text>
+                    <Text style={{ fontSize: 12, color: colors.muted, marginBottom: 4 }}>
+                      Your share of total group spending: {Math.round((data.myShare / data.total) * 100)}%
+                    </Text>
                     <View style={{ height: 8, backgroundColor: barTrack, borderRadius: 4 }}>
                       <View style={{ width: `${(data.myShare / data.total) * 100}%`, minWidth: data.myShare ? 4 : 0, height: 8, backgroundColor: barColor, borderRadius: 4 }} />
                     </View>
@@ -169,10 +404,11 @@ export default function InsightsScreen() {
             </>
           )}
 
-          <SectionTitle>At a glance</SectionTitle>
+          {/* At a Glance Metric Tiles */}
+          <SectionTitle>At a Glance</SectionTitle>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
             <StatTile label="Average expense" value={fmt(data.average)} sub={`${data.count} expense${data.count === 1 ? '' : 's'}`} />
-            <StatTile label="Per day" value={fmt(data.perDay)} sub={`over ${Math.round((Date.parse(data.to) - Date.parse(data.from)) / 86400000) + 1} days`} />
+            <StatTile label="Daily burn rate" value={fmt(data.perDay)} sub={`across active range`} />
             <StatTile label="Biggest expense" value={data.topExpenses[0] ? fmt(data.topExpenses[0].amount) : '-'} sub={data.topExpenses[0]?.title} />
             <StatTile
               label="Top category"
@@ -181,21 +417,8 @@ export default function InsightsScreen() {
             />
           </View>
 
-          {data.messages.length > 0 && (
-            <>
-              <SectionTitle>What stands out</SectionTitle>
-              <Card testID="ins-messages">
-                {data.messages.map((m, i) => (
-                  <Row key={i} style={{ alignItems: 'flex-start', paddingVertical: 7, borderTopWidth: i ? 1 : 0, borderTopColor: colors.border }}>
-                    <Text style={{ marginRight: 10, fontSize: 15 }}>💡</Text>
-                    <Text style={{ flex: 1, color: colors.text, lineHeight: 20 }}>{m}</Text>
-                  </Row>
-                ))}
-              </Card>
-            </>
-          )}
-
-          <SectionTitle>Where the money goes</SectionTitle>
+          {/* Categories Breakdown */}
+          <SectionTitle>Where the Money Goes</SectionTitle>
           <Card testID="ins-categories">
             {data.byCategory.map((c, i) => {
               const diff = period === 'all' || !c.prevAmount ? null : Math.round(((c.amount - c.prevAmount) / c.prevAmount) * 100);
@@ -225,29 +448,37 @@ export default function InsightsScreen() {
             {period !== 'all' && <Text style={{ color: colors.muted, fontSize: 11, marginTop: 6 }}>▲▼ compared with the previous period</Text>}
           </Card>
 
+          {/* Group Breakdown (Unique key applied) */}
           {groupId === 'all' && data.byGroup.length > 1 && (
             <>
-              <SectionTitle>By group</SectionTitle>
+              <SectionTitle>By Group</SectionTitle>
               <Card>
                 <HBarList
-                  rows={data.byGroup.map((g) => ({ label: g.name, value: g.amount, sub: `${data.total ? Math.round((g.amount / data.total) * 100) : 0}%` }))}
+                  rows={data.byGroup.map((g, idx) => ({
+                    key: `grp-${g.id}-${idx}`,
+                    label: g.name,
+                    value: g.amount,
+                    sub: `${data.total ? Math.round((g.amount / data.total) * 100) : 0}%`,
+                  }))}
                   format={fmt}
                 />
               </Card>
             </>
           )}
 
-          <SectionTitle>Spending by month</SectionTitle>
+          {/* Monthly Trends */}
+          <SectionTitle>Monthly Trajectory</SectionTitle>
           <Card>
             <ColumnChart data={data.byMonth.map((m) => ({ label: m.label, value: m.amount }))} format={fmt} />
           </Card>
 
+          {/* People & Consumption */}
           {people.length > 0 && (
             <>
-              <SectionTitle>Who’s spending</SectionTitle>
+              <SectionTitle>Who’s Spending</SectionTitle>
               <Card>
                 <Text style={{ color: colors.muted, fontSize: 12, marginBottom: 8 }}>
-                  “Paid” is money they put down at the till. “Share” is what they actually used — their part of each expense.
+                  “Paid” is money put down at checkout. “Share” is what they actually consumed.
                 </Text>
                 <PairedBars
                   rows={people.map((p) => ({ label: p.name, a: p.paid, b: p.share }))}
@@ -259,7 +490,7 @@ export default function InsightsScreen() {
                 />
               </Card>
 
-              <SectionTitle>What each person spends on</SectionTitle>
+              <SectionTitle>What Each Person Spends On</SectionTitle>
               <Card>
                 <Legend items={legendCats} />
                 {selCat && <Text style={{ color: colors.text, fontWeight: '700', marginTop: 6 }}>Showing: {selCat} (tap again to clear)</Text>}
@@ -287,12 +518,14 @@ export default function InsightsScreen() {
             </>
           )}
 
-          <SectionTitle>By day of week</SectionTitle>
+          {/* Day of Week */}
+          <SectionTitle>By Day of Week</SectionTitle>
           <Card>
             <ColumnChart data={data.byWeekday.map((d) => ({ label: d.label, value: d.amount }))} format={fmt} height={100} highlightLast={false} />
           </Card>
 
-          <SectionTitle>Biggest expenses</SectionTitle>
+          {/* Biggest Individual Expenses */}
+          <SectionTitle>Biggest Expenses</SectionTitle>
           <Card>
             {data.topExpenses.map((t, i) => (
               <Pressable key={t.id} onPress={() => router.push(`/group/${t.groupId}/transaction/${t.id}`)}>
@@ -319,7 +552,23 @@ export default function InsightsScreen() {
 }
 
 function FilterLabel({ children }: { children: ReactNode }) {
-  return <Text style={{ fontSize: 11, fontWeight: '800', color: colors.muted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, marginTop: 4 }}>{children}</Text>;
+  return <Text style={{ fontSize: 11, fontWeight: '800', color: colors.muted, textTransform: 'uppercase', letterSpacing: 0.5 }}>{children}</Text>;
+}
+
+function FilterTabButton({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={{
+        paddingVertical: 5,
+        paddingHorizontal: 10,
+        borderRadius: 8,
+        backgroundColor: active ? colors.primary : colors.bg,
+      }}
+    >
+      <Text style={{ fontSize: 12, fontWeight: '700', color: active ? '#fff' : colors.text }}>{label}</Text>
+    </Pressable>
+  );
 }
 
 function HeroBadge({ text }: { text: string }) {
@@ -337,6 +586,18 @@ function MoneyCol({ label, value, color }: { label: string; value: string; color
       <Text style={{ color: color ?? colors.text, fontSize: 16, fontWeight: '800', marginTop: 2 }} numberOfLines={1} adjustsFontSizeToFit>
         {value}
       </Text>
+    </View>
+  );
+}
+
+function AIBullet({ icon, title, body }: { icon: string; title: string; body: string }) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, backgroundColor: '#1E293B', padding: 10, borderRadius: 10 }}>
+      <Text style={{ fontSize: 16 }}>{icon}</Text>
+      <View style={{ flex: 1 }}>
+        <Text style={{ color: '#E2E8F0', fontWeight: '800', fontSize: 13 }}>{title}</Text>
+        <Text style={{ color: '#94A3B8', fontSize: 12, marginTop: 2, lineHeight: 16 }}>{body}</Text>
+      </View>
     </View>
   );
 }

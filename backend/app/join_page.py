@@ -3,12 +3,15 @@ import json
 from urllib.parse import parse_qs, urlencode
 
 
-def render_join_page(query_string: str) -> str:
+def render_join_page(query_string: str, server_base_url: str = "") -> str:
     params = parse_qs(query_string, keep_blank_values=True)
     flat_params = {k: v[0] for k, v in params.items() if v}
 
+    if "server" not in flat_params and server_base_url:
+        flat_params["server"] = server_base_url
+
     raw_name = flat_params.get("name", "SplitMate Group")
-    raw_cur = flat_params.get("cur", "USD")
+    raw_cur = flat_params.get("cur", "PKR")
 
     group_name = html.escape(raw_name)
     currency = html.escape(raw_cur)

@@ -24,8 +24,9 @@ export interface ExportedGroup {
   description: string;
   currency: string;
   createdAt: string;
-  members: { ref: number; name: string; isMe: boolean }[];
+  members: { ref: number; uid?: string; name: string; isMe: boolean }[];
   transactions: {
+    uid?: string;
     type: 'expense' | 'payment';
     title: string;
     amount: number;
@@ -34,6 +35,8 @@ export interface ExportedGroup {
     category: string;
     note: string;
     date: string;
+    authorId?: string;
+    authorName?: string;
     createdAt: string;
     /** Creation time in epoch ms; absent in files exported before it existed. */
     createdTs?: number | null;
@@ -61,8 +64,9 @@ async function exportOne(groupId: number): Promise<ExportedGroup> {
     description: g.description,
     currency: g.currency,
     createdAt: g.createdAt,
-    members: members.map((m) => ({ ref: m.id, name: m.name, isMe: m.isMe })),
+    members: members.map((m) => ({ ref: m.id, uid: m.uid, name: m.name, isMe: m.isMe })),
     transactions: [...txs].reverse().map((t) => ({
+      uid: t.uid,
       type: t.type,
       title: t.title,
       amount: fromCents(t.amount),
@@ -71,6 +75,8 @@ async function exportOne(groupId: number): Promise<ExportedGroup> {
       category: t.category,
       note: t.note,
       date: t.date,
+      authorId: t.authorId,
+      authorName: t.authorName,
       createdAt: t.createdAt,
       createdTs: t.createdTs ?? null,
       splits: t.splits.map((s) => ({ member: s.memberId, value: t.splitType === 'unequal' ? fromCents(s.value) : s.value, share: fromCents(s.share) })),
@@ -144,7 +150,12 @@ export function parseExport(text: string): ExportFile {
       const ref = int(m.ref, 'member ref', 1);
       if (refs.has(ref)) throw new AppError(`Duplicate member in "${name}"`);
       refs.add(ref);
-      return { ref, name: str(m.name, LIMITS.name, 'member name', true), isMe: m.isMe === true };
+      return {
+        ref,
+        uid: typeof m.uid === 'string' && m.uid.trim() ? m.uid.trim() : undefined,
+        name: str(m.name, LIMITS.name, 'member name', true),
+        isMe: m.isMe === true,
+      };
     });
     if (members.filter((m) => m.isMe).length > 1) members.forEach((m) => (m.isMe = false));
     const txIn = Array.isArray(g.transactions) ? g.transactions : [];
@@ -182,6 +193,7 @@ export function parseExport(text: string): ExportFile {
       if (sum !== amount) throw new AppError(`Split shares don't add up to the amount in ${where}`);
       if (type === 'payment' && (splits.length !== 1 || splits[0]!.member === paidBy)) throw new AppError(`Invalid payment in ${where}`);
       return {
+        uid: typeof t.uid === 'string' && t.uid.trim() ? t.uid.trim() : undefined,
         type,
         title: str(t.title, LIMITS.title, `title in ${where}`) || (type === 'payment' ? 'Payment' : 'Expense'),
         amount,
@@ -190,6 +202,8 @@ export function parseExport(text: string): ExportFile {
         category: str(t.category, LIMITS.category, 'category') || (type === 'payment' ? 'Payment' : 'General'),
         note: str(t.note, LIMITS.note, 'note'),
         date,
+        authorId: typeof t.authorId === 'string' && t.authorId.trim() ? t.authorId.trim() : undefined,
+        authorName: typeof t.authorName === 'string' && t.authorName.trim() ? t.authorName.trim() : undefined,
         createdAt: str(t.createdAt, 40, 'createdAt') || new Date().toISOString(),
         createdTs: Number.isSafeInteger(t.createdTs) && Number(t.createdTs) > 0 ? Number(t.createdTs) : null,
         splits,
@@ -272,14 +286,16 @@ export async function importFile(file: ExportFile, opts: ImportOptions): Promise
       const meRef = opts.meRef && g.uid in opts.meRef ? opts.meRef[g.uid] : (g.members.find((m) => m.isMe)?.ref ?? null);
       const idMap = new Map<number, number>();
       for (const m of g.members) {
-        const mr = await db.runAsync('INSERT INTO members (group_id, name, is_me, created_at) VALUES (?, ?, ?, ?)', [gid, m.name, m.ref === meRef ? 1 : 0, ts]);
+        const mUid = m.uid || `mem_${newUid()}`;
+        const mr = await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, created_at) VALUES (?, ?, ?, ?, ?)', [gid, mUid, m.name, m.ref === meRef ? 1 : 0, ts]);
         idMap.set(m.ref, mr.lastInsertRowId);
       }
       for (const t of g.transactions) {
+        const tUid = t.uid || `tx_${newUid()}`;
         const tr = await db.runAsync(
-          `INSERT INTO transactions (group_id, type, title, amount, paid_by, split_type, category, note, date, created_ts, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [gid, t.type, t.title, t.amount, idMap.get(t.paidBy)!, t.splitType, t.category, t.note, t.date, t.createdTs ?? null, t.createdAt, ts]
+          `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, created_ts, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [gid, tUid, t.type, t.title, t.amount, idMap.get(t.paidBy)!, t.splitType, t.category, t.note, t.date, t.authorId ?? null, t.authorName ?? null, t.createdTs ?? null, t.createdAt, ts]
         );
         for (const s of t.splits) {
           await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [

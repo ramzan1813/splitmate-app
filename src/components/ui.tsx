@@ -159,17 +159,19 @@ export function Chip({
 }
 
 export function Segmented<T extends string>({
-  options,
+  options = [],
   value,
   onChange,
+  style,
 }: {
   options: { value: T; label: string }[];
   value: T;
   onChange: (v: T) => void;
+  style?: StyleProp<ViewStyle>;
 }) {
   return (
-    <View style={styles.segment}>
-      {options.map((o) => {
+    <View style={[styles.segment, style]}>
+      {(options ?? []).map((o) => {
         const active = value === o.value;
         return (
           <Pressable
@@ -274,8 +276,8 @@ export const styles = StyleSheet.create({
   chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   chipText: { color: colors.text, fontWeight: '600', fontSize: 13 },
   segment: { flexDirection: 'row', backgroundColor: '#E5E7EB', borderRadius: 10, padding: 3, marginBottom: 14 },
-  segmentItem: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8 },
-  segmentItemActive: { backgroundColor: colors.white },
-  segmentText: { fontWeight: '700', color: colors.muted, fontSize: 13 },
+  segmentItem: { flex: 1, paddingVertical: 8, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
+  segmentItemActive: { backgroundColor: colors.white, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: 1 },
+  segmentText: { fontWeight: '700', color: colors.muted, fontSize: 13, textAlign: 'center' },
   sectionTitle: { fontSize: 13, fontWeight: '800', color: colors.muted, textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 8, marginTop: 6 },
 });

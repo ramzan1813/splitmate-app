@@ -56,8 +56,11 @@ export async function checkPermission(
       if (operation === 'create' || (await isAuthor())) return { allowed: true };
       return { allowed: false, reason: 'In CONTRIBUTOR mode, you can only modify or delete your own transactions' };
     }
-    if (operation === 'create') return { allowed: true };
-    return { allowed: false, reason: 'Only the group creator can modify or remove members in CONTRIBUTOR mode' };
+    if (entityType === 'member') {
+      if (operation === 'create') return { allowed: false, reason: 'Only the group creator can add members in CONTRIBUTOR mode' };
+      return { allowed: false, reason: 'Only the group creator can modify or remove members in CONTRIBUTOR mode' };
+    }
+    return { allowed: false, reason: 'Only the group creator can modify this entity in CONTRIBUTOR mode' };
   }
 
   // COLLABORATIVE: anyone edits (with audit fields), only author/creator deletes.

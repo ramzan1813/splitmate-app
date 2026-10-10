@@ -187,3 +187,16 @@ async def test_duplicate_mutation_idempotency(client: AsyncClient):
 
     boot = await client.get(f"/sync/bootstrap/{group_uid}")
     assert boot.json()["serverSequence"] == 1
+
+
+@pytest.mark.asyncio
+async def test_join_page_deep_link(client: AsyncClient):
+    # Test GET /join returns HTML with deep link embedding the server URL
+    res = await client.get("/join?uid=grp_join_test&name=Trip%20Group&cur=USD")
+    assert res.status_code == 200
+    assert "text/html" in res.headers["content-type"]
+    assert "Trip Group" in res.text
+    assert "splitmate://join?" in res.text
+    assert "uid=grp_join_test" in res.text
+    assert "server=" in res.text
+

@@ -7,15 +7,15 @@ import { Pressable, Text, View } from 'react-native';
 import { barColor, barTrack, colors } from '@/lib/theme';
 
 /** Horizontal ranked bars, one measure (e.g. spending per category). */
-export function HBarList({ rows, format, testID }: { rows: { label: string; value: number; sub?: string; color?: string }[]; format: (v: number) => string; testID?: string }) {
+export function HBarList({ rows, format, testID }: { rows: { label: string; value: number; sub?: string; color?: string; key?: string }[]; format: (v: number) => string; testID?: string }) {
   const max = Math.max(1, ...rows.map((r) => r.value));
   return (
     <View testID={testID}>
-      {rows.map((r) => {
+      {rows.map((r, i) => {
         const pct = (r.value / max) * 100;
         const min = r.value > 0 ? 4 : 0;
         return (
-        <View key={r.label} style={{ marginBottom: 12 }} accessible accessibilityLabel={`${r.label}: ${format(r.value)}${r.sub ? `, ${r.sub}` : ''}`}>
+        <View key={r.key ?? `${r.label}-${i}`} style={{ marginBottom: 12 }} accessible accessibilityLabel={`${r.label}: ${format(r.value)}${r.sub ? `, ${r.sub}` : ''}`}>
           <View style={{ flexDirection: 'row', marginBottom: 4 }}>
             {r.color ? <View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: r.color, marginRight: 8, marginTop: 4 }} /> : null}
             <Text style={{ flex: 1, color: colors.text, fontWeight: '600' }} numberOfLines={1}>
@@ -87,8 +87,8 @@ export function PairedBars({ rows, series, format }: { rows: { label: string; a:
   return (
     <View>
       <Legend items={series.map((s) => ({ label: s.name, color: s.color }))} />
-      {rows.map((r) => (
-        <View key={r.label} style={{ marginTop: 10 }} accessible accessibilityLabel={`${r.label}: ${series[0].name} ${format(r.a)}, ${series[1].name} ${format(r.b)}`}>
+      {rows.map((r, i) => (
+        <View key={`${r.label}-${i}`} style={{ marginTop: 10 }} accessible accessibilityLabel={`${r.label}: ${series[0].name} ${format(r.a)}, ${series[1].name} ${format(r.b)}`}>
           <Text style={{ fontWeight: '700', color: colors.text, marginBottom: 4 }}>{r.label}</Text>
           {([['a', 0], ['b', 1]] as const).map(([k, si]) => (
             <View key={k} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 3 }}>
@@ -111,9 +111,9 @@ export function StackedBar({ parts, onSelect, selected }: { parts: { label: stri
   const visible = parts.filter((p) => p.value > 0);
   return (
     <View style={{ flexDirection: 'row', height: 12, borderRadius: 6, overflow: 'hidden', gap: 2 }}>
-      {visible.map(({ label, value: weight, color }) => (
+      {visible.map(({ label, value: weight, color }, idx) => (
         <Pressable
-          key={label}
+          key={`${label}-${idx}`}
           onPress={() => onSelect?.(selected === label ? null : label)}
           style={{ flex: weight, backgroundColor: color, opacity: !selected || selected === label ? 1 : 0.35 }}
           accessibilityLabel={`${label}: ${Math.round((weight / total) * 100)}%`}
@@ -126,10 +126,10 @@ export function StackedBar({ parts, onSelect, selected }: { parts: { label: stri
 export function Legend({ items }: { items: { label: string; color: string }[] }) {
   return (
     <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-      {items.map((i) => (
-        <View key={i.label} style={{ flexDirection: 'row', alignItems: 'center', marginRight: 14, marginBottom: 4 }}>
-          <View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: i.color, marginRight: 6 }} />
-          <Text style={{ fontSize: 12, color: colors.text }}>{i.label}</Text>
+      {items.map((it, idx) => (
+        <View key={`${it.label}-${idx}`} style={{ flexDirection: 'row', alignItems: 'center', marginRight: 14, marginBottom: 4 }}>
+          <View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: it.color, marginRight: 6 }} />
+          <Text style={{ fontSize: 12, color: colors.text }}>{it.label}</Text>
         </View>
       ))}
     </View>

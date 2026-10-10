@@ -269,7 +269,30 @@ test('server authorization: CONTRIBUTOR model full matrix', async () => {
   assert.equal(resCharlieDeleteBob.status, 'REJECTED');
   assert.equal(resCharlieDeleteBob.error, 'FORBIDDEN');
 
-  // 6. Contributor tries to update group settings or delete member -> REJECTED (FORBIDDEN)
+  // 6. Contributor tries to create member -> REJECTED (FORBIDDEN)
+  const resBobAddMem = await pushMutation(groupUid, contributor1, 'Bob', {
+    clientMutationId: 'mut_bob_add_mem',
+    entityType: 'member',
+    entityUid: 'mem_dave',
+    operation: 'create',
+    expectedVersion: 0,
+    payload: { name: 'Dave' },
+  });
+  assert.equal(resBobAddMem.status, 'REJECTED');
+  assert.equal(resBobAddMem.error, 'FORBIDDEN');
+
+  // Admin creates a member -> ACCEPTED
+  const resAdminAddMem = await pushMutation(groupUid, adminId, 'Alice', {
+    clientMutationId: 'mut_admin_add_mem',
+    entityType: 'member',
+    entityUid: 'mem_dave',
+    operation: 'create',
+    expectedVersion: 0,
+    payload: { name: 'Dave' },
+  });
+  assert.equal(resAdminAddMem.status, 'ACCEPTED');
+
+  // 7. Contributor tries to update group settings or delete member -> REJECTED (FORBIDDEN)
   const resBobUpdGroup = await pushMutation(groupUid, contributor1, 'Bob', {
     clientMutationId: 'mut_bob_upd_grp',
     entityType: 'group',
