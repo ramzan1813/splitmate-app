@@ -18,9 +18,7 @@ services:
       DEBUG: ${DEBUG:-false}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
       EXPO_ACCESS_TOKEN: ${EXPO_ACCESS_TOKEN:-}
-    depends_on:
-      splitmate_postgres:
-        condition: service_healthy
+   
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health"]
       interval: 10s
