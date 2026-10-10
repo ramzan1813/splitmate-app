@@ -274,6 +274,27 @@ test('currencies', async () => {
   assert.equal(g.currency, 'KES');
 });
 
+test('import accepts group files from older versions that have no transaction author', async () => {
+  // Shape of a real export from an earlier app version: no authorId/authorName, some createdTs null.
+  const legacy = {
+    format: 'splitmate', version: 2, kind: 'group', exportedAt: '2026-10-09T19:54:52.675Z',
+    groups: [{
+      uid: '1a10608a883-9b4020dc-9da16e50', name: 'Three Man Squad', description: 'Internal khata update', currency: 'PKR', createdAt: '2026-10-04T08:29:53.155Z',
+      members: [{ ref: 71, name: 'Ramzan Khan', isMe: true }, { ref: 73, name: 'Ikram', isMe: false }, { ref: 142, name: 'Arslan', isMe: false }],
+      transactions: [
+        { type: 'expense', title: 'Dinner', amount: 250, paidBy: 71, splitType: 'equal', category: 'Food', note: 'Qurban Hotel', date: '2026-10-03', createdAt: '2026-10-04T08:39:01.119Z', createdTs: null, splits: [{ member: 71, value: 1, share: 125 }, { member: 73, value: 1, share: 125 }] },
+        { type: 'expense', title: 'Fuel', amount: 250, paidBy: 71, splitType: 'equal', category: 'Fuel', note: 'Line one\r\nLine two', date: '2026-10-09', createdAt: '2026-10-09T18:53:37.327Z', createdTs: 1791572017326, splits: [{ member: 142, value: 1, share: 250 }] },
+      ],
+    }],
+  };
+  const [id] = await importFile(parseExport(JSON.stringify(legacy)), { onDuplicate: 'replace' });
+  const summary = await repo.getGroupSummary(id!);
+  assert.equal(summary.members.find((m) => m.isMe)!.name, 'Ramzan Khan');
+  const txs = await repo.getTransactions(id!);
+  assert.deepEqual(txs.map((t) => t.title).sort(), ['Dinner', 'Fuel']);
+  assert.ok(txs.every((t) => t.authorId === '' && t.authorName === ''), 'missing author is stored as unknown, not NULL');
+});
+
 test('import rejects bad or malicious files', () => {
   assert.throws(() => parseExport('not json'), /invalid JSON/);
   assert.throws(() => parseExport('{"format":"other"}'), /not a SplitMate/);

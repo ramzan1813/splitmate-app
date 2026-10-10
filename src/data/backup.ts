@@ -295,7 +295,7 @@ export async function importFile(file: ExportFile, opts: ImportOptions): Promise
         const tr = await db.runAsync(
           `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, created_ts, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [gid, tUid, t.type, t.title, t.amount, idMap.get(t.paidBy)!, t.splitType, t.category, t.note, t.date, t.authorId ?? null, t.authorName ?? null, t.createdTs ?? null, t.createdAt, ts]
+          [gid, tUid, t.type, t.title, t.amount, idMap.get(t.paidBy)!, t.splitType, t.category, t.note, t.date, t.authorId ?? '', t.authorName ?? '', t.createdTs ?? null, t.createdAt, ts]
         );
         for (const s of t.splits) {
           await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [
