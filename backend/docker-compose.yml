@@ -1,21 +1,4 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: splitmate-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-splitmate}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-splitmate_password}
-      POSTGRES_DB: ${POSTGRES_DB:-splitmate}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-splitmate} -d ${POSTGRES_DB:-splitmate}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
 
   backend:
     build:
@@ -29,14 +12,14 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://splitmate:splitmate_password@postgres:5432/splitmate}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:YourStrongPostgresPasswordHere@splitmate_postgres:5432/EvenUp}
       PORT: ${PORT:-8080}
       HOST: 0.0.0.0
       DEBUG: ${DEBUG:-false}
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
       EXPO_ACCESS_TOKEN: ${EXPO_ACCESS_TOKEN:-}
     depends_on:
-      postgres:
+      splitmate_postgres:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health"]
@@ -44,6 +27,14 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true 
+
 
 volumes:
   postgres_data:
+
