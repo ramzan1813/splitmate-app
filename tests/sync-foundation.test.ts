@@ -41,7 +41,9 @@ test('sync foundation: device ID is stable, persistent, and idempotent', async (
 test('sync foundation: schema migrations establish all required sync tables and columns', async () => {
   const db = await getDb();
   const v = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version', []);
-  assert.equal(v?.user_version, 9, 'Schema version must be 9');
+  assert.equal(v?.user_version, 10, 'Schema version must be 10');
+  const uidIndex = await db.getFirstAsync("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'ux_transactions_group_uid'", []);
+  assert.ok(uidIndex, 'a transaction uid is unique per group');
 
   // Transactions carry their synced creation time
   const txCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(transactions)', []);

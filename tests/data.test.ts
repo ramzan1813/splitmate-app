@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { createNodeDb } from './node-db';
 import { getDb, migrate, setDb } from '../src/data/db';
 import * as repo from '../src/data/repo';
-import { computeShares, distribute, getSettlementCauses, groupCashTotals, memberStats, suggestSettlements, calculateDirectDebts } from '../src/data/logic';
+import { canSettle, computeShares, distribute, getSettlementCauses, groupCashTotals, memberStats, suggestSettlements, calculateDirectDebts } from '../src/data/logic';
 import { onLocalChange } from '../src/data/sync';
-import { exportAll, exportGroup, findExisting, importFile, parseExport } from '../src/data/backup';
+import { exportAll, exportGroup, findNameClashes, importFile, parseExport } from '../src/data/backup';
+import { getIdentity } from '../src/lib/identity';
 import { computeInsights, periodRange } from '../src/data/insights';
 import { buildXlsx } from '../src/lib/xlsx';
 import { unzipSync, strFromU8 } from 'fflate';
@@ -178,36 +179,60 @@ test('members: an older group with no "me" lets you choose once', async () => {
   await assert.rejects(repo.setMe(g.id, o), /already chosen/);
 });
 
-test('export -> import round trip, duplicates and "me"', async () => {
+test('export -> import: the file has no ids and every import is a new group owned by the importer', async () => {
   const { g, b } = await seed();
+  const original = await repo.getGroupSummary(g.id);
+  const originalRows = await repo.getTransactions(g.id);
   const file = await exportGroup(g.id);
   const text = JSON.stringify(file);
+  assert.ok(!text.includes(original.group.uid), 'the group uid is not in the file');
+  for (const t of originalRows) assert.ok(!text.includes(t.uid), 'no transaction uid in the file');
+  for (const m of original.members) assert.ok(!text.includes(m.memberUid!), 'no member uid in the file');
+
   const parsed = parseExport(text);
   assert.equal(parsed.groups[0]!.transactions.length, 5);
-  assert.deepEqual(await findExisting(parsed), { [file.groups[0]!.uid]: g.id });
+  const key = parsed.groups[0]!.uid;
+  assert.deepEqual(await findNameClashes(parsed), { [key]: true }, 'same name as a group on this phone');
 
-  // import as copy, choosing Bilal as me
-  const [copyId] = await importFile(parsed, { onDuplicate: 'copy', meRef: { [file.groups[0]!.uid]: b } });
-  assert.deepEqual(
-    (await repo.getTransactions(copyId!)).map((t) => [t.title, t.createdTs]),
-    (await repo.getTransactions(g.id)).map((t) => [t.title, t.createdTs]),
-    'export/import keeps each transaction’s creation time'
-  );
+  // Choosing Bilal as me.
+  const [copyId] = await importFile(parsed, { meRef: { [key]: b } });
   const copy = await repo.getGroupSummary(copyId!);
   assert.equal(copy.group.name, 'Trip (copy)');
-  assert.notEqual(copy.group.uid, file.groups[0]!.uid);
+  assert.notEqual(copy.group.uid, original.group.uid, 'a new group uid');
+  const copyRows = await repo.getTransactions(copyId!);
+  assert.ok(copyRows.every((t) => !originalRows.some((o) => o.uid === t.uid)), 'new transaction uids');
+  assert.ok(copy.members.every((m) => !original.members.some((o) => o.memberUid === m.memberUid)), 'new member uids');
+  assert.equal(copy.group.creatorId, (await getIdentity()).id, 'the importer owns the new group');
+  assert.equal(copy.group.permissionModel, original.group.permissionModel);
   assert.equal(copy.members.find((m) => m.isMe)!.name, 'Bilal');
-  assert.deepEqual(copy.stats.map((s) => s.balance), (await repo.getGroupSummary(g.id)).stats.map((s) => s.balance));
+  assert.deepEqual(copyRows.map((t) => [t.title, t.createdTs, t.authorName]), originalRows.map((t) => [t.title, t.createdTs, t.authorName]), 'history kept');
+  assert.deepEqual(copy.stats.map((s) => s.balance), original.stats.map((s) => s.balance));
 
-  // replace keeps one group with that uid
-  await importFile(parsed, { onDuplicate: 'replace' });
-  const all = await repo.listGroups();
-  assert.equal(all.length, 2);
+  // Importing the same file again adds another independent group; the original never changes.
+  await importFile(parseExport(text));
+  assert.equal((await repo.listGroups()).length, 3);
+  assert.deepEqual(await repo.getTransactions(g.id), originalRows, 'original group untouched');
 
-  // full backup restore with erase
-  const backup = await exportAll();
-  await importFile(parseExport(JSON.stringify(backup)), { onDuplicate: 'replace', eraseFirst: true });
-  assert.equal((await repo.listGroups()).length, 2);
+  // A full backup imports as new groups next to the existing ones.
+  await importFile(parseExport(JSON.stringify(await exportAll())));
+  assert.equal((await repo.listGroups()).length, 6);
+  assert.deepEqual(await repo.getTransactions(g.id), originalRows);
+});
+
+test('import ignores ids in files from older versions', async () => {
+  const { g } = await seed();
+  const original = await repo.getGroupSummary(g.id);
+  const rows = await repo.getTransactions(g.id);
+  // Old exports carried the group, member and transaction uids.
+  const old = await exportGroup(g.id);
+  old.groups[0]!.uid = original.group.uid;
+  old.groups[0]!.members.forEach((m, i) => Object.assign(m, { uid: original.members[i]!.memberUid }));
+  old.groups[0]!.transactions.forEach((t, i) => Object.assign(t, { uid: [...rows].reverse()[i]!.uid }));
+  const [id] = await importFile(parseExport(JSON.stringify(old)));
+  const imported = await repo.getGroupSummary(id!);
+  assert.notEqual(imported.group.uid, original.group.uid);
+  assert.ok((await repo.getTransactions(id!)).every((t) => !rows.some((o) => o.uid === t.uid)));
+  assert.deepEqual(await repo.getTransactions(g.id), rows, 'original group untouched');
 });
 
 test('files store normal amounts and import with exact currency precision', async () => {
@@ -287,7 +312,7 @@ test('import accepts group files from older versions that have no transaction au
       ],
     }],
   };
-  const [id] = await importFile(parseExport(JSON.stringify(legacy)), { onDuplicate: 'replace' });
+  const [id] = await importFile(parseExport(JSON.stringify(legacy)));
   const summary = await repo.getGroupSummary(id!);
   assert.equal(summary.members.find((m) => m.isMe)!.name, 'Ramzan Khan');
   const txs = await repo.getTransactions(id!);
@@ -606,11 +631,11 @@ test('settlement breakdown: accurately isolates transactions causing person-to-p
       assert.equal(directTotal, imranToKhan.amount);
     });
 
-test('deduplicateGroupTransactions keeps author-identified records and purges duplicate replicas', async () => {
-  const { g, o, b } = await seed();
+test('opening a group never deletes transactions that only look alike', async () => {
+  const { g } = await seed();
   const db = await getDb();
 
-  // Create an explicit duplicate of a transaction in SQLite without author info (mimicking legacy sync replica)
+  // Rows with the same title, amount, date and payer may be separate real expenses; only their uid identifies them.
   const orig = (await repo.getTransactions(g.id)).find((t) => t.title === 'Hotel')!;
   assert.ok(orig);
 
@@ -628,13 +653,11 @@ test('deduplicateGroupTransactions keeps author-identified records and purges du
   const rawTxs = await db.getAllAsync<{ id: number; title: string }>('SELECT id, title FROM transactions WHERE group_id = ? AND is_deleted = 0', [g.id]);
   assert.equal(rawTxs.length, 7);
 
-  // getGroupSummary triggers deduplicateGroupTransactions
   const summary = await repo.getGroupSummary(g.id);
-  assert.equal(summary.transactions.length, 5);
-
-  const hotel = summary.transactions.find((t) => t.title === 'Hotel')!;
-  assert.ok(hotel);
-  assert.equal(hotel.authorName, 'Owner');
+  assert.equal(summary.transactions.length, 7);
+  assert.equal(summary.transactions.filter((t) => t.title === 'Hotel').length, 3);
+  const outbox = await db.getAllAsync<{ operation: string }>(`SELECT operation FROM outbox_mutations WHERE operation = 'delete'`, []);
+  assert.equal(outbox.length, 0, 'reading a group queues no deletes');
 });
 
 test('calculateDirectDebts matches pairwise bilateral debts', () => {
@@ -843,3 +866,20 @@ test('group summary populates directSettlements and matches pairwise direct debt
 
 
 
+
+test('settle button: admin settles any row, members only their own, nobody where they cannot add', () => {
+  // Three Man Squad: Ramzan 1, Ikram 2, Arslan 3 (rows from the Settle up tab).
+  const arslanPaysIkram = { from: 3, to: 2 };
+  const ramzanPaysArslan = { from: 1, to: 3 };
+  const ikramPaysRamzan = { from: 2, to: 1 };
+  const ramzan = { isCreator: false, canAdd: true, myMemberId: 1 };
+  assert.equal(canSettle(ramzan, arslanPaysIkram), false, 'not his row');
+  assert.equal(canSettle(ramzan, ramzanPaysArslan), true, 'he pays');
+  assert.equal(canSettle(ramzan, ikramPaysRamzan), true, 'he receives');
+
+  const admin = { isCreator: true, canAdd: true, myMemberId: 2 };
+  assert.ok([arslanPaysIkram, ramzanPaysArslan, ikramPaysRamzan].every((s) => canSettle(admin, s)), 'admin settles every row');
+
+  assert.equal(canSettle({ isCreator: false, canAdd: true, myMemberId: null }, ramzanPaysArslan), false, '"me" not chosen yet');
+  assert.equal(canSettle({ isCreator: false, canAdd: false, myMemberId: 1 }, ramzanPaysArslan), false, 'ADMIN_ONLY member cannot record payments');
+});

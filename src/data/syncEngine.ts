@@ -33,6 +33,7 @@ import {
   initSyncState,
   resetAllSyncBindings,
   resetServerSequence,
+  resetSyncBinding,
   setSyncStatus,
   setUploadMarker,
   updateServerSequence,
@@ -603,8 +604,8 @@ export class SyncEngine {
             remote = cand;
             claimedRemoteUids.add(cand.uid);
             await db.runAsync(
-              'UPDATE transactions SET uid = ?, server_version = ?, author_id = COALESCE(author_id, ?), author_name = COALESCE(author_name, ?) WHERE id = ?',
-              [cand.uid, cand.serverVersion, cand.authorId || null, cand.authorName || null, t.id]
+              `UPDATE transactions SET uid = ?, server_version = ?, author_id = COALESCE(NULLIF(author_id, ''), ?), author_name = COALESCE(NULLIF(author_name, ''), ?) WHERE id = ?`,
+              [cand.uid, cand.serverVersion, cand.authorId || '', cand.authorName || '', t.id]
             );
             break;
           }
@@ -744,11 +745,15 @@ export class SyncEngine {
       try {
         delta = await this.transport.pull(groupUid, after, PULL_PAGE_SIZE);
       } catch (err) {
-        // The server has less history than our cursor (e.g. its database was reset): replay from 0.
+        // The server has less history than this phone (its database was restored, replaced or
+        // reset), so it may also lack rows this phone already sent. Forget the cursor and the
+        // upload marker: the next cycle compares with the server (ensureUploaded), uploads what it
+        // is missing, then replays its change log from 0 onto the linked rows.
         if (!cursorReset && err instanceof SyncHttpError && err.code === 'CURSOR_AHEAD') {
           cursorReset = true;
-          await resetServerSequence(groupUid, 0, db);
-          continue;
+          await resetSyncBinding(groupUid, db);
+          this.rerunRequested.add(groupUid);
+          break;
         }
         throw err;
       }
@@ -760,13 +765,26 @@ export class SyncEngine {
 
       // Replaying history from the start (first sync, server switch) should not flood notifications.
       const notify = after > 0;
+      let unreconciled = false;
       await db.withTransactionAsync(async () => {
+        // The group's binding was reset (e.g. CURSOR_AHEAD recovery or a server switch) while this
+        // cycle waited on the network. Applying the server's changes before ensureUploaded has
+        // linked this phone's rows would add second copies of them. Stop without moving the cursor;
+        // the next cycle reconciles first and then pulls.
+        if (!(await hasUploadMarker(groupUid, db))) {
+          unreconciled = true;
+          return;
+        }
         for (const change of delta.changes) {
           await this.applyServerChange(db, groupUid, change, notify && change.actorId !== myId);
         }
         // Advance the cursor only together with the applied changes.
         await updateServerSequence(groupUid, delta.latestServerSequence, undefined, db);
       });
+      if (unreconciled) {
+        this.rerunRequested.add(groupUid);
+        break;
+      }
       applied += delta.changes.length;
       if (!delta.hasMore) break;
     }
@@ -865,24 +883,12 @@ export class SyncEngine {
     }
 
     // Transactions
-    let existingTx = await db.getFirstAsync<{ id: number; title: string }>('SELECT id, title FROM transactions WHERE uid = ? AND group_id = ?', [
+    // The uid is the transaction's only identity: two expenses with the same title, amount and day
+    // are separate records, so a change is never matched to a look-alike row.
+    const existingTx = await db.getFirstAsync<{ id: number; title: string }>('SELECT id, title FROM transactions WHERE uid = ? AND group_id = ?', [
       change.entityUid,
       groupRow.id,
     ]);
-    if (!existingTx && !isDelete) {
-      existingTx = await db.getFirstAsync<{ id: number; title: string }>(
-        `SELECT id, title FROM transactions
-         WHERE group_id = ? AND is_deleted = 0
-           AND (uid IS NULL OR uid = '' OR uid LIKE 'tx_%')
-           AND type = ? AND LOWER(TRIM(title)) = LOWER(TRIM(?))
-           AND amount = ? AND date = ?
-         ORDER BY id ASC LIMIT 1`,
-        [groupRow.id, p.type || 'expense', p.title, p.amount, p.date || nowIso.slice(0, 10)]
-      );
-      if (existingTx) {
-        await db.runAsync('UPDATE transactions SET uid = ? WHERE id = ?', [change.entityUid, existingTx.id]);
-      }
-    }
     if (isDelete) {
       if (existingTx) {
         await db.runAsync('UPDATE transactions SET is_deleted = 1, deleted_at = ?, server_version = ? WHERE id = ?', [at, change.entityVersion, existingTx.id]);
@@ -914,23 +920,9 @@ export class SyncEngine {
       return r.lastInsertRowId;
     };
 
-    const payerId = await resolveMember(p.paidByMemberUid, p.paidByName);
-    const values = [
-      p.type || 'expense',
-      p.title,
-      p.amount,
-      payerId,
-      p.splitType || 'equal',
-      p.category || 'General',
-      p.note || '',
-      p.date || nowIso.slice(0, 10),
-      p.authorId || change.actorId,
-      p.authorName || '',
-      p.updatedById || '',
-      p.updatedByName || '',
-      p.updatedTs || 0,
-      change.entityVersion,
-    ];
+    const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v : null);
+    const hasPayer = Boolean(text(p.paidByMemberUid) || text(p.paidByName));
+    const hasSplits = Array.isArray(p.splits) && p.splits.length > 0;
     const rawCreatedTs = p.createdTs;
     const createdTs =
       typeof rawCreatedTs === 'number' && Number.isSafeInteger(rawCreatedTs) && rawCreatedTs > 0
@@ -940,27 +932,82 @@ export class SyncEngine {
           : null;
     let txId: number;
     if (existingTx) {
+      // Updates may be partial (the server applies them field by field with COALESCE and logs the
+      // fields it received), so a field the change doesn't carry keeps its current value. The
+      // author never changes after creation; it decides who may edit in CONTRIBUTOR groups.
       txId = existingTx.id;
+      const payerId = hasPayer ? await resolveMember(p.paidByMemberUid, p.paidByName) : null;
       await db.runAsync(
         `UPDATE transactions
-         SET type = ?, title = ?, amount = ?, paid_by = ?, split_type = ?, category = ?, note = ?, date = ?, author_id = ?, author_name = ?,
-             updated_by_id = ?, updated_by_name = ?, updated_ts = ?, server_version = ?, is_deleted = 0, deleted_at = NULL, updated_at = ?
+         SET type = COALESCE(?, type), title = COALESCE(?, title), amount = COALESCE(?, amount), paid_by = COALESCE(?, paid_by),
+             split_type = COALESCE(?, split_type), category = COALESCE(?, category), note = COALESCE(?, note), date = COALESCE(?, date),
+             author_id = COALESCE(?, author_id), author_name = COALESCE(?, author_name),
+             updated_by_id = ?, updated_by_name = ?, updated_ts = COALESCE(?, updated_ts),
+             server_version = ?, is_deleted = 0, deleted_at = NULL, updated_at = ?
          WHERE id = ?`,
-        [...values, nowIso, txId]
+        [
+          p.type === 'expense' || p.type === 'payment' ? p.type : null,
+          text(p.title),
+          typeof p.amount === 'number' ? p.amount : null,
+          payerId,
+          text(p.splitType),
+          text(p.category),
+          typeof p.note === 'string' ? p.note : null,
+          text(p.date),
+          text(p.authorId),
+          text(p.authorName),
+          p.updatedById || (change.operation === 'update' ? change.actorId : ''),
+          p.updatedByName || '',
+          typeof p.updatedTs === 'number' && p.updatedTs > 0 ? p.updatedTs : null,
+          change.entityVersion,
+          nowIso,
+          txId,
+        ]
       );
       // The server's stored creation time is authoritative; older servers don't send it.
       if ('createdTs' in p) await db.runAsync('UPDATE transactions SET created_ts = ? WHERE id = ?', [createdTs, txId]);
-      await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [txId]);
+      if (hasSplits) await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [txId]);
     } else {
+      if (!text(p.title) || typeof p.amount !== 'number' || !hasSplits) {
+        // Only a partial update of a transaction this phone never received (e.g. one the server
+        // hides): there is nothing to build it from. Record it visibly instead of failing every sync.
+        await recordSyncNotification(db, {
+          groupUid,
+          authorName: 'SplitMate',
+          title: 'Incomplete change skipped',
+          message: `An edit arrived for a transaction this phone doesn't have (${change.entityUid}), so it couldn't be applied.`,
+        });
+        return;
+      }
       const ins = await db.runAsync(
         `INSERT INTO transactions (type, title, amount, paid_by, split_type, category, note, date, author_id, author_name,
                                    updated_by_id, updated_by_name, updated_ts, server_version, group_id, uid, created_ts, is_deleted, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-        [...values, groupRow.id, change.entityUid, createdTs, at, nowIso]
+        [
+          p.type || 'expense',
+          p.title,
+          p.amount,
+          await resolveMember(p.paidByMemberUid, p.paidByName),
+          p.splitType || 'equal',
+          p.category || 'General',
+          p.note || '',
+          p.date || nowIso.slice(0, 10),
+          p.authorId || change.actorId,
+          p.authorName || '',
+          p.updatedById || '',
+          p.updatedByName || '',
+          p.updatedTs || 0,
+          change.entityVersion,
+          groupRow.id,
+          change.entityUid,
+          createdTs,
+          at,
+          nowIso,
+        ]
       );
       txId = ins.lastInsertRowId;
     }
-    for (const s of Array.isArray(p.splits) ? p.splits : []) {
+    for (const s of hasSplits ? p.splits : []) {
       const memberId = await resolveMember(s.memberUid, s.memberName);
       await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [
         txId,
@@ -971,7 +1018,8 @@ export class SyncEngine {
     }
 
     const amount = typeof p.amount === 'number' ? money(p.amount, groupRow.currency) : '';
-    if (existingTx) await note(p.updatedByName || '', 'Transaction edited', `${p.updatedByName || 'Someone'} edited "${p.title}" (${amount}).`);
+    if (existingTx)
+      await note(p.updatedByName || '', 'Transaction edited', `${p.updatedByName || 'Someone'} edited "${text(p.title) ?? existingTx.title}"${amount ? ` (${amount})` : ''}.`);
     else await note(p.authorName || '', 'Transaction added', `${p.authorName || 'Someone'} added "${p.title}" (${amount}).`);
   }
 

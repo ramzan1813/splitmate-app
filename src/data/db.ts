@@ -11,7 +11,7 @@ export interface DB {
   withTransactionAsync(task: () => Promise<void>): Promise<void>;
 }
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -168,6 +168,41 @@ const MIGRATIONS: Record<number, string> = {
   // Connected user identity on members table (real user vs dummy user)
   9: `
     ALTER TABLE members ADD COLUMN user_id TEXT;
+  `,
+  // Repair for files imported by v2.1.0 and earlier: those rows were saved with uid '' and no
+  // author. Everything else (sync payloads, edits) called them tx_<id> / mem_<id>, but lookups by uid
+  // never found them, so each replay of their server changes inserted another copy.
+  //  1. Groups with such rows replay their change log from 0 (upload marker kept: nothing is
+  //     re-uploaded), so deletes and edits the server sent to tx_<id> now reach the row.
+  //  2. Give the rows the uid they were already synced under.
+  //  3. Rows sharing one uid in a group are the same transaction: keep one (highest server_version,
+  //     then the one with an author, then the oldest row) and drop the other local copies.
+  //  4. From now on a transaction uid is unique per group.
+  10: `
+    UPDATE sync_state SET last_server_sequence = 0
+     WHERE group_uid IN (
+       SELECT g.uid FROM groups g
+        WHERE EXISTS (SELECT 1 FROM transactions t WHERE t.group_id = g.id AND (t.uid IS NULL OR t.uid = ''))
+           OR EXISTS (SELECT 1 FROM members m WHERE m.group_id = g.id AND (m.uid IS NULL OR m.uid = ''))
+           OR EXISTS (SELECT 1 FROM transactions t JOIN transactions o ON o.group_id = t.group_id AND o.uid = t.uid AND o.id <> t.id
+                       WHERE t.group_id = g.id AND t.uid <> ''));
+
+    UPDATE transactions SET uid = 'tx_' || id WHERE uid IS NULL OR uid = '';
+    UPDATE members SET uid = 'mem_' || id WHERE uid IS NULL OR uid = '';
+
+    CREATE TEMP TABLE tx_copies AS
+      SELECT t.id FROM transactions t
+       WHERE EXISTS (
+         SELECT 1 FROM transactions k
+          WHERE k.group_id = t.group_id AND k.uid = t.uid AND k.id <> t.id
+            AND (k.server_version > t.server_version
+                 OR (k.server_version = t.server_version AND (k.author_name <> '') > (t.author_name <> ''))
+                 OR (k.server_version = t.server_version AND (k.author_name <> '') = (t.author_name <> '') AND k.id < t.id)));
+    DELETE FROM transaction_splits WHERE transaction_id IN (SELECT id FROM tx_copies);
+    DELETE FROM transactions WHERE id IN (SELECT id FROM tx_copies);
+    DROP TABLE tx_copies;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_transactions_group_uid ON transactions(group_id, uid);
   `,
 };
 

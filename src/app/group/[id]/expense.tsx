@@ -17,6 +17,28 @@ export default function ExpenseScreen() {
   return <ExpenseForm id={id} tid={tid} data={data} memberIndex={memberIndex} />;
 }
 
+/** Split-member checkbox; `partial` shows a dash (some members selected) on the select-all row. */
+function Checkbox({ checked, partial = false }: { checked: boolean; partial?: boolean }) {
+  const filled = checked || partial;
+  return (
+    <View
+      style={{
+        width: 22,
+        height: 22,
+        borderRadius: 6,
+        borderWidth: 2,
+        borderColor: colors.primary,
+        backgroundColor: filled ? colors.primary : 'transparent',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginRight: 10,
+      }}
+    >
+      {filled && <Text style={{ color: '#fff', fontWeight: '900', fontSize: 13 }}>{checked ? '✓' : '–'}</Text>}
+    </View>
+  );
+}
+
 function ExpenseForm({ id, tid, data, memberIndex }: { id: string; tid?: string; data: GroupSummary; memberIndex: (mid: number) => number }) {
   const router = useRouter();
   const nav = useNavigation();
@@ -118,6 +140,10 @@ function ExpenseForm({ id, tid, data, memberIndex }: { id: string; tid?: string;
       return n;
     });
 
+  const selectedCount = data.members.filter((m) => selected.has(m.id)).length;
+  const allSelected = data.members.length > 0 && selectedCount === data.members.length;
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(data.members.map((m) => m.id)));
+
   const save = async () => {
     if (!title.trim()) return notify('Missing title', 'What was this expense for?');
     if (!Number.isFinite(amount) || amount <= 0) return notify('Invalid amount', 'Enter an amount greater than zero');
@@ -176,27 +202,28 @@ function ExpenseForm({ id, tid, data, memberIndex }: { id: string; tid?: string;
         ]}
       />
       <Card>
+        {splitType === 'equal' && data.members.length > 1 && (
+          <Pressable
+            onPress={toggleAll}
+            style={{ flexDirection: 'row', alignItems: 'center', paddingBottom: 9, marginBottom: 2, borderBottomWidth: 1, borderBottomColor: colors.border }}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: allSelected ? true : selectedCount > 0 ? 'mixed' : false }}
+            testID="split-toggle-all"
+          >
+            <Checkbox checked={allSelected} partial={!allSelected && selectedCount > 0} />
+            <Text style={{ flex: 1, fontWeight: '700', color: colors.primary }}>{allSelected ? 'Unselect all' : 'Select all'}</Text>
+            <Text style={{ color: colors.muted }}>
+              {selectedCount} of {data.members.length}
+            </Text>
+          </Pressable>
+        )}
         {data.members.map((m) => {
           const share = preview.shares[m.id] ?? 0;
           return (
             <Row key={m.id} style={{ paddingVertical: 7 }}>
               {splitType === 'equal' ? (
                 <Pressable onPress={() => toggle(m.id)} style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }} testID={`split-toggle-${m.id}`}>
-                  <View
-                    style={{
-                      width: 22,
-                      height: 22,
-                      borderRadius: 6,
-                      borderWidth: 2,
-                      borderColor: colors.primary,
-                      backgroundColor: selected.has(m.id) ? colors.primary : 'transparent',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      marginRight: 10,
-                    }}
-                  >
-                    {selected.has(m.id) && <Text style={{ color: '#fff', fontWeight: '900', fontSize: 13 }}>✓</Text>}
-                  </View>
+                  <Checkbox checked={selected.has(m.id)} />
                   <Avatar name={m.name} index={memberIndex(m.id)} size={30} />
                   <Text style={{ marginLeft: 10, flex: 1, fontWeight: '600' }}>{m.name}</Text>
                 </Pressable>

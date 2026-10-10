@@ -5,7 +5,7 @@ import { getSetting, setSetting } from '../data/settings';
 export interface UserIdentity {
   id: string; // e.g. usr_9a4f2b...
   name: string;
-  /** Base URL of the SplitMate sync server, e.g. https://splitmate-relay.rn45819.workers.dev */
+  /** Base URL of the SplitMate sync server, e.g. https://evenup.ramzankhan.shop */
   serverUrl: string;
 }
 
@@ -32,8 +32,13 @@ export function normalizeServerUrl(url: string): string {
     .replace(/\/+$/, '');
 }
 
-export const CLOUDFLARE_WORKER_URL = 'https://splitmate-relay.rn45819.workers.dev';
-export const DEFAULT_SERVER_URL = CLOUDFLARE_WORKER_URL;
+/** The SplitMate sync server the app uses unless the user sets another one in Settings. */
+export const SPLITMATE_SERVER_URL = 'https://evenup.ramzankhan.shop';
+/** The previous default (Cloudflare Worker relay). Users who saved it as their custom server keep using it. */
+export const LEGACY_RELAY_URL = 'https://splitmate-relay.rn45819.workers.dev';
+// EXPO_PUBLIC_SERVER_URL is inlined at build time (dev relay, local Docker server, tests); production
+// builds leave it unset. Without it every dev/web run and test would sync to the production server.
+export const DEFAULT_SERVER_URL = normalizeServerUrl(process.env.EXPO_PUBLIC_SERVER_URL || SPLITMATE_SERVER_URL);
 
 // Setting key kept from the relay era so a custom URL saved by an older build still applies.
 const SERVER_URL_SETTING = 'sync.relay_url';

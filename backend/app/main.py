@@ -1,8 +1,9 @@
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import settings
 from app.db import db
@@ -36,6 +37,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error_envelope(request: Request, exc: HTTPException):
+    """Errors use the relay's body, {"error": CODE, "message": text}, not FastAPI's {"detail": ...}.
+
+    Phones act on the code (CURSOR_AHEAD -> re-sync, GROUP_NOT_FOUND -> group deleted,
+    GROUP_UNAVAILABLE -> hidden, keep it); under "detail" they would only see HTTP_<status>.
+    """
+    detail = exc.detail
+    if isinstance(detail, dict) and detail.get("error"):
+        body = {"error": detail["error"], "message": detail.get("message") or str(detail["error"])}
+    else:
+        body = {"error": f"HTTP_{exc.status_code}", "message": str(detail)}
+    return JSONResponse(status_code=exc.status_code, content=body, headers=getattr(exc, "headers", None))
 
 
 @app.get("/", tags=["Root"])

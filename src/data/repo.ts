@@ -263,76 +263,7 @@ export async function listGroups(): Promise<GroupListItem[]> {
   return out;
 }
 
-export async function deduplicateGroupTransactions(groupId: number, dbInstance?: DB): Promise<number> {
-  const db = dbInstance ?? (await getDb());
-  const group = await db.getFirstAsync<{ uid: string }>('SELECT uid FROM groups WHERE id = ?', [groupId]);
-  if (!group) return 0;
-
-  const txs = await db.getAllAsync<TxRow>(
-    'SELECT * FROM transactions WHERE group_id = ? AND is_deleted = 0 ORDER BY id ASC',
-    [groupId]
-  );
-  if (txs.length <= 1) return 0;
-
-  // Group transactions by signature: type + title + amount + date + paid_by + (created_ts or created_at minute)
-  const clusters = new Map<string, TxRow[]>();
-  for (const t of txs) {
-    const tsKey = t.created_ts ? String(t.created_ts) : (t.created_at ? t.created_at.slice(0, 16) : '');
-    const key = `${t.type}|${t.title.trim().toLowerCase()}|${t.amount}|${t.date}|${t.paid_by}|${tsKey}`;
-    const list = clusters.get(key) || [];
-    list.push(t);
-    clusters.set(key, list);
-  }
-
-  let removedCount = 0;
-  for (const list of clusters.values()) {
-    if (list.length <= 1) continue;
-
-    // Pick the best transaction:
-    // 1. One with author_name (original attributed transaction)
-    // 2. Highest server_version or lowest id
-    list.sort((a, b) => {
-      const aAuthor = Boolean(a.author_name);
-      const bAuthor = Boolean(b.author_name);
-      if (aAuthor !== bAuthor) return aAuthor ? -1 : 1;
-      return (b.server_version ?? 0) - (a.server_version ?? 0) || a.id - b.id;
-    });
-
-    const keep = list[0]!;
-    const duplicates = list.slice(1);
-
-    for (const dup of duplicates) {
-      if (dup.uid && dup.server_version && dup.server_version > 0) {
-        await db.runAsync('UPDATE transactions SET is_deleted = 1, deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [dup.id]);
-        await enqueueOutboxMutation(
-          {
-            clientMutationId: `mut_${newUid()}`,
-            groupUid: group.uid,
-            entityType: 'transaction',
-            entityUid: dup.uid,
-            operation: 'delete',
-            expectedVersion: dup.server_version,
-            payload: { txUid: dup.uid, authorId: dup.author_id },
-          },
-          db
-        );
-      } else {
-        await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id = ?', [dup.id]);
-        await db.runAsync('DELETE FROM transactions WHERE id = ?', [dup.id]);
-      }
-      removedCount++;
-    }
-  }
-
-  if (removedCount > 0) {
-    signalLocalChange(group.uid);
-  }
-
-  return removedCount;
-}
-
 export async function getGroupSummary(id: number): Promise<GroupSummary> {
-  await deduplicateGroupTransactions(id);
   const group = await getGroup(id);
   const members = await getMembers(id);
   const transactions = await getTransactions(id);

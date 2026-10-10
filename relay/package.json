@@ -9,7 +9,8 @@
     "migrate": "node --experimental-strip-types scripts/migrate.ts",
     "cf-typegen": "wrangler types",
     "build": "wrangler deploy --dry-run --outdir dist",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "dedupe": "node --experimental-strip-types scripts/dedupe-transactions.ts"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",

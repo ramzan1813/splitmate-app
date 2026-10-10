@@ -126,6 +126,20 @@ export function suggestSettlements(stats: MemberStat[]): Settlement[] {
 }
 
 /**
+ * Whether this phone may record (settle) a suggested payment: the group admin may settle any of
+ * them, other members only the ones they pay or receive, and nobody may in a group where they
+ * can't add transactions at all (ADMIN_ONLY members). Everyone can still view the breakdown.
+ */
+export function canSettle(
+  viewer: { isCreator: boolean; canAdd: boolean; myMemberId: number | null | undefined },
+  settlement: Pick<Settlement, 'from' | 'to'>
+): boolean {
+  if (!viewer.canAdd) return false;
+  if (viewer.isCreator) return true;
+  return viewer.myMemberId != null && (settlement.from === viewer.myMemberId || settlement.to === viewer.myMemberId);
+}
+
+/**
  * Calculates direct pairwise debts between members without multi-party debt simplification.
  * For each pair of members (A, B):
  * net(A -> B) = (expenses paid by B where A had a share) + (payments from B to A)

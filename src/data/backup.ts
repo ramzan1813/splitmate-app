@@ -1,9 +1,15 @@
 // Export / import of groups as JSON files (for sharing a group and for full backups).
 // Imported files are untrusted input: everything is validated before touching the database.
+//
+// An imported group is always a NEW, independent group owned by the person importing it: new group,
+// member and transaction ids, never the ids of the group it was exported from. Files therefore carry
+// no ids at all, so not even an older app version can import a file back into the original group
+// (that is how a re-imported export once duplicated a shared group's transactions on the server).
 import { getDb } from './db';
 import { getGroup, getMembers, getTransactions, LIMITS, newUid } from './repo';
 import { CURRENCIES } from '../lib/currencies';
-import { AppError, SplitType } from './types';
+import { getIdentity } from '../lib/identity';
+import { AppError, PermissionModel, SplitType } from './types';
 
 export const FORMAT = 'splitmate';
 /**
@@ -19,14 +25,16 @@ const MAX_TX = 100_000;
 
 /** In a file, money is in whole currency units; after parseExport it is in integer cents. */
 export interface ExportedGroup {
+  /** Key for this group while the file is being imported. Never stored: the imported group gets a fresh uid. */
   uid: string;
   name: string;
   description: string;
   currency: string;
   createdAt: string;
-  members: { ref: number; uid?: string; name: string; isMe: boolean }[];
+  /** The exporting group's permission model; the imported copy keeps it, with the importer as admin. */
+  permissionModel?: PermissionModel;
+  members: { ref: number; name: string; isMe: boolean }[];
   transactions: {
-    uid?: string;
     type: 'expense' | 'payment';
     title: string;
     amount: number;
@@ -53,20 +61,22 @@ export interface ExportFile {
 }
 
 const fromCents = (c: number) => c / 100;
+const PERMISSION_MODELS: PermissionModel[] = ['admin_only', 'contributor', 'collaborative'];
 
 async function exportOne(groupId: number): Promise<ExportedGroup> {
   const g = await getGroup(groupId);
   const members = await getMembers(groupId);
   const txs = await getTransactions(groupId);
+  // No group, member or transaction uids: see the note at the top of this file.
   return {
-    uid: g.uid,
+    uid: '',
     name: g.name,
     description: g.description,
     currency: g.currency,
     createdAt: g.createdAt,
-    members: members.map((m) => ({ ref: m.id, uid: m.uid, name: m.name, isMe: m.isMe })),
+    permissionModel: g.permissionModel,
+    members: members.map((m) => ({ ref: m.id, name: m.name, isMe: m.isMe })),
     transactions: [...txs].reverse().map((t) => ({
-      uid: t.uid,
       type: t.type,
       title: t.title,
       amount: fromCents(t.amount),
@@ -152,7 +162,6 @@ export function parseExport(text: string): ExportFile {
       refs.add(ref);
       return {
         ref,
-        uid: typeof m.uid === 'string' && m.uid.trim() ? m.uid.trim() : undefined,
         name: str(m.name, LIMITS.name, 'member name', true),
         isMe: m.isMe === true,
       };
@@ -193,7 +202,6 @@ export function parseExport(text: string): ExportFile {
       if (sum !== amount) throw new AppError(`Split shares don't add up to the amount in ${where}`);
       if (type === 'payment' && (splits.length !== 1 || splits[0]!.member === paidBy)) throw new AppError(`Invalid payment in ${where}`);
       return {
-        uid: typeof t.uid === 'string' && t.uid.trim() ? t.uid.trim() : undefined,
         type,
         title: str(t.title, LIMITS.title, `title in ${where}`) || (type === 'payment' ? 'Payment' : 'Expense'),
         amount,
@@ -210,10 +218,11 @@ export function parseExport(text: string): ExportFile {
       };
     });
     return {
-      uid: str(g.uid, 80, 'group id') || newUid(),
+      uid: newUid(), // ids in older files are ignored: an import is always a new group
       name,
       description: str(g.description, LIMITS.description, 'description'),
       currency: CURRENCIES.includes(String(g.currency)) ? String(g.currency) : 'USD',
+      permissionModel: PERMISSION_MODELS.find((pm) => pm === String(g.permissionModel ?? '').toLowerCase()),
       createdAt: str(g.createdAt, 40, 'createdAt') || new Date().toISOString(),
       members,
       transactions,
@@ -228,81 +237,72 @@ export function parseExport(text: string): ExportFile {
   };
 }
 
-/** Which of the file's groups already exist on this phone (matched by uid). */
-export async function findExisting(file: ExportFile): Promise<Record<string, number>> {
+/** File groups whose name is already used on this phone (keyed by file group key); they are imported as "<name> (copy)". */
+export async function findNameClashes(file: ExportFile): Promise<Record<string, boolean>> {
   const db = await getDb();
-  const out: Record<string, number> = {};
+  const out: Record<string, boolean> = {};
   for (const g of file.groups) {
-    const row = await db.getFirstAsync<{ id: number }>('SELECT id FROM groups WHERE uid = ?', [g.uid]);
-    if (row) out[g.uid] = row.id;
+    const row = await db.getFirstAsync<{ id: number }>('SELECT id FROM groups WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) AND removal IS NULL', [g.name]);
+    if (row) out[g.uid] = true;
   }
   return out;
 }
 
 export interface ImportOptions {
-  /** 'replace' overwrites a group with the same id; 'copy' imports it as a new separate group. */
-  onDuplicate: 'replace' | 'copy';
-  /** Optional: for each group uid, the member ref that is "me" on this phone (null = nobody). */
+  /** Optional: for each file group key, the member ref that is "me" on this phone (null = nobody). */
   meRef?: Record<string, number | null>;
-  /** Erase all existing groups first (full restore). */
-  eraseFirst?: boolean;
 }
 
-export async function importFile(file: ExportFile, opts: ImportOptions): Promise<number[]> {
+/**
+ * Imports every group in the file as a new group owned by this phone's user. Existing groups on this
+ * phone, on other phones and on the server are never read or changed. The new group syncs like any
+ * group created before the sync engine (its first sync uploads it in full).
+ */
+export async function importFile(file: ExportFile, opts: ImportOptions = {}): Promise<number[]> {
   const db = await getDb();
+  const identity = await getIdentity();
+  const clashes = await findNameClashes(file);
   const created: number[] = [];
   await db.withTransactionAsync(async () => {
-    if (opts.eraseFirst) {
-      await db.runAsync('DELETE FROM transaction_splits', []);
-      await db.runAsync('DELETE FROM transactions', []);
-      await db.runAsync('DELETE FROM members', []);
-      await db.runAsync('DELETE FROM groups', []);
-    }
     for (const g of file.groups) {
-      let uid = g.uid;
-      const existing = await db.getFirstAsync<{ id: number }>('SELECT id FROM groups WHERE uid = ?', [uid]);
-      if (existing) {
-        if (opts.onDuplicate === 'replace') {
-          await db.runAsync('DELETE FROM transaction_splits WHERE transaction_id IN (SELECT id FROM transactions WHERE group_id = ?)', [existing.id]);
-          await db.runAsync('DELETE FROM transactions WHERE group_id = ?', [existing.id]);
-          await db.runAsync('DELETE FROM members WHERE group_id = ?', [existing.id]);
-          await db.runAsync('DELETE FROM groups WHERE id = ?', [existing.id]);
-        } else {
-          uid = newUid();
-        }
-      }
+      const uid = newUid();
       const ts = new Date().toISOString();
-      const name = existing && opts.onDuplicate === 'copy' ? `${g.name} (copy)`.slice(0, LIMITS.name) : g.name;
-      const r = await db.runAsync('INSERT INTO groups (uid, name, description, currency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [
-        uid,
-        name,
-        g.description,
-        g.currency,
-        g.createdAt,
-        ts,
-      ]);
+      const name = clashes[g.uid] ? `${g.name} (copy)`.slice(0, LIMITS.name) : g.name;
+      const meRef = opts.meRef && g.uid in opts.meRef ? opts.meRef[g.uid] : (g.members.find((m) => m.isMe)?.ref ?? null);
+      const myName = g.members.find((m) => m.ref === meRef)?.name || identity.name || 'Me';
+      const r = await db.runAsync(
+        `INSERT INTO groups (uid, name, description, currency, permission_model, creator_id, creator_name, server_version, is_deleted, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
+        [uid, name, g.description, g.currency, g.permissionModel ?? 'collaborative', identity.id, myName, g.createdAt, ts]
+      );
       const gid = r.lastInsertRowId;
       created.push(gid);
-      const meRef = opts.meRef && g.uid in opts.meRef ? opts.meRef[g.uid] : (g.members.find((m) => m.isMe)?.ref ?? null);
       const idMap = new Map<number, number>();
       for (const m of g.members) {
-        const mUid = m.uid || `mem_${newUid()}`;
-        const mr = await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, created_at) VALUES (?, ?, ?, ?, ?)', [gid, mUid, m.name, m.ref === meRef ? 1 : 0, ts]);
+        const isMe = m.ref === meRef;
+        const mr = await db.runAsync('INSERT INTO members (group_id, uid, name, is_me, user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)', [
+          gid,
+          `mem_${newUid()}`,
+          m.name,
+          isMe ? 1 : 0,
+          isMe ? identity.id : null,
+          ts,
+        ]);
         idMap.set(m.ref, mr.lastInsertRowId);
       }
       for (const t of g.transactions) {
-        const tUid = t.uid || `tx_${newUid()}`;
+        // Who added it and when stay as history; the row itself is new to this group.
         const tr = await db.runAsync(
           `INSERT INTO transactions (group_id, uid, type, title, amount, paid_by, split_type, category, note, date, author_id, author_name, created_ts, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [gid, tUid, t.type, t.title, t.amount, idMap.get(t.paidBy)!, t.splitType, t.category, t.note, t.date, t.authorId ?? '', t.authorName ?? '', t.createdTs ?? null, t.createdAt, ts]
+          [gid, `tx_${newUid()}`, t.type, t.title, t.amount, idMap.get(t.paidBy)!, t.splitType, t.category, t.note, t.date, t.authorId ?? '', t.authorName ?? '', t.createdTs ?? null, t.createdAt, ts]
         );
-        for (const s of t.splits) {
+        for (const sp of t.splits) {
           await db.runAsync('INSERT INTO transaction_splits (transaction_id, member_id, value, share) VALUES (?, ?, ?, ?)', [
             tr.lastInsertRowId,
-            idMap.get(s.member)!,
-            s.value,
-            s.share,
+            idMap.get(sp.member)!,
+            sp.value,
+            sp.share,
           ]);
         }
       }

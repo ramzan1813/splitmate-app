@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Avatar, Button, Card, Chip, Row, Screen, SectionTitle } from '@/components/ui';
-import { ExportFile, findExisting, importFile, parseExport } from '@/data/backup';
+import { Avatar, Button, Card, Row, Screen, SectionTitle } from '@/components/ui';
+import { ExportFile, findNameClashes, importFile, parseExport } from '@/data/backup';
 import { QRScannerModal } from '@/components/QRScannerModal';
 import { pickTextFile } from '@/lib/files';
 import { money } from '@/lib/format';
 import { colors } from '@/lib/theme';
-import { confirm, errorMessage, notify } from '@/lib/dialog';
+import { errorMessage, notify } from '@/lib/dialog';
 import { useApp } from '@/lib/app';
 
 export default function ImportScreen() {
@@ -15,10 +15,8 @@ export default function ImportScreen() {
   const { suspendLock } = useApp();
   const [file, setFile] = useState<ExportFile | null>(null);
   const [fileName, setFileName] = useState('');
-  const [existing, setExisting] = useState<Record<string, number>>({});
+  const [clashes, setClashes] = useState<Record<string, boolean>>({});
   const [meRef, setMeRef] = useState<Record<string, number | null>>({});
-  const [onDuplicate, setOnDuplicate] = useState<'replace' | 'copy'>('replace');
-  const [eraseFirst, setEraseFirst] = useState(false);
   const [busy, setBusy] = useState(false);
   const [inviteUrl, setInviteUrl] = useState('');
   const [showScanner, setShowScanner] = useState(false);
@@ -37,9 +35,8 @@ export default function ImportScreen() {
       const parsed = parseExport(picked.text);
       setFile(parsed);
       setFileName(picked.name);
-      setExisting(await findExisting(parsed));
+      setClashes(await findNameClashes(parsed));
       setMeRef(Object.fromEntries(parsed.groups.map((g) => [g.uid, parsed.kind === 'backup' ? (g.members.find((m) => m.isMe)?.ref ?? null) : null])));
-      setEraseFirst(false);
     } catch (e) {
       setFile(null);
       notify("Can't import this file", errorMessage(e));
@@ -48,10 +45,9 @@ export default function ImportScreen() {
 
   const doImport = async () => {
     if (!file) return;
-    if (eraseFirst && !(await confirm('Replace all data', 'All groups currently on this phone will be deleted and replaced by the backup.', 'Replace', true))) return;
     setBusy(true);
     try {
-      const ids = await importFile(file, { onDuplicate, meRef, eraseFirst });
+      const ids = await importFile(file, { meRef });
       notify('Imported', `${ids.length} group${ids.length === 1 ? '' : 's'} imported.`);
       if (ids.length === 1) router.replace(`/group/${ids[0]}`);
       else router.dismissTo('/');
@@ -61,8 +57,6 @@ export default function ImportScreen() {
       setBusy(false);
     }
   };
-
-  const dupCount = file ? file.groups.filter((g) => existing[g.uid]).length : 0;
 
   return (
     <Screen style={{ maxWidth: 640, width: '100%', alignSelf: 'center' }}>
@@ -99,7 +93,7 @@ export default function ImportScreen() {
 
       <SectionTitle>Import Backup or JSON File</SectionTitle>
       <Text style={{ color: colors.muted, marginBottom: 12 }}>
-        Import a group file a friend shared with you, or restore a backup you exported earlier (files ending in .splitmate.json).
+        Import a group file a friend shared with you, or a backup you exported earlier (files ending in .splitmate.json). Each group is added as a new group that you own: it never changes the original group or anyone else’s copy. To share a live group with others, use an invite link instead.
       </Text>
       <Button title={file ? 'Choose a different file' : 'Choose file'} variant={file ? 'outline' : 'primary'} onPress={pick} testID="pick-file" />
 
@@ -121,7 +115,11 @@ export default function ImportScreen() {
                 <Text style={{ color: colors.muted, marginTop: 2 }}>
                   {g.members.length} members · {g.transactions.length} transactions · {money(total, g.currency)}
                 </Text>
-                {existing[g.uid] ? <Text style={{ color: colors.accent, fontWeight: '700', marginTop: 4 }}>Already on this phone</Text> : null}
+                {clashes[g.uid] ? (
+                  <Text style={{ color: colors.accent, fontWeight: '700', marginTop: 4 }} testID={`import-copy-note-${g.uid}`}>
+                    You already have a group with this name; this one is added as “{g.name} (copy)”.
+                  </Text>
+                ) : null}
                 <Text style={{ fontSize: 13, fontWeight: '600', color: colors.muted, marginTop: 10, marginBottom: 6 }}>Which one is you?</Text>
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
                   {g.members.map((m, i) => (
@@ -140,25 +138,6 @@ export default function ImportScreen() {
               </Card>
             );
           })}
-
-          {dupCount > 0 && !eraseFirst && (
-            <>
-              <SectionTitle>Groups already on this phone</SectionTitle>
-              <Row style={{ flexWrap: 'wrap' }}>
-                <Chip label="Update with this file" active={onDuplicate === 'replace'} onPress={() => setOnDuplicate('replace')} testID="dup-replace" />
-                <Chip label="Keep both (import as copy)" active={onDuplicate === 'copy'} onPress={() => setOnDuplicate('copy')} testID="dup-copy" />
-              </Row>
-            </>
-          )}
-
-          {file.kind === 'backup' && (
-            <Pressable onPress={() => setEraseFirst(!eraseFirst)} style={{ flexDirection: 'row', alignItems: 'center', marginVertical: 10 }} testID="erase-first">
-              <View style={{ width: 22, height: 22, borderRadius: 6, borderWidth: 2, borderColor: colors.negative, backgroundColor: eraseFirst ? colors.negative : 'transparent', marginRight: 10, alignItems: 'center', justifyContent: 'center' }}>
-                {eraseFirst && <Text style={{ color: '#fff', fontWeight: '900' }}>✓</Text>}
-              </View>
-              <Text style={{ flex: 1 }}>Replace everything on this phone with this backup</Text>
-            </Pressable>
-          )}
 
           <Button title={`Import ${file.groups.length === 1 ? 'group' : `${file.groups.length} groups`}`} onPress={doImport} loading={busy} style={{ marginTop: 8 }} testID="do-import" />
         </View>

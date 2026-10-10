@@ -36,8 +36,14 @@ Important existing files include:
 - src/data/types.ts
 - src/data/logic.ts
 - src/data/backup.ts
+- src/data/syncEngine.ts (push/pull cycle, ensureUploaded, applyServerChange)
+- src/data/syncState.ts (cursor, upload marker, resetSyncBinding)
+- src/data/outbox.ts
+- src/lib/identity.ts (server URL; EXPO_PUBLIC_SERVER_URL override)
 - src/lib/useGroup.ts
 - src/lib/app.tsx
+- relay/src/syncService.ts (the production sync server; see section 24)
+- backend/app/sync_service.py (Python port; NOT production-safe yet, see section 24)
 
 Before changing the architecture:
 
@@ -215,6 +221,32 @@ Preferred flow:
 5. Notify UI.
 6. Continue until caught up.
 
+409 CURSOR_AHEAD means the server has less history than this phone:
+its database was restored, replaced or reset, and it may also lack
+rows this phone already sent. The client must:
+
+- call resetSyncBinding (cursor 0 and upload marker cleared), not just
+  reset the cursor
+- let the next cycle run ensureUploaded first: it compares with the
+  server's snapshot and uploads what the server lacks
+- only then replay the change log from 0
+
+Resetting only the cursor leaves the server permanently missing data
+other phones need.
+
+Error codes the client acts on (servers must send {"error","message"}):
+
+- CURSOR_AHEAD: reconcile, re-upload, replay
+- GROUP_NOT_FOUND: the group was erased; if this phone has server
+  history (cursor > 0), the local copy is erased too
+- GROUP_UNAVAILABLE: the group is hidden (is_display=false); keep it
+
+Open risk (needs an architecture decision): a server pointed at an
+empty database answers GROUP_NOT_FOUND for every group, and phones
+with history erase their local copies. The sync binding is keyed on
+the server URL only. A per-database id from the server would let
+phones rebind (re-upload) instead of erasing.
+
 If realtime notification is received:
 
 DO NOT assume the notification contains complete state.
@@ -331,6 +363,15 @@ Client-side permission checks are only for UX.
 
 Never trust client authorization.
 
+Settle up (UX rule, src/data/logic.ts canSettle):
+
+- the admin (group creator) may record any suggested settlement
+- other members only the ones they pay or receive
+- nobody who cannot add transactions (ADMIN_ONLY members)
+- Breakdown stays visible to everyone
+- hide every button that records the payment: the row's Settle and the
+  breakdown dialog's "Record payment" / "Record direct debt instead"
+
 ---
 
 ## 13. Audit metadata
@@ -427,6 +468,20 @@ Request:
 Successful response must contain the resulting server version
 and synchronization sequence.
 
+The relay applies partial updates field by field (COALESCE) and logs
+only the fields it received in sync_changes. Clients must apply a
+pulled update the same way:
+
+- a field missing from the payload keeps its local value
+- splits are replaced only when the payload carries a non-empty splits array
+- the payer is resolved only when paidByMemberUid/paidByName is present
+  (never create a placeholder member for a missing payer)
+- author_id/author_name never change after creation (CONTRIBUTOR
+  permissions depend on them); updates must not overwrite them with the editor
+
+Production already contains a title-only update payload.
+See applyServerChange in src/data/syncEngine.ts.
+
 ---
 
 ## 17. Database rules
@@ -441,6 +496,19 @@ Prefer UUID/ULID-style public entity IDs.
 
 Local SQLite may maintain local integer primary keys if useful,
 but synchronization identity must be globally unique.
+
+The entity uid is the ONLY identity of a synchronized record.
+Never match, merge, or deduplicate transactions by look-alike fields
+(title, amount, date, payer, created time). People really do enter
+two "Chai 200" on the same day; production has 13 such clusters,
+some with different payers. Local integer ids differ per device, so
+any "keep the lowest id" rule makes devices disagree and can delete
+both copies.
+
+The single allowed exception is ensureUploaded → queueMissingUploads:
+linking rows that have no server identity yet (pre-sync groups, file
+imports) to server rows. It must stay one-to-one (claimed set),
+payer-aware, and created-time-aware.
 
 ---
 
@@ -488,6 +556,18 @@ Before declaring synchronization complete, create automated tests for:
 18. Unauthorized delete.
 19. Contributor modifying another user's transaction.
 20. Admin-only group restrictions.
+21. Look-alike transactions (same title/amount/date) survive viewing,
+    pulling and re-syncing on every device.
+22. Partial update payloads (e.g. title only) keep amount, payer, splits.
+23. Importing any group file (new or old format, with or without ids,
+    on a phone that has the group or not) creates a separate group and
+    leaves the original group unchanged on every phone and on the server.
+24. Legacy server data: NULL created_ts, NULL user_id, NULL
+    updated_by_*, legacy change payload shapes, hidden (is_display=false)
+    and is_deleted groups.
+
+End-to-end client tests live in tests/server-sync-client.test.ts
+(real SyncEngine + HttpSyncTransport against the relay on PGlite).
 
 Use deterministic tests.
 
@@ -556,6 +636,19 @@ Never:
 - create duplicate records after retry
 - introduce a dependency without checking Expo SDK compatibility
 - invent APIs or database columns without inspecting the repository
+- match or merge records by look-alike fields instead of uid (section 17)
+- write, delete or enqueue mutations from a read path (e.g. getGroupSummary
+  or a screen opening); reads never change data
+- run automatic "cleanup" that deletes financial records on the device;
+  existing bad data is fixed deliberately, server-side, with tombstones
+  every device receives, after the user approves
+- apply a pulled update as a full row (section 16)
+- let a file import reuse a group, member or transaction uid, or write
+  into an existing group; put ids into exported files (section 25)
+- pull into a group whose upload marker is missing
+- remove the EXPO_PUBLIC_SERVER_URL override; without it every dev, web and
+  test run syncs into production
+- start any server with backend/.env (it points at the PRODUCTION database)
 
 ---
 
@@ -596,4 +689,186 @@ Synchronization is complete only when:
 - app restart recovery works
 - tests pass
 - typecheck passes
-- lint passes
+- lint passes- existing production data still syncs (section 24)
+
+---
+
+## 24. Production and existing-data safety
+
+Facts verified read-only on 2026-10-10. Re-verify before relying on them.
+
+Production topology:
+
+- Server: the Node relay (relay/, Cloudflare Worker, release v2.1.0)
+  on Neon Postgres with relay/migrations 001-005 applied
+  (tracked in schema_migrations).
+- Installed v2.1.0 phones are hard-coded to the relay URL, so any new
+  server must stay compatible with them.
+- backend/.env points at the PRODUCTION database. The dev database is
+  relay/.dev.vars.
+
+Existing production data the code must keep handling:
+
+- transactions.created_ts NULL on old rows (shown as date only)
+- group_members.user_id NULL on most rows (linked user is optional)
+- transactions.updated_by_* NULL on never-edited rows
+- devices.expo_push_token NULL everywhere
+- permission_model values are UPPERCASE (ADMIN_ONLY, CONTRIBUTOR,
+  COLLABORATIVE)
+- most groups have is_display=false (hidden); a few have
+  is_deleted=true but still exist
+- legacy sync_changes payloads:
+  - some transaction payloads lack authorId, authorName, note, txUid,
+    updatedTs or createdTs
+  - some member payloads lack uid or isMe
+  - group deletes carry {groupUid}
+  - at least one transaction update carries only {title}
+- 9 duplicate transaction pairs (same everything, different author) in
+  CONTRIBUTOR groups, created Oct 6-9 by v2.1.0 imports (section 25).
+  Clean them up with `cd relay && npm run dedupe` (dry run first, then
+  `-- --apply` once the user approves). Never use raw SQL DELETE.
+
+---
+
+## 25. Duplicate transactions from v2.1.0 imports (root cause and repair)
+
+Root cause:
+
+- v2.1.0's importFile inserted transactions with no uid (column
+  default '') and no author.
+- Sync payloads called those rows tx_<local id> (`t.uid || tx_${id}`),
+  but every lookup by uid (`WHERE uid = ?`) missed them.
+- When the group was re-synced (server switch or cursor reset), the
+  rows were uploaded as new transactions authored by the importer:
+  the server duplicates.
+- Each server change for tx_<id> that came back was inserted as
+  another local copy.
+- Phones ended up with the original (author), the imported copy (no
+  author) and sometimes a third copy.
+
+Raw SQL deletes on the server never reach phones, because phones only
+apply changes from the change log.
+
+Repair:
+
+- Phones: local migration 10 (src/data/db.ts) does four things.
+  - Groups with such rows replay their change log from 0. The upload
+    marker is kept, so nothing is re-uploaded.
+  - Empty uids become tx_<id> / mem_<id>, the ids they were already
+    synced under.
+  - Rows sharing a uid in a group are merged. The survivor is the
+    highest server_version, then the row with an author, then the
+    lowest id.
+  - It adds `UNIQUE (group_id, uid)` on transactions.
+- Server: relay/src/maintenance.ts + relay/scripts/dedupe-transactions.ts.
+  - It reads inside a READ ONLY transaction.
+  - It removes a copy only when every field matches the kept row,
+    including splits and the millisecond created_ts. Look-alikes
+    without a created_ts are listed for review and never removed.
+  - Deletes go through POST /sync/push as the group creator, with
+    deterministic clientMutationIds (`dedupe-<txUid>`), so the cleanup
+    is idempotent and every phone receives a tombstone.
+  - It keeps the first upload (earliest created_at).
+- Test: "phones broken by a v2.1.0 import are repaired …" in
+  tests/server-sync-client.test.ts.
+
+Prevention (all in place):
+
+- Import/export rule (src/data/backup.ts): a file import ALWAYS creates
+  a new, independent group.
+  - It gets a new group uid, new member uids and new transaction uids.
+  - It is owned by the importer: creator_id is the importer's identity,
+    the file's permission model is kept, and the importer's chosen
+    member gets is_me and user_id.
+  - It never reads or changes an existing group on this phone, on other
+    phones or on the server. Its first sync uploads it as a brand-new
+    group.
+  - On a name clash it is called "<name> (copy)" (findNameClashes).
+  - There is no "update with this file" or "replace everything" option;
+    they were removed because they overwrote or erased shared groups.
+  - Live sharing is only through invite links (join), never files.
+- Exported files carry NO group, member or transaction uids. Group
+  "uid" is "" in the file, and parseExport ignores ids in older files.
+  This also protects the original group from importers still on
+  v2.1.0, which generates a fresh group uid when the file has none.
+- Author names and created_ts stay in files as history.
+- Every local insert sets a uid.
+- Pull refuses to apply while the upload marker is missing.
+- The unique index makes any future duplicate-uid insert fail loudly
+  instead of silently adding a copy.
+- Tests:
+  - data.test.ts: "export -> import: the file has no ids …" and
+    "import ignores ids in files from older versions"
+  - server-sync-client.test.ts: "importing a shared group file on
+    another phone creates a separate group and never touches the
+    original"
+
+Ordering for a release:
+
+1. Ship the app update (migration 10).
+2. Run the server dedupe after it.
+
+The order doesn't affect correctness, because migration 10 replays the
+log. Running the dedupe first just means v2.1.0 phones, which can't
+match uid '' rows, keep their author-less copy until they update.
+
+Schema-change policy for existing data:
+
+- New columns are added nullable, or NOT NULL with a safe default,
+  using ADD COLUMN IF NOT EXISTS in a new numbered migration. Never
+  edit an applied migration.
+- If a new field is required for new data, enforce it in the UI and in
+  server validation for creates, and for edits of that record. Never
+  reject reading or syncing an old row because the field is NULL.
+- Every reader (server SELECTs, client applyServerChange, writeSnapshot,
+  import) must accept the legacy shapes listed above.
+
+Python backend (backend/):
+
+- It is a partial port of the relay and is NOT safe to write to
+  production, alone or next to the relay. An audit on 2026-10-10
+  reproduced:
+  - lost updates and deadlocks: no group FOR UPDATE first, and the
+    version is checked before any lock
+  - retries applied twice: the idempotency ledger is read outside the
+    transaction
+  - refused mutations still commit partial writes
+  - group delete is soft instead of erase
+  - missing validation; amounts are coerced with int()
+  - no notifications or webhooks
+- Already aligned with the relay (2026-10-10, backend/tests/test_error_contract.py):
+  - errors use the relay's {"error","message"} body (main.py handler);
+    FastAPI's {"detail":...} hides the codes phones act on
+  - find_readable_group: hidden → 404 GROUP_UNAVAILABLE (phones keep
+    the group), deleted or unknown → 404 GROUP_NOT_FOUND
+  - bootstrap serves only live members and transactions
+    (is_deleted=false)
+- Its schema script runs on every startup with no version tracking.
+  Against relay migrations it is a no-op. On a fresh database it lacks
+  device_group_subscriptions, webhook_subscriptions, RLS and the 005
+  indexes.
+- Before it serves real users, port the relay's push logic one-to-one:
+  - group-first FOR UPDATE
+  - ledger lookup inside the transaction
+  - roll back refused mutations and record the result separately
+  - retry on 40P01/40001/23505
+  - the relay's validators
+  - eraseGroup
+  - REPEATABLE READ snapshot for bootstrap
+  Then run tests/server-*.test.ts against it over HTTP and add Postgres
+  concurrency tests. Two servers writing one database needs an explicit
+  architecture decision first.
+
+Working with production:
+
+- Never start a server with backend/.env; startup runs schema DDL.
+- Read production only inside an explicit read-only transaction
+  (asyncpg: conn.transaction(readonly=True)). Connection-level
+  default_transaction_read_only is ignored by the pooler.
+- Print schema and aggregate counts only, never personal records or
+  credentials. Copying production data off the server is not allowed.
+- Reproduce against a local Postgres with relay/migrations applied and
+  legacy-shaped seed data, or the dev database.
+- Run the web app with EXPO_PUBLIC_SERVER_URL set to the dev relay (or
+  http://127.0.0.1:9 for UI-only checks). Without it the web app syncs
+  to production.

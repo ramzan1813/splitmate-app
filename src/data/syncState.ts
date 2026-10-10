@@ -40,7 +40,6 @@ export async function setUploadMarker(groupUid: string, dbInstance?: DB): Promis
   );
 }
 
-/** Forgets every group's server cursor and upload marker (used when the server URL changes). */
 /** True once this phone has received the group's history from the server (it existed there). */
 export async function hasServerHistory(groupUid: string, dbInstance?: DB): Promise<boolean> {
   const db = dbInstance ?? (await getDb());
@@ -48,10 +47,22 @@ export async function hasServerHistory(groupUid: string, dbInstance?: DB): Promi
   return (row?.s ?? 0) > 0;
 }
 
+/** Forgets every group's server cursor and upload marker (used when the server URL changes). */
 export async function resetAllSyncBindings(dbInstance?: DB): Promise<void> {
   const db = dbInstance ?? (await getDb());
   await db.runAsync(`DELETE FROM settings WHERE key LIKE 'sync.uploaded.%'`, []);
   await db.runAsync(`UPDATE sync_state SET last_server_sequence = 0, updated_at = ?`, [new Date().toISOString()]);
+}
+
+/**
+ * Forgets one group's server cursor and upload marker. Used when the server has less history than
+ * this phone (CURSOR_AHEAD): the next sync compares with the server again, links the rows it
+ * already has, uploads only what it lacks, and replays the change log onto the linked rows.
+ */
+export async function resetSyncBinding(groupUid: string, dbInstance?: DB): Promise<void> {
+  const db = dbInstance ?? (await getDb());
+  await db.runAsync('DELETE FROM settings WHERE key = ?', [uploadMarkerKey(groupUid)]);
+  await db.runAsync('UPDATE sync_state SET last_server_sequence = 0, updated_at = ? WHERE group_uid = ?', [new Date().toISOString(), groupUid]);
 }
 
 /** Retrieves the current synchronization state and cursor for a group. */

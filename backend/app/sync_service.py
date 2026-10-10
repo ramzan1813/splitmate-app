@@ -40,6 +40,21 @@ def format_iso(val: Any) -> str:
     return now_iso()
 
 
+async def find_readable_group(tx, group_uid: str) -> Dict[str, Any]:
+    """The live group a read may return (relay: findReadableGroup).
+
+    GROUP_UNAVAILABLE: the group exists but is hidden (is_display=false); phones keep their copy.
+    GROUP_NOT_FOUND: deleted or never on this server; phones that synced it treat it as deleted.
+    """
+    group = await tx.fetch_one("SELECT * FROM visible_groups WHERE uid = $1 AND is_deleted = false", [group_uid])
+    if group:
+        return group
+    hidden = await tx.fetch_one("SELECT 1 AS x FROM groups WHERE uid = $1 AND is_deleted = false", [group_uid])
+    if hidden:
+        raise HTTPException(status_code=404, detail={"error": "GROUP_UNAVAILABLE", "message": f"Group {group_uid} is not available"})
+    raise HTTPException(status_code=404, detail={"error": "GROUP_NOT_FOUND", "message": f"Group {group_uid} not found"})
+
+
 class SyncService:
     def __init__(self, database: Database):
         self.db = database
@@ -47,15 +62,12 @@ class SyncService:
     # --- 1. Bootstrap Snapshot ---
     async def get_group_bootstrap(self, group_uid: str) -> GroupBootstrapResponse:
         async with self.db.transaction() as tx:
-            group = await tx.fetch_one(
-                "SELECT * FROM visible_groups WHERE uid = $1",
-                [group_uid],
-            )
-            if not group:
-                raise HTTPException(status_code=404, detail={"error": "GROUP_NOT_FOUND", "message": "Group not found or deleted"})
+            group = await find_readable_group(tx, group_uid)
 
+            # Deleted rows are tombstones for the change feed only; a snapshot holds live rows
+            # (phones write every snapshot row as live).
             members_rows = await tx.fetch_all(
-                "SELECT * FROM visible_members WHERE group_uid = $1 ORDER BY id ASC",
+                "SELECT * FROM visible_members WHERE group_uid = $1 AND is_deleted = false ORDER BY id ASC",
                 [group_uid],
             )
             members = [
@@ -76,13 +88,13 @@ class SyncService:
             member_id_map = {m["member_uid"]: m.get("id", 0) for m in members_rows}
 
             tx_rows = await tx.fetch_all(
-                "SELECT * FROM visible_transactions WHERE group_uid = $1 ORDER BY date DESC, id DESC",
+                "SELECT * FROM visible_transactions WHERE group_uid = $1 AND is_deleted = false ORDER BY date DESC, id DESC",
                 [group_uid],
             )
 
             splits_rows = await tx.fetch_all(
                 "SELECT * FROM visible_splits WHERE transaction_uid IN ("
-                "  SELECT tx_uid FROM visible_transactions WHERE group_uid = $1"
+                "  SELECT tx_uid FROM visible_transactions WHERE group_uid = $1 AND is_deleted = false"
                 ")",
                 [group_uid],
             )
@@ -156,12 +168,7 @@ class SyncService:
         after_seq = max(0, after)
 
         async with self.db.transaction() as tx:
-            group = await tx.fetch_one(
-                "SELECT last_sequence FROM visible_groups WHERE uid = $1",
-                [group_uid],
-            )
-            if not group:
-                raise HTTPException(status_code=404, detail={"error": "GROUP_NOT_FOUND", "message": "Group not found"})
+            group = await find_readable_group(tx, group_uid)
 
             last_sequence = int(group.get("last_sequence", 0))
             if after_seq > last_sequence:

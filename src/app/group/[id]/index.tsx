@@ -18,7 +18,7 @@ import { dragOffset, isHorizontalSwipe, swipeDirection } from '@/lib/swipeTabs';
 import { colors, colorFor, categoryIcon } from '@/lib/theme';
 import { confirm, errorMessage, notify } from '@/lib/dialog';
 import { Settlement } from '@/data/types';
-import { getSettlementCauses } from '@/data/logic';
+import { canSettle as canSettleFor, getSettlementCauses } from '@/data/logic';
 
 type Tab = 'transactions' | 'balances' | 'settle' | 'chart';
 /** Order of the tabs in the segmented bar; swiping left/right moves through this list. */
@@ -135,6 +135,7 @@ export default function GroupScreen() {
 
   const cur = data?.group.currency ?? 'USD';
   const me = data?.stats.find((s) => s.memberId === data.myMemberId);
+  const canSettle = (s: { from: number; to: number }) => !!data && canSettleFor(data, s);
 
   const inviteLink = useMemo(() => {
     if (!data?.group?.uid) return '';
@@ -383,12 +384,14 @@ export default function GroupScreen() {
                               testID={`settle-breakdown-${i}`}
                               onPress={() => setBreakdownSettlement({ ...x, isDirect: settlementMode === 'direct' })}
                             />
-                            <Button
-                              small
-                              title="Settle"
-                              testID={`settle-${i}`}
-                              onPress={() => router.push(`/group/${id}/payment?from=${x.from}&to=${x.to}&amount=${(x.amount / 100).toFixed(2)}`)}
-                            />
+                            {canSettle(x) && (
+                              <Button
+                                small
+                                title="Settle"
+                                testID={`settle-${i}`}
+                                onPress={() => router.push(`/group/${id}/payment?from=${x.from}&to=${x.to}&amount=${(x.amount / 100).toFixed(2)}`)}
+                              />
+                            )}
                           </Row>
                         </Row>
                       </Card>
@@ -806,19 +809,18 @@ export default function GroupScreen() {
 
               {/* Action buttons inside modal */}
               <View style={{ marginTop: 8, gap: 8 }}>
-                <Button
-                  title={`Record payment (${money(breakdownData?.settlement.amount ?? 0, breakdownData?.cur ?? 'USD')})`}
-                  onPress={() => {
-                    const s = breakdownData?.settlement;
-                    setBreakdownSettlement(null);
-                    if (s) {
-                      router.push(
-                        `/group/${id}/payment?from=${s.from}&to=${s.to}&amount=${(s.amount / 100).toFixed(2)}`
-                      );
-                    }
-                  }}
-                />
-                {!breakdownData?.isDirect && breakdownData && breakdownData.directTotal > 0 && breakdownData.simplificationDiff !== 0 && (
+                {breakdownData && canSettle(breakdownData.settlement) && (
+                  <Button
+                    title={`Record payment (${money(breakdownData.settlement.amount, breakdownData.cur)})`}
+                    testID="breakdown-record-payment"
+                    onPress={() => {
+                      const s = breakdownData.settlement;
+                      setBreakdownSettlement(null);
+                      router.push(`/group/${id}/payment?from=${s.from}&to=${s.to}&amount=${(s.amount / 100).toFixed(2)}`);
+                    }}
+                  />
+                )}
+                {breakdownData && canSettle(breakdownData.settlement) && !breakdownData.isDirect && breakdownData.directTotal > 0 && breakdownData.simplificationDiff !== 0 && (
                   <Button
                     variant="outline"
                     title={`Record direct debt instead (${money(breakdownData.directTotal, breakdownData.cur)})`}
