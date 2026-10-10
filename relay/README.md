@@ -1,6 +1,8 @@
-# SplitMate Sync API (`relay/`)
+# EvenUp Sync API (`relay/`)
 
-Express 5 on Cloudflare Workers, backed by Postgres (Neon in production). Clients sync over plain HTTPS.
+The reference sync server for EvenUp (formerly SplitMate): Express 5 on Cloudflare Workers, backed by Postgres
+(Neon). It served app 2.1.0; from 2.2.0 the app's default server is the Python backend in [../backend/](../backend/),
+which implements the same API on the same schema. Clients sync over plain HTTPS.
 There are no WebSockets. Other devices learn about changes through **signed webhooks** and
 **Expo push notifications**, and then pull deltas with a cursor.
 
@@ -53,7 +55,7 @@ Admin routes need `Authorization: Bearer <ADMIN_API_KEY>`. If the key is not set
 
 ### Hiding rows (`is_display`)
 
-Every SplitMate table has `is_display BOOLEAN NOT NULL DEFAULT true`. Set it to `false` in the database to stop the
+Every EvenUp table has `is_display BOOLEAN NOT NULL DEFAULT true`. Set it to `false` in the database to stop the
 server returning a row; set it back to `true` to show it again:
 
 ```sql
@@ -170,7 +172,34 @@ The server uses whatever database `relay/.dev.vars` points at: the development d
 | `npm run dev` | `wrangler dev` on http://localhost:8787 |
 | `npm run typecheck` | Type-checks src, scripts and the test harness |
 | `npm run cf-typegen` | Regenerates `worker-configuration.d.ts` after editing `wrangler.toml` |
+| `npm run dedupe` | Lists transactions uploaded more than once; `npm run dedupe -- --apply` deletes the copies (see below) |
 | `npm test` (repo root) | Runs every test. Server tests run the real Express app against [PGlite](https://pglite.dev) (in-memory Postgres) using the production migrations. |
+
+## Removing duplicate transactions
+
+Files imported by app versions up to 2.1.0 could upload a group's transactions a second time, as new
+transactions authored by the importer. `scripts/dedupe-transactions.ts` removes those copies **the only way phones
+learn about it**: ordinary deletes through `POST /sync/push`, which become tombstones in the change log. Never
+`DELETE` rows from the tables directly, and don't hide them with `is_display`; phones would keep their copies.
+
+```bash
+# Dry run: reads the database in a READ ONLY transaction and prints the plan
+DATABASE_URL="<postgres url>" SERVER_URL="https://<the server that uses that database>" npm run dedupe
+# Delete the listed copies
+DATABASE_URL="..." SERVER_URL="..." npm run dedupe -- --apply
+```
+
+- A copy is removed only when it matches the kept transaction in every field, including splits and the
+  millisecond creation time. The first upload (earliest `created_at`) is kept.
+- Look-alikes without a creation time may be separate real expenses: they are listed for review, never removed.
+- Before deleting, every row is checked through `SERVER_URL` (same version, served by that server), so the tool
+  never deletes through a server backed by a different database. Hidden rows are skipped; make them visible first
+  if their delete must reach phones.
+- Deletes run as the group's creator with ids derived from the transaction (`dedupe-<txUid>`), so running it twice
+  changes nothing.
+
+The logic lives in [src/maintenance.ts](src/maintenance.ts) and is covered by the end-to-end test
+"phones broken by a v2.1.0 import are repaired …" in `tests/server-sync-client.test.ts`.
 
 ## Layout
 
@@ -182,7 +211,9 @@ relay/
 │   ├── 003_erase_deleted_groups.sql    # erase data of groups deleted before deletes erased
 │   ├── 004_is_display.sql              # is_display on every table, sync_users, visible_* views
 │   └── 005_performance_indexes.sql     # foreign-key, member-name, ledger and dispatcher indexes
-├── scripts/migrate.ts        # applies migrations once each (schema_migrations table)
+├── scripts/
+│   ├── migrate.ts            # applies migrations once each (schema_migrations table)
+│   └── dedupe-transactions.ts  # finds and deletes uploaded-twice transactions through /sync/push
 ├── src/
 │   ├── index.ts              # Worker entry: Express via httpServerHandler + cron dispatcher
 │   ├── app.ts                # Express routes, auth, error mapping
@@ -190,7 +221,8 @@ relay/
 │   ├── permissions.ts        # ADMIN_ONLY / CONTRIBUTOR / COLLABORATIVE rules
 │   ├── notifications.ts      # webhook signing + Expo push dispatcher with retries
 │   ├── db.ts                 # per-request pg connection + transactions
-│   ├── joinPage.ts           # invite landing page
+│   ├── joinPage.ts           # invite landing page ("Open in EvenUp")
+│   ├── maintenance.ts        # duplicate-transaction finder + delete mutations for the dedupe script
 │   ├── legacyRelayRoom.ts    # keeps the v2 Durable Object class (and its data) alive
 │   └── types.ts              # wire types shared with the app
 ├── test-support/             # PGlite test server + fake Expo hub (used by the root test suite)

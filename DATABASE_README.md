@@ -1,6 +1,6 @@
-# SplitMate Database Architecture & Entity Relationship Diagram (ERD)
+# EvenUp Database Architecture & Entity Relationship Diagram (ERD)
 
-This document details the database schema, entity relationships, constraints, indexes, visibility cascading, and migration lifecycle for SplitMate.
+This document details the database schema, entity relationships, constraints, indexes, visibility cascading, and migration lifecycle for EvenUp (formerly SplitMate): the sync server's Postgres database (sections 1–4) and the database on each phone (section 5).
 
 ---
 
@@ -199,16 +199,46 @@ Visibility cascades via SQL views:
 4. **`visible_splits`**: Only exposed if the parent transaction is visible.
 5. **`visible_changes`**: Hides individual change payloads while allowing the cursor to advance past the sequence index.
 
+Hiding is not deleting. Phones keep rows they already downloaded, and because changes to hidden rows are not served, a later delete of a hidden row never reaches phones either. To remove a record from every phone, delete it through `POST /sync/push`, which writes a tombstone to the change log (for duplicate transactions use `npm --prefix relay run dedupe`, see [relay/README.md](relay/README.md#removing-duplicate-transactions)). Never `DELETE` synchronized rows directly in SQL.
+
 ---
 
 ## 4. Migration Execution
 
-SplitMate automatically executes and verifies database migrations during application startup:
-- **SQLite**: Runs [001_init_sqlite.sql](file:///C:/Users/Ramzan/.gemini/antigravity/worktrees/splitmate-app/cleanup_and_dockerize_app/backend/migrations/001_init_sqlite.sql) via `aiosqlite.executescript`.
-- **PostgreSQL**: Runs [001_init_postgres.sql](file:///C:/Users/Ramzan/.gemini/antigravity/worktrees/splitmate-app/cleanup_and_dockerize_app/backend/migrations/001_init_postgres.sql) via asyncpg connection pool.
+The Postgres schema's source of truth is [relay/migrations/](relay/migrations/) (`001`–`005`, applied once each by
+`npm --prefix relay run migrate` and recorded in `schema_migrations`). Add schema changes there as a new numbered,
+idempotent migration (`ADD COLUMN IF NOT EXISTS`, nullable or with a safe default), never by editing an applied file,
+so existing rows keep working.
+
+The Python backend also runs its own schema script on every startup:
+- **SQLite**: Runs [001_init_sqlite.sql](backend/migrations/001_init_sqlite.sql) via `aiosqlite.executescript`.
+- **PostgreSQL**: Runs [001_init_postgres.sql](backend/migrations/001_init_postgres.sql) via asyncpg connection pool.
+  On a database that already has the relay migrations this changes nothing. On a fresh database it lacks the relay's
+  `device_group_subscriptions` and `webhook_subscriptions` tables, RLS and the `005` indexes, so create production
+  databases with the relay migrations.
 
 To test or verify migrations independently:
 ```bash
 # Verify SQLite migrations
 python -c "import asyncio, os, sys; sys.path.insert(0, 'backend'); from app.db import Database; asyncio.run(Database('sqlite+aiosqlite:///./test.db').connect())"
 ```
+
+---
+
+## 5. On-Device Database (phones)
+
+Each phone keeps its own SQLite database (`splitmate.db`, name kept so data survives the rename) with the same groups,
+members, transactions and splits, plus the outbox, per-group sync state and settings. The schema and its migrations
+live in [src/data/db.ts](src/data/db.ts) and run when the app opens (`PRAGMA user_version`, currently **10**).
+
+- **Identity:** every row has a client-assigned uid (groups e.g. `1a10608a883-9b4020dc-9da16e50`, members `mem_…`, transactions `tx_…`); local integer ids are never sent to
+  the server. Since migration 10, a transaction uid is unique per group: `UNIQUE (group_id, uid)`.
+- **Migration 10 (app 2.2.0)** repairs phones that imported a group file in 2.1.0 or earlier. Those imports saved
+  transactions with an empty uid and no author, which led to duplicate transactions after later syncs. The migration:
+  1. replays the change log of the affected groups from 0 (nothing is re-uploaded);
+  2. gives the empty-uid rows the uid they were already synced under (`tx_<id>` / `mem_<id>`);
+  3. merges rows that share a uid in a group, keeping the highest server version, then the row with an author;
+  4. adds the unique index.
+- **Outbox & sync state:** `outbox_mutations` holds unsent changes (pending / sending / failed / conflict);
+  `sync_state` holds each group's server cursor; the setting `sync.uploaded.<groupUid>` marks a group as reconciled with
+  the server. A group's cursor and marker are reset together when the server has lost history or the server changes.
