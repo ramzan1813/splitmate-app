@@ -7,6 +7,7 @@ import {
   Text,
   TextInput,
   TextInputProps,
+  TextStyle,
   View,
   ViewStyle,
 } from 'react-native';
@@ -222,8 +223,8 @@ export function Screen({ children, scroll = true, style }: { children: React.Rea
   );
 }
 
-export function SectionTitle({ children }: { children: React.ReactNode }) {
-  return <Text style={styles.sectionTitle}>{children}</Text>;
+export function SectionTitle({ children, style }: { children: React.ReactNode; style?: StyleProp<TextStyle> }) {
+  return <Text style={[styles.sectionTitle, style]}>{children}</Text>;
 }
 
 export function Row({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }) {

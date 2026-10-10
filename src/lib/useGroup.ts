@@ -42,10 +42,6 @@ export function useGroup(id: string | number | undefined) {
     }, [refresh])
   );
 
-  useEffect(() => {
-    refresh();
-  }, [id, refresh]);
-
   useEffect(
     () =>
       syncEngine.subscribe((groupUid) => {
