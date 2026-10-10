@@ -45,6 +45,7 @@ jobs:
     outputs:
       version: ${{ steps.apk.outputs.version }}
       is_release: ${{ steps.check.outputs.is_release }}
+      signer: ${{ steps.signer.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v6
 
@@ -109,13 +110,18 @@ jobs:
       - name: Restore release keystore from secrets
         env:
           KEYSTORE_BASE64: ${{ secrets.SPLITMATE_KEYSTORE_BASE64 }}
+          IS_RELEASE: ${{ steps.check.outputs.is_release }}
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
             echo "SPLITMATE_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
             echo "Signing with your release key."
+          elif [ "$IS_RELEASE" = "true" ]; then
+            # A debug-signed release cannot update phones that have the release-signed app ("App not installed").
+            echo "::error::No SPLITMATE_KEYSTORE_BASE64 secret - refusing to publish a release signed with the DEBUG key. See SIGNING.md."
+            exit 1
           else
-            echo "::warning::No SPLITMATE_KEYSTORE_BASE64 secret - APK will be signed with the DEBUG key (testing only). See SIGNING.md."
+            echo "::warning::No SPLITMATE_KEYSTORE_BASE64 secret - APK will be signed with the DEBUG key (testing only; it cannot update the released app). See SIGNING.md."
           fi
 
       - name: Build release APK
@@ -134,6 +140,26 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           mv android/app/build/outputs/apk/release/app-release.apk "EvenUp-$VERSION.apk"
           sha256sum "EvenUp-$VERSION.apk" | tee "EvenUp-$VERSION.apk.sha256"
+
+      # Android only installs an update signed with the same key as the installed app. Every release so far is
+      # signed with the certificate below; a release signed with anything else would fail to install as an update.
+      - name: Verify signing certificate
+        id: signer
+        env:
+          VERSION: ${{ steps.apk.outputs.version }}
+          IS_RELEASE: ${{ steps.check.outputs.is_release }}
+          EXPECTED: ${{ vars.EXPECTED_SIGNER_SHA256 || '877f6bca6ad8500e00f526c1c549df17867da3877a87f77b62dac75e44d85d22' }}
+        run: |
+          SIGNER=$(node scripts/apk-signer.mjs "EvenUp-$VERSION.apk" | head -1 | cut -d' ' -f2)
+          echo "Signing certificate SHA-256: $SIGNER"
+          echo "sha256=$SIGNER" >> "$GITHUB_OUTPUT"
+          if [ "$SIGNER" != "$EXPECTED" ]; then
+            if [ "$IS_RELEASE" = "true" ]; then
+              echo "::error::APK is signed with $SIGNER, not the release key $EXPECTED. It would not install over the released app."
+              exit 1
+            fi
+            echo "::warning::APK is signed with $SIGNER, not the release key; it will not update the released app (testing only)."
+          fi
 
       - name: Remove keystore
         if: always()
@@ -171,6 +197,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.build.outputs.version }}
+          SIGNER: ${{ needs.build.outputs.signer }}
         run: |
           TAG="v$VERSION"
           # this version's section of CHANGELOG.md (from "## <version>" up to the next "## "), without its heading
@@ -187,6 +214,7 @@ jobs:
           'Unknown app': tap More details -> Install anyway.
 
           SHA-256: $(cut -d' ' -f1 "EvenUp-$VERSION.apk.sha256")
+          Signing certificate SHA-256: $SIGNER (every release uses this key; an APK signed with another key cannot update this app).
           Built from commit ${GITHUB_SHA::7}."
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "Release $TAG exists - replacing its APK."
