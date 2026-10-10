@@ -8,7 +8,7 @@ async def test_health_check(client: AsyncClient):
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
-    assert data["name"] == "SplitMate Sync Backend"
+    assert data["name"] == "EvenUp Sync Backend"
     assert "version" in data
 
 

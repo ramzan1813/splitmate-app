@@ -90,7 +90,7 @@ export default function Home() {
             <>
               {sampleCount > 0 && (
                 <Card style={{ backgroundColor: colors.primaryLight }} testID="samples-banner">
-                  <Text style={{ fontWeight: '800', fontSize: 15, color: colors.primaryDark }}>👋 Welcome to SplitMate</Text>
+                  <Text style={{ fontWeight: '800', fontSize: 15, color: colors.primaryDark }}>👋 Welcome to EvenUp</Text>
                   <Text style={{ color: colors.text, marginTop: 4 }}>
                     We added {sampleCount === 1 ? 'a sample group' : `${sampleCount} sample groups`} so you can see how it works: a trip with friends, a shared flat with monthly bills, and a family holiday abroad. Open them, try Balances, Settle up and Insights — then remove them and create your own.
                   </Text>

@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 # --- Health & Info Schemas ---
 class HealthResponse(BaseModel):
     status: str = "ok"
-    name: str = "SplitMate Sync Backend"
+    name: str = "EvenUp Sync Backend"
     version: str = "3.0.0"
     database: str = "connected"
 

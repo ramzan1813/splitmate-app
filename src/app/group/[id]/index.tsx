@@ -664,7 +664,7 @@ export default function GroupScreen() {
                     </Text>
                   </Row>
                   <Text style={{ fontSize: 11, color: '#15803d', marginTop: 8, lineHeight: 15 }}>
-                    SplitMate settled shared group debts with other members across this payment to minimize total transactions.
+                    EvenUp settled shared group debts with other members across this payment to minimize total transactions.
                   </Text>
                 </Card>
               )}
@@ -765,7 +765,7 @@ export default function GroupScreen() {
                     <Text style={{ fontSize: 13, color: '#0c4a6e', lineHeight: 18 }}>
                       {breakdownData?.fromName} and {breakdownData?.toName} have no 1-to-1 direct expenses together. 
                       Instead, {breakdownData?.fromName} owes money across shared group expenses, and {breakdownData?.toName} paid for group expenses. 
-                      SplitMate resolved these cross-debts into a single direct settlement to minimize total transfers.
+                      EvenUp resolved these cross-debts into a single direct settlement to minimize total transfers.
                     </Text>
                   </Card>
 

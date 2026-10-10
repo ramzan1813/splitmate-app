@@ -23,7 +23,7 @@ export function QRScannerModal({
   visible,
   onClose,
   onScan,
-  title = 'Scan SplitMate QR Code',
+  title = 'Scan EvenUp QR Code',
 }: QRScannerModalProps) {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);

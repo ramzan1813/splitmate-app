@@ -32,7 +32,7 @@ function Root() {
         contentStyle: { backgroundColor: colors.bg },
       }}
     >
-      <Stack.Screen name="index" options={{ title: 'SplitMate' }} />
+      <Stack.Screen name="index" options={{ title: 'EvenUp' }} />
       <Stack.Screen name="insights" options={{ title: 'Insights' }} />
       <Stack.Screen name="settings" options={{ title: 'Settings' }} />
       <Stack.Screen name="import" options={{ title: 'Import' }} />

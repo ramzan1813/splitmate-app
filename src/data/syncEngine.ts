@@ -98,7 +98,7 @@ export interface RealtimeClient {
 // the problem as an offline/error state and the next trigger retries.
 const REQUEST_TIMEOUT_MS = 20_000;
 
-/** HTTP transport for the SplitMate sync server. Reads the server URL from settings on every call. */
+/** HTTP transport for the EvenUp sync server. Reads the server URL from settings on every call. */
 export class HttpSyncTransport implements SyncTransport {
   constructor(private resolveBaseUrl: () => Promise<string> = getServerUrl) {}
 
@@ -644,7 +644,7 @@ export class SyncEngine {
       if (differs) {
         await recordSyncNotification(db, {
           groupUid,
-          authorName: 'SplitMate',
+          authorName: 'EvenUp',
           title: 'Kept the server version',
           message: `Your copy of "${payload.title}" (${payload.amount / 100}) differed from the group's shared copy (${remote.amount / 100}). The shared copy was kept.`,
         });
@@ -973,7 +973,7 @@ export class SyncEngine {
         // hides): there is nothing to build it from. Record it visibly instead of failing every sync.
         await recordSyncNotification(db, {
           groupUid,
-          authorName: 'SplitMate',
+          authorName: 'EvenUp',
           title: 'Incomplete change skipped',
           message: `An edit arrived for a transaction this phone doesn't have (${change.entityUid}), so it couldn't be applied.`,
         });

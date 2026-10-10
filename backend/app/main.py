@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
-    description="Offline-First Multi-Device Synchronization Coordinator for SplitMate",
+    description="Offline-First Multi-Device Synchronization Coordinator for EvenUp",
     lifespan=lifespan,
 )
 

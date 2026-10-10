@@ -5,7 +5,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import { MAX_FILE_BYTES } from '@/data/backup';
 
-export const safeFileName = (s: string) => s.replace(/[^a-z0-9-_ ]/gi, '').trim().replace(/\s+/g, '-') || 'splitmate';
+export const safeFileName = (s: string) => s.replace(/[^a-z0-9-_ ]/gi, '').trim().replace(/\s+/g, '-') || 'evenup';
 
 function downloadOnWeb(data: string | Uint8Array, filename: string, mime: string) {
   const blob = new Blob([data as BlobPart], { type: mime });

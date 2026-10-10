@@ -54,7 +54,7 @@ export default function AppSettings() {
     if (target === identity?.serverUrl) return notify('No change', `Already using ${target}`);
     const ok = await confirm(
       'Change server?',
-      `SplitMate will sync with ${target}.\n\nYour groups will be re-synced with that server, and any group it doesn't have will be uploaded to it.`,
+      `EvenUp will sync with ${target}.\n\nYour groups will be re-synced with that server, and any group it doesn't have will be uploaded to it.`,
       'Change server'
     );
     if (!ok) return;
@@ -127,7 +127,7 @@ export default function AppSettings() {
       suspendLock();
       const file = await exportAll();
       if (!file.groups.length) return notify('Nothing to back up', 'Create a group first.');
-      await shareFile(JSON.stringify(file), `${safeFileName('splitmate-backup')}-${todayISO()}.splitmate.json`, 'application/json', 'Save backup');
+      await shareFile(JSON.stringify(file), `${safeFileName('evenup-backup')}-${todayISO()}.evenup.json`, 'application/json', 'Save backup');
     } catch (e) {
       notify('Backup failed', errorMessage(e));
     } finally {
@@ -139,7 +139,7 @@ export default function AppSettings() {
     if ((await getSampleGroupIds()).length) return notify('Already added', 'The sample groups are already on your home screen.');
     try {
       await createSampleGroups(profileName || 'Me');
-      notify('Sample groups added', 'Open them from the home screen to see how SplitMate works.');
+      notify('Sample groups added', 'Open them from the home screen to see how EvenUp works.');
     } catch (e) {
       notify('Could not add samples', errorMessage(e));
     }
@@ -185,7 +185,7 @@ export default function AppSettings() {
       <SectionTitle>Server</SectionTitle>
       <Card>
         <Text style={{ color: colors.muted, fontSize: 13, marginBottom: 8 }}>
-          The SplitMate server your groups sync with. To test server changes, point this at your development server (for example
+          The EvenUp server your groups sync with. To test server changes, point this at your development server (for example
           http://localhost:8787 on web, or http://&lt;your PC’s IP&gt;:8787 on a phone).
         </Text>
         <Text style={{ color: colors.text, fontSize: 12, fontWeight: '700', marginBottom: 4 }}>Server URL</Text>
@@ -274,20 +274,20 @@ export default function AppSettings() {
 
       <SectionTitle>Getting started</SectionTitle>
       <Card>
-        <Text style={{ color: colors.text, marginBottom: 12 }}>Add example groups (a trip, a shared flat and a family holiday) to see how SplitMate organises expenses.</Text>
+        <Text style={{ color: colors.text, marginBottom: 12 }}>Add example groups (a trip, a shared flat and a family holiday) to see how EvenUp organises expenses.</Text>
         <Button small variant="outline" title="Add sample groups" onPress={addSamples} style={{ alignSelf: 'flex-start' }} testID="add-samples" />
       </Card>
 
       <SectionTitle>Privacy</SectionTitle>
       <Card>
         <Text style={{ color: colors.muted, fontSize: 13 }}>
-          SplitMate works offline and keeps your data in the app’s private SQLite database. Groups are synced through the server set above, which stores each group’s name, members and transactions so other members’ phones can download them. There are no user accounts, ads or telemetry. The camera is used only to scan invite QR codes; SplitMate never asks for contacts, location or microphone access.
+          EvenUp works offline and keeps your data in the app’s private SQLite database. Groups are synced through the server set above, which stores each group’s name, members and transactions so other members’ phones can download them. There are no user accounts, ads or telemetry. The camera is used only to scan invite QR codes; EvenUp never asks for contacts, location or microphone access.
         </Text>
       </Card>
 
       <SectionTitle>Danger zone</SectionTitle>
       <Button title="Erase all data" variant="danger" onPress={erase} />
-      <Text style={{ color: colors.muted, textAlign: 'center', marginTop: 20, fontSize: 12 }}>SplitMate {Constants.expoConfig?.version ?? ''}</Text>
+      <Text style={{ color: colors.muted, textAlign: 'center', marginTop: 20, fontSize: 12 }}>EvenUp {Constants.expoConfig?.version ?? ''}</Text>
     </Screen>
   );
 }

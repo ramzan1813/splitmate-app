@@ -1,4 +1,4 @@
-# SplitMate Python FastAPI Backend Dockerfile
+# EvenUp Python FastAPI Backend Dockerfile
 FROM python:3.11-slim
 
 # Prevent Python from writing .pyc files and enable unbuffered output

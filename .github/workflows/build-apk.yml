@@ -1,4 +1,4 @@
-# Builds the SplitMate APK in the cloud for free.
+# Builds the EvenUp APK in the cloud for free.
 # Triggers:
 # 1. Automatic on commit message containing: [build], [apk], [release], build:, release:
 # 2. Automatic on Git version tag: v* (e.g. v1.4.1)
@@ -132,8 +132,8 @@ jobs:
         run: |
           VERSION=$(node -p "require('./app.json').expo.version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          mv android/app/build/outputs/apk/release/app-release.apk "SplitMate-$VERSION.apk"
-          sha256sum "SplitMate-$VERSION.apk" | tee "SplitMate-$VERSION.apk.sha256"
+          mv android/app/build/outputs/apk/release/app-release.apk "EvenUp-$VERSION.apk"
+          sha256sum "EvenUp-$VERSION.apk" | tee "EvenUp-$VERSION.apk.sha256"
 
       - name: Remove keystore
         if: always()
@@ -141,10 +141,10 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: splitmate-apk
+          name: evenup-apk
           path: |
-            SplitMate-*.apk
-            SplitMate-*.apk.sha256
+            EvenUp-*.apk
+            EvenUp-*.apk.sha256
           retention-days: 30
 
   # Publishes the APK as a GitHub Release when requested (via tag, [release] commit, or manual workflow)
@@ -164,7 +164,7 @@ jobs:
 
       - uses: actions/download-artifact@v7
         with:
-          name: splitmate-apk
+          name: evenup-apk
 
       - name: Create or update the GitHub Release
         env:
@@ -182,17 +182,17 @@ jobs:
 
           ---
           ### Install
-          Download SplitMate-$VERSION.apk below, open it on your phone and tap Install.
+          Download EvenUp-$VERSION.apk below, open it on your phone and tap Install.
           Android will ask to allow installing from this source, and Play Protect may show
           'Unknown app': tap More details -> Install anyway.
 
-          SHA-256: $(cut -d' ' -f1 "SplitMate-$VERSION.apk.sha256")
+          SHA-256: $(cut -d' ' -f1 "EvenUp-$VERSION.apk.sha256")
           Built from commit ${GITHUB_SHA::7}."
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "Release $TAG exists - replacing its APK."
-            gh release upload "$TAG" "SplitMate-$VERSION.apk" "SplitMate-$VERSION.apk.sha256" --clobber
+            gh release upload "$TAG" "EvenUp-$VERSION.apk" "EvenUp-$VERSION.apk.sha256" --clobber
             gh release edit "$TAG" --notes "$NOTES"
           else
-            gh release create "$TAG" "SplitMate-$VERSION.apk" "SplitMate-$VERSION.apk.sha256" \
-              --target "$GITHUB_SHA" --title "SplitMate $VERSION" --notes "$NOTES" --latest
+            gh release create "$TAG" "EvenUp-$VERSION.apk" "EvenUp-$VERSION.apk.sha256" \
+              --target "$GITHUB_SHA" --title "EvenUp $VERSION" --notes "$NOTES" --latest
           fi

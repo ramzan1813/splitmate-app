@@ -1,4 +1,4 @@
-// Sample groups created on first launch, so new users can see how SplitMate is used before entering their own data.
+// Sample groups created on first launch, so new users can see how EvenUp is used before entering their own data.
 // They are ordinary groups; their uids are remembered so they can be removed in one go.
 import { getDb } from './db';
 import { createGroup, createTransaction, deleteGroup, getMembers } from './repo';

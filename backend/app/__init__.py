@@ -1,1 +1,1 @@
-# SplitMate FastAPI Backend Package
+# EvenUp FastAPI Backend Package

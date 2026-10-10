@@ -93,7 +93,7 @@ export default function Members() {
     try {
       suspendLock();
       const file = await exportGroup(gid);
-      await shareFile(JSON.stringify(file), `${safeFileName(data.group.name)}.splitmate.json`, 'application/json', 'Share group');
+      await shareFile(JSON.stringify(file), `${safeFileName(data.group.name)}.evenup.json`, 'application/json', 'Share group');
     } catch (e) {
       notify('Could not share', errorMessage(e));
     } finally {
@@ -152,7 +152,7 @@ export default function Members() {
       <Card style={{ backgroundColor: colors.primaryLight }}>
         <Text style={{ fontWeight: '700', color: colors.primaryDark }}>Share this group</Text>
         <Text style={{ color: colors.primaryDark, marginTop: 4, fontSize: 13 }}>
-          Send the group as a file (WhatsApp, email, Drive…). Your friend opens SplitMate → Import group, picks the file and chooses their name. Send it again any time to share updates.
+          Send the group as a file (WhatsApp, email, Drive…). Your friend opens EvenUp → Import group, picks the file and chooses their name. Send it again any time to share updates.
         </Text>
         <Button small title="Share group file" onPress={share} loading={sharing} style={{ alignSelf: 'flex-start', marginTop: 10 }} testID="share-group-file" />
       </Card>

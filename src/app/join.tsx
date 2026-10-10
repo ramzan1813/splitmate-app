@@ -33,7 +33,7 @@ export default function JoinScreen() {
       const { uid, serverUrl } = inviteData;
       setTargetServerUrl(serverUrl);
       if (!uid) {
-        setError('Invalid or incomplete invite link. Please scan a valid SplitMate QR code or paste an invite link.');
+        setError('Invalid or incomplete invite link. Please scan a valid EvenUp QR code or paste an invite link.');
         return;
       }
       const existing = (await listGroups()).find((g) => g.uid === uid);
@@ -53,7 +53,7 @@ export default function JoinScreen() {
     } catch (e) {
       setError(
         e instanceof SyncNetworkError
-          ? `Couldn't reach the SplitMate server to load this group. Check your connection and try again.\n\n${e.message}`
+          ? `Couldn't reach the EvenUp server to load this group. Check your connection and try again.\n\n${e.message}`
           : errorMessage(e)
       );
     } finally {
@@ -134,7 +134,7 @@ export default function JoinScreen() {
         <Text style={{ fontSize: 36, marginBottom: 12 }}>🤝</Text>
         <Text style={{ fontSize: 22, fontWeight: '800', color: colors.text, marginBottom: 6, textAlign: 'center' }}>Join {group.name}</Text>
         <Text style={{ color: colors.muted, textAlign: 'center', fontSize: 14, marginBottom: 20 }}>
-          You were invited to join this group. Expenses and payments sync through the SplitMate server.
+          You were invited to join this group. Expenses and payments sync through the EvenUp server.
         </Text>
 
         <View style={{ width: '100%', backgroundColor: colors.bg, borderRadius: 12, padding: 14, marginBottom: 16 }}>

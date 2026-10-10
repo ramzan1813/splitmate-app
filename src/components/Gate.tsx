@@ -18,7 +18,7 @@ function Logo() {
       <View style={{ width: 72, height: 72, borderRadius: 20, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' }}>
         <Text style={{ color: '#fff', fontSize: 34, fontWeight: '900' }}>÷</Text>
       </View>
-      <Text style={{ fontSize: 28, fontWeight: '800', color: colors.text, marginTop: 12 }}>SplitMate</Text>
+      <Text style={{ fontSize: 28, fontWeight: '800', color: colors.text, marginTop: 12 }}>EvenUp</Text>
       <Text style={{ color: colors.muted, marginTop: 4 }}>Share & split group expenses</Text>
     </View>
   );

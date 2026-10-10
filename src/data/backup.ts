@@ -140,11 +140,11 @@ export function parseExport(text: string): ExportFile {
   try {
     raw = JSON.parse(text);
   } catch {
-    throw new AppError('This is not a SplitMate file (invalid JSON)');
+    throw new AppError('This is not an EvenUp file (invalid JSON)');
   }
-  if (!isObj(raw) || (raw.format && raw.format !== FORMAT)) throw new AppError('This is not a SplitMate file');
+  if (!isObj(raw) || (raw.format && raw.format !== FORMAT)) throw new AppError('This is not an EvenUp file');
   if (typeof raw.version === 'number' && raw.version > FORMAT_VERSION) {
-    throw new AppError('This file was made by a newer version of SplitMate. Please update the app.');
+    throw new AppError('This file was made by a newer version of EvenUp. Please update the app.');
   }
   if (!Array.isArray(raw.groups) || raw.groups.length === 0) throw new AppError('The file contains no groups');
   if (raw.groups.length > MAX_GROUPS) throw new AppError('The file contains too many groups');

@@ -322,7 +322,7 @@ test('import accepts group files from older versions that have no transaction au
 
 test('import rejects bad or malicious files', () => {
   assert.throws(() => parseExport('not json'), /invalid JSON/);
-  assert.throws(() => parseExport('{"format":"other"}'), /not a SplitMate/);
+  assert.throws(() => parseExport('{"format":"other"}'), /not an EvenUp/);
   assert.throws(() => parseExport(JSON.stringify({ format: 'splitmate', version: 99, groups: [] })), /newer version/);
   const base = { format: 'splitmate', version: 1, kind: 'group', groups: [{ uid: 'x', name: 'G', currency: 'USD', members: [{ ref: 1, name: 'A' }, { ref: 2, name: 'B' }], transactions: [] as unknown[] }] };
   const withTx = (t: unknown) => JSON.stringify({ ...base, groups: [{ ...base.groups[0], transactions: [t] }] });

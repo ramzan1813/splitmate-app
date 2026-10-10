@@ -32,7 +32,7 @@ if host_env and host_env.strip():
 
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "SplitMate Sync Backend"
+    PROJECT_NAME: str = "EvenUp Sync Backend"
     VERSION: str = "3.0.0"
     HOST: str = "localhost"
     PORT: int = 8080

@@ -2,6 +2,34 @@
 
 Release notes for each version. The release workflow copies the section matching the version in `app.json` into the GitHub Release.
 
+## 2.2.0 — 2026-10-10
+
+**SplitMate is now EvenUp.** Same app, new name. Install this version over your current one: your groups, expenses and settings stay on your phone.
+
+Server operators: deploy the sync server from this version before releasing the app. The app now syncs with `https://evenup.ramzankhan.shop` by default, and it relies on that server's new error responses. To remove transactions that were uploaded twice, run `npm --prefix relay run dedupe` (a dry run lists them; add `-- --apply` to delete them through the sync server, so every phone receives the delete).
+
+### New
+- **New name: EvenUp.** The app name, screens, invite page and backup files (`.evenup.json`) now say EvenUp. Invite links and QR codes you already shared keep working, and backups from earlier versions still import.
+- **New sync server.** The app syncs with `https://evenup.ramzankhan.shop`. You can still use another server: Settings → Server URL shows the current one, and *Reset to default* switches back.
+- **Select all / Unselect all.** When splitting an expense equally, one tap selects or clears every member. It shows how many are selected, e.g. *2 of 3*.
+
+### Changed
+- **Settle only what's yours.** On *Settle up*, the **Settle** button (and *Record payment* in the breakdown) appears only on payments you make or receive. The group admin can settle any of them. Everyone can still open **Breakdown**.
+- **Importing a file always creates a new group.** A group file or backup you import becomes a separate group that you own, with its own members and transactions. It never changes the original group, on your phone, on other members' phones or on the server. If you already have a group with that name, the import is called *Name (copy)*. To share a live group, use an invite link.
+- Removed *Update with this file* and *Replace everything on this phone* from Import. Both could overwrite or erase groups you share with others.
+
+### Fixed
+- **Duplicate transactions.** Importing a group file in earlier versions could make the same transaction appear two or three times. Some copies had no *Added by*, and on other members' phones the copy showed the importer as author. Phones repair themselves when they install this version: copies of the same transaction are merged and each one keeps its original author.
+- **Two real expenses merged into one.** Two separate expenses with the same title, amount and day (two "Chai 200" on the same day, say) could be merged, or one of them deleted, when opening a group or syncing. Every transaction now stays separate.
+- **Sync stuck on one change.** An edit that changed only part of a transaction (e.g. just its title) could stop a group from syncing, or clear its splits. Such edits now change only what was edited.
+- **Server restored or replaced.** If the sync server lost recent history, a phone kept failing to sync that group, and expenses the server lost were never sent again. The phone now sends the server what it is missing, then catches up.
+- **Import failed with "Error finalizing statement"** for group files exported by older versions.
+
+### Upgrading
+- Your data stays on your phone and is repaired automatically the first time this version opens.
+- Phones still on 2.1.0 keep syncing with the previous server, so members on different versions don't see each other's changes until everyone has updated. Ask your group to update.
+- Groups move to the new server on their first sync after the update: each phone uploads what the server doesn't have yet.
+
 ## 2.1.0 — 2026-10-07
 
 Server operators: run the database migrations `002`–`005` (`npm --prefix relay run migrate`) before or right after deploying this version's server; until then the server answers sync requests with errors. Phones on 2.0.0 keep syncing with the new server.

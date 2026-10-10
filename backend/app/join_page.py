@@ -10,7 +10,7 @@ def render_join_page(query_string: str, server_base_url: str = "") -> str:
     if "server" not in flat_params and server_base_url:
         flat_params["server"] = server_base_url
 
-    raw_name = flat_params.get("name", "SplitMate Group")
+    raw_name = flat_params.get("name", "EvenUp Group")
     raw_cur = flat_params.get("cur", "PKR")
 
     group_name = html.escape(raw_name)
@@ -25,7 +25,7 @@ def render_join_page(query_string: str, server_base_url: str = "") -> str:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Join SplitMate Group</title>
+  <title>Join EvenUp Group</title>
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0F172A; color: #F8FAFC; margin: 0; padding: 20px; display: flex; align-items: center; justify-content: center; min-height: 100vh; box-sizing: border-box; }}
     .card {{ background: #1E293B; border-radius: 20px; padding: 32px 24px; max-width: 400px; width: 100%; text-align: center; border: 1px solid #334155; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }}
@@ -44,12 +44,12 @@ def render_join_page(query_string: str, server_base_url: str = "") -> str:
   <div class="card">
     <div style="font-size: 40px; margin-bottom: 8px;">🤝</div>
     <h1>Join {group_name}</h1>
-    <p>You were invited to sync expenses in SplitMate.</p>
+    <p>You were invited to sync expenses in EvenUp.</p>
     <div class="info-box">
       <div class="info-row"><span class="info-label">Group Name:</span><span class="info-val">{group_name}</span></div>
       <div class="info-row"><span class="info-label">Currency:</span><span class="info-val">{currency}</span></div>
     </div>
-    <a href="{deep_link_attr}" class="btn">📱 Open in SplitMate App</a>
+    <a href="{deep_link_attr}" class="btn">📱 Open in EvenUp App</a>
     <button class="btn btn-outline" id="copy">📋 Copy App Link</button>
   </div>
   <script>

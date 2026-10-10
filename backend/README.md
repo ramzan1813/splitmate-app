@@ -1,6 +1,6 @@
-# SplitMate Backend (FastAPI)
+# EvenUp Backend (FastAPI)
 
-FastAPI implementation of the SplitMate sync server. It supports both **PostgreSQL** (production & Docker) and **SQLite** (local embedded testing & single-node deployment).
+FastAPI implementation of the EvenUp sync server. It supports both **PostgreSQL** (production & Docker) and **SQLite** (local embedded testing & single-node deployment).
 
 ---
 
@@ -49,7 +49,7 @@ A [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml) are prov
 
 ### Quick Start with Docker Compose
 
-To start both PostgreSQL and the SplitMate backend:
+To start both PostgreSQL and the EvenUp backend:
 ```bash
 docker compose up --build -d
 ```

@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "SplitMate",
+    "name": "EvenUp",
     "slug": "splitmate",
-    "version": "2.1.0",
+    "version": "2.2.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -19,7 +19,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.splitmate.app",
-      "versionCode": 17,
+      "versionCode": 18,
       "permissions": [
         "CAMERA",
         "android.permission.CAMERA",
@@ -46,7 +46,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow SplitMate to scan QR codes for group invites."
+          "cameraPermission": "Allow EvenUp to scan QR codes for group invites."
         }
       ],
       [

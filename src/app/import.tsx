@@ -93,7 +93,7 @@ export default function ImportScreen() {
 
       <SectionTitle>Import Backup or JSON File</SectionTitle>
       <Text style={{ color: colors.muted, marginBottom: 12 }}>
-        Import a group file a friend shared with you, or a backup you exported earlier (files ending in .splitmate.json). Each group is added as a new group that you own: it never changes the original group or anyone else’s copy. To share a live group with others, use an invite link instead.
+        Import a group file a friend shared with you, or a backup you exported earlier (files ending in .evenup.json, or .splitmate.json from earlier versions). Each group is added as a new group that you own: it never changes the original group or anyone else’s copy. To share a live group with others, use an invite link instead.
       </Text>
       <Button title={file ? 'Choose a different file' : 'Choose file'} variant={file ? 'outline' : 'primary'} onPress={pick} testID="pick-file" />
 
