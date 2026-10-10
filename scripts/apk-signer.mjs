@@ -6,6 +6,7 @@
 //
 // Usage: node scripts/apk-signer.mjs <file.apk> [...]
 // Prints one line per signer: "<scheme> <sha256-hex>". Exits 1 if a file has no v2/v3 signature.
+import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
