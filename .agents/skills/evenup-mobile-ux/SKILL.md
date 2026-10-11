@@ -81,7 +81,31 @@ Test mentally at 320 px width with a long name like "🫂 Three Man Squad 🤑 (
 - `useNativeDriver` is `Platform.OS !== 'web'` for animations.
 - Camera/QR on web falls back to paste.
 
-## 6. Before you say a UI task is done
+## 6. Current platform standards (2025–2026)
+
+Build to today's standards, not old habits. Where the app has made a deliberate choice, keep it unless the owner
+asks to change it.
+
+| Standard | What it means here |
+|---|---|
+| **Material 3 / Material 3 Expressive** (Android design language) | Rounded cards, clear hierarchy, one primary action per screen, bottom sheets for secondary choices, snackbars for short non-blocking feedback. Express it with the existing kit and `theme.ts`; don't import a new design library. |
+| **Touch targets** | 48×48 dp on Android (44×44 pt iOS). WCAG 2.2 (2.5.8) minimum is 24×24 CSS px with spacing. Use padding or `hitSlop`, not bigger icons. |
+| **Accessibility: WCAG 2.2 AA** | Text contrast ≥ 4.5:1 (large text 3:1); `accessibilityLabel` on icon buttons, `accessibilityRole`/`accessibilityState` on custom controls; meaning never by color alone (owes = red AND a word/sign); focused element never hidden behind a bar (2.4.11). |
+| **Dynamic type** | Layouts survive 200% system font size: no fixed text heights, rows can wrap; cap only dense numeric rows with `maxFontSizeMultiplier`. |
+| **Reduced motion** | Respect the OS setting: skip or shorten slide/scale animations when reduce-motion is on (`AccessibilityInfo.isReduceMotionEnabled`, or Reanimated's `useReducedMotion`). Swipe still works; only decorative motion goes. |
+| **Edge-to-edge** (Android 15+ default) | Content draws behind status and navigation bars; pad with safe-area insets (`Screen`, `useSafeAreaInsets`), never hard-coded status-bar heights. |
+| **Predictive back** (Android 14+) | Currently **disabled** in `app.json` (`predictiveBackGestureEnabled: false`). Don't enable it without the owner; if enabled later, every modal must handle `onRequestClose`. |
+| **Theme** | App is **light-only** (`userInterfaceStyle: "light"`). Don't add dark-mode styles piecemeal; if dark mode is requested, do it through `theme.ts` tokens for the whole app. |
+| **Loading states** | Prefer skeleton placeholders shaped like the content for lists/cards that take > ~300 ms; spinners for short actions; never a blank screen. |
+| **Feedback** | Every tap gives visible feedback within ~100 ms (pressed state, ripple via `android_ripple`, button `loading`). Haptics (`expo-haptics`) are not installed; propose before adding. |
+| **"Optimistic" updates** | In EvenUp the UI shows what is in local SQLite, written first, then synced: that is correct offline-first behaviour. Never show UI-only state that isn't in SQLite, and show pending/failed sync honestly (`AGENTS.md`). |
+| **Undo vs confirm** | Money records: keep explicit confirmation for delete/leave/erase. Undo snackbars only for non-financial, easily reversible actions. |
+| **Gestures and animation tech** | Current RN standard is Reanimated 4 + Gesture Handler (Reanimated is installed). Existing swipe code uses `PanResponder` + `swipeTabs.ts` and is tested: reuse it; don't migrate gesture systems as part of an unrelated task. |
+| **Long lists** | `FlatList` with stable keys today; Shopify FlashList v2 is the current high-performance option: propose it if a list is measurably slow, don't add it unasked. |
+| **Web performance** | Interaction to Next Paint (INP) < 200 ms; avoid heavy work on tap handlers. |
+| **Privacy UX** | Ask for permissions in context with a reason (camera only when scanning), handle "denied" with a way forward. |
+
+## 7. Before you say a UI task is done
 
 Run the checks in `evenup-ui-testing` (screen sizes, overlap, alignment, gestures, states). A UI change without
 a real render check is not done.

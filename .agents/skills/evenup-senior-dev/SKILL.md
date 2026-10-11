@@ -100,6 +100,44 @@ cd relay && npx tsc --noEmit -p .                        # relay typecheck
 7. **Ask only when it is genuinely the owner's call** (product choice, destructive action on production, release).
    Otherwise pick the sensible default, say so, and proceed.
 
+### How a senior developer works on a task
+
+1. **Request card first** (`evenup-agent-discipline` section 1): intent, done-when, in/out of scope. Scope is a
+   contract; extra improvements go in the report as suggestions.
+2. **Plan before code** for anything beyond a one-file fix: files to touch, data/sync impact, tests to add,
+   mobile behaviours to include, risks. Big or structural → show the plan and wait (Antigravity: implementation
+   plan artifact).
+3. **Spec-by-example:** write or name the test that proves the change (failing first for bugs), then implement.
+4. **Implement in small verified steps**, running the relevant tests after each, not only at the end.
+5. **Definition of Done:** request met incl. expected mobile details; tests added; `npm test`, typecheck, lint
+   green; changed screens render-checked (`evenup-ui-testing`); diff reviewed; docs/CHANGELOG/skills updated
+   when behaviour changed; honest report.
+
+### Engineering standards (current practice)
+
+- **TypeScript strictly:** no `any`, no `@ts-ignore`/`as unknown as`; model states with discriminated unions;
+  validate data at the boundary (server responses, imported files, deep links) before trusting it.
+- **Keep logic pure and testable:** calculations in `src/data/logic.ts` / `src/lib/*`, not inside components;
+  screens compose UI kit + hooks.
+- **KISS / YAGNI:** the simplest design that meets the request; no speculative abstractions, config or
+  "future-proofing" layers. Duplicate twice before abstracting.
+- **Errors:** never swallow (`catch {}`); handle, show a clear message, or rethrow with context. Sync errors use
+  the existing error codes.
+- **React 19 / RN:** derive state instead of syncing it with `useEffect`; no effect that refreshes data on focus
+  (`useFocusEffect` already does); stable keys; memoize only where a measured problem exists. Don't enable new
+  build features (React Compiler, new architecture flags) unasked.
+- **Dependencies:** none added without the owner's OK. When approved: check maintenance and Expo SDK
+  compatibility, install with `npx expo install <pkg>` for native modules, run `npm audit`.
+- **Security & privacy:** OWASP MASVS mindset: no secrets in the app bundle or logs, validate deep links/invites,
+  server enforces every permission, logs carry ids not personal data.
+- **Architecture decisions** (new sync behaviour, new storage, new server contract) need an explicit decision:
+  write a short ADR-style note (context, options, decision, consequences) in the PR/report and get the owner's OK.
+  `AGENTS.md` requires stopping for this rather than guessing.
+- **Git:** small focused commits, Conventional Commits (`feat(scope): …`, `fix(scope): …`), the why in the body.
+  Never commit secrets or `.env` values; never push/tag/release unasked.
+- **Self code review** before reporting: read your diff as a reviewer: correctness, edge cases (empty, huge,
+  offline, permissions), naming, dead code, leftover logs, test quality. Use `evenup-qa-testing` to pick test cases.
+
 ## 6. Priorities (highest first)
 
 1. No data loss, duplication or silent corruption of financial records (local or server).
@@ -132,7 +170,11 @@ Check every change against this list. Each item has caused a real bug before.
 
 | Task | Skill |
 |---|---|
+| Every task: scope, understanding, loops, reporting | `evenup-agent-discipline` |
 | Any screen / UI work | `evenup-mobile-ux` |
+| Test strategy, negative/boundary/stress/sync/security testing, QA report | `evenup-qa-testing` |
+| Running a `/workflow` or owner-given step list | `evenup-workflow-runner` |
+| Creating or changing a workflow | `evenup-workflow-builder` |
 | Verifying UI, before saying "done" | `evenup-ui-testing` |
 | Fixing a bug or editing existing code | `evenup-safe-change` |
 | Sync, SQLite, server, permissions, import/export | `splitmate-sync-engineering` (+ `splitmate-architecture-review` before big changes, `splitmate-sync-debugger` for sync bugs) |

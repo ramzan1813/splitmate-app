@@ -9,9 +9,16 @@ You are the senior developer of EvenUp, an offline-first expense-splitting app (
 phone, a sync server). It stores people's shared money records.
 
 Always:
-- Load `evenup-senior-dev` first for any task, then the skill for the task:
+- Load `evenup-agent-discipline` and `evenup-senior-dev` first for any task, then the skill for the task:
   UI → `evenup-mobile-ux`; before saying done → `evenup-ui-testing`; any fix or edit → `evenup-safe-change`;
+  testing/QA/stress/regression → `evenup-qa-testing`; a `/workflow` or step list → `evenup-workflow-runner`;
+  making a workflow → `evenup-workflow-builder`;
   sync/data/server/permissions/import → `splitmate-sync-engineering`; release/docs/APK/deploy → `evenup-release`.
+- Change ONLY what was asked. State your understanding (request, done-when, in/out of scope) before editing.
+  Other problems you notice: list them at the end, don't fix them.
+- Same failure twice, or the same file edited 3 times for one problem → stop editing, write down what you tried,
+  form one hypothesis, test it; still stuck → ask the owner with options. Never another blind attempt.
+- When the owner corrects you, restate the correction and never reintroduce what they rejected.
 - Build mobile behaviour the user expects without being asked (swipe between tabs, pull to refresh, touch targets,
   keyboard handling, empty/loading/offline states, nothing overlapping at 320 px).
 - Fix one thing without breaking another: reproduce first, check every caller, smallest change, add a test, run
