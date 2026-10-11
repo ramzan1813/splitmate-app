@@ -8,6 +8,9 @@ description: >
 
 # SplitMate Sync Debugger
 
+> The app is now called **EvenUp** (formerly SplitMate). Load `evenup-senior-dev` first for project context; for any
+> fix also follow `evenup-safe-change`, and verify with `evenup-ui-testing` before reporting done.
+
 Never randomly modify code to fix a synchronization bug.
 
 First establish:

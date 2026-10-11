@@ -8,6 +8,9 @@ description: >
 
 # SplitMate Architecture Review
 
+> The app is now called **EvenUp** (formerly SplitMate). Load `evenup-senior-dev` first for project context; for any
+> fix also follow `evenup-safe-change`, and verify with `evenup-ui-testing` before reporting done.
+
 Before modifying synchronization or backend architecture:
 
 1. Inspect the repository.
